@@ -1,13 +1,15 @@
 # Blynger
 
-> Draft for owner review before the first public release.
-
 **Blynger is a static personal website manager with Blygger interoperability built in.**
 
 Blynger is a local Mac application for writing, maintaining, reading from, and
 publishing a hand-built static website. It preserves ordinary HTML files and Git
 publication while adding Blyg 0.3 items, fragments, threads, transclusions,
 stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
+
+### History
+
+Blynger started as an app to automate updating a handcoded website built to run on the no-frills webhosting service, NearlyFreeSpeech.net. When Blygger was released, scope expanded to make the site partly static and partly a Blygger compliant blog.
 
 ## Current status
 
