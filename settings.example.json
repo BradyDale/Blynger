@@ -1,0 +1,32 @@
+{
+  "site_root": "/path/to/your/site",
+  "data_root": "/path/to/private/blynger-data",
+  "site_url": "https://example.com/",
+  "site_label": "example.com",
+  "author_name": "Example Author",
+  "author_signature": "—Example Author",
+  "blyg_title": "Example Author's blyg",
+  "feed_description": "Writing by Example Author",
+  "blogroll_heading": "Blogroll",
+  "twitter_creator": "",
+  "favicon": "/images/favicon.png",
+  "default_images": [],
+  "main_pages": ["index.html", "portfolio.html", "openers.html", "privacypolicy.html"],
+  "non_blyg_pages": ["index.html", "portfolio.html", "openers.html", "privacypolicy.html"],
+  "local_hostnames": ["example.com", "www.example.com"],
+  "navigation": [],
+  "publishing": {
+    "remote": "website",
+    "branch": "master",
+    "ssh_key": "/path/to/private/key",
+    "ssh_user": "account_site",
+    "hostname": "ssh.example-host.net",
+    "remote_path": "/home/public/.git",
+    "hostname_suffix": ".example-host.net"
+  },
+  "runtime": {
+    "source": "/path/to/Blynger",
+    "python": "/path/to/python",
+    "log": "/path/to/private/blynger-launcher.log"
+  }
+}

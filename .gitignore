@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+settings.json
+settings.json.*
+site.json
+.env
+.env.*
+*.log
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+Blynger-support/
+private/
+private-data/

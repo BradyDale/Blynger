@@ -1,0 +1,35 @@
+<!doctype html><meta charset="utf-8"><title>Blynger isolated Openers checks</title><link rel="stylesheet" href="/static/style.css"><style>body{display:block;padding:20px}#editor{height:500px;width:650px;overflow:auto}section{position:relative}iframe{width:850px;height:500px}</style><button id="run">Run isolated checks</button><pre id="results">Ready</pre><section><div id="editor" contenteditable="true"></div></section><script>function publicImages(s){return s}</script><script src="/static/fragments.js"></script><script>
+const report=document.getElementById('results'),editor=document.getElementById('editor');
+function check(ok,message){if(!ok)throw Error(message);report.textContent+='\nPASS '+message}
+const delay=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+document.getElementById('run').onclick=async()=>{try{
+document.getElementById('run').disabled=true;report.textContent='Running';const root=await(await fetch('/')).text(),token=new DOMParser().parseFromString(root,'text/html').querySelector('meta[name="blynger-token"]').content;
+async function api(path,data){const r=await fetch('/api/'+path,{method:data===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-Blynger-Token':token},body:data===undefined?undefined:JSON.stringify(data)}),d=await r.json();if(!r.ok)throw Error(d.error);return d;}
+let d=await api('page?name=openers.html');const initial=d.fragments.ranges.length,oldKeys=d.fragments.ranges.map(r=>r.key);editor.innerHTML=d.body;
+const f=new FragmentEditor(editor,()=>{},()=>{});f.load(d.fragments);await delay();
+check(initial>=3,'Existing archive preserved');
+const height=editor.scrollHeight,dots=[...document.querySelectorAll('.fragment-dot')];check(dots.length>0&&dots.every(e=>e.title==='Fragment'),'Small fragment dots have hover tooltip');f.layer.hidden=true;check(editor.scrollHeight===height,'Editor dots do not change text wrapping');f.layer.hidden=false;
+f.openerDate=()=> 'January 2, 2030';const before=f.html();check(!f.newOpener('  ')&&f.html()===before,'Blank entry rejected');
+check(f.newOpener('First <literal> opener.\nSecond line.\n\nSecond paragraph.'),'First opener created');check(f.meta.ranges[0].date_label==='January 2, 2030','First date has no numeral');const firstKey=f.meta.ranges[0].key;
+f.newOpener('Second opener.');f.newOpener('Third opener.');f.newOpener('Fourth opener.');
+check(f.meta.ranges.slice(0,4).map(r=>r.date_label).join('|')==='January 2, 2030, IV|January 2, 2030, III|January 2, 2030, II|January 2, 2030, I','Same-day numbering I–IV and newest first');
+check(f.roman(9)==='IX'&&f.roman(14)==='XIV','Roman subtractive numbering');
+check(f.meta.ranges[3].key===firstKey&&JSON.stringify(f.meta.ranges.slice(4).map(r=>r.key))===JSON.stringify(oldKeys),'Adding entries and numbering preserve existing identities and order');
+const stubTarget={origin:'https://remote.example/',id:'00000000000000000000000001',version:3},stubHTML='<p class="blynger-stub-label"><strong>Stub of:</strong> <a href="https://remote.example/t/source/">Source title</a></p><blockquote class="blynger-stub-context"><h1>Source title</h1><p>Complete source text.</p></blockquote>';
+check(f.newOpener('Brief response.',{stub_of:stubTarget,stub_html:stubHTML,pin_on_publish:true}),'Quick response Opener created with source');
+check(JSON.stringify(f.meta.ranges[0].stub_of)===JSON.stringify(stubTarget)&&f.meta.ranges[0].pin_on_publish===true,'Quick response carries its target and pin plan on first save');
+check(f.html().includes('Stub of:')&&f.html().includes('Complete source text.'),'Quick response source is editable in the Opener body');
+check(!/data-fragment|fragment-dot/.test(f.html())&&f.html().includes('&lt;literal&gt;'),'No private controls or unsafe text in saved body');
+d.raw=d.prefix+f.html()+d.suffix;d.fragments=f.snapshot();await api('save',d);d=await api('page?name=openers.html');editor.innerHTML=d.body;f.load(d.fragments);
+check(d.fragments.ranges.length===initial+5&&d.fragments.ranges[4].key===firstKey&&JSON.stringify(d.fragments.ranges[0].stub_of)===JSON.stringify(stubTarget),'Save and reload preserve new entries, identities, and Stub target');
+let objects=await api('fragment-objects?name=openers.html');check(objects.every(o=>!o.published&&o.id===null&&o.version===null),'Saved Openers remain unpublished without public history');
+let review=await api('prepare',{});await api('publish',{signature:review.signature});objects=await api('fragment-objects?name=openers.html');check(objects.every(o=>o.published&&o.version===1),'Local test publication uses shared fragment versions');
+const raw=await(await fetch('/preview/openers.html')).text(),parsed=new DOMParser().parseFromString(raw,'text/html');check(parsed.querySelectorAll('.blynger-fragment-marker a').length===initial+5,'Published archive has one quiet permalink dot per Opener');
+let doc=await(await fetch('/preview/blyg/items/'+objects[0].id+'.json')).json();check(doc.kind==='thread'&&JSON.stringify(doc.stub_of)===JSON.stringify(stubTarget)&&doc.content_html.includes('Complete source text.')&&!JSON.stringify(doc).match(/fragment-marker|fragment-dot|date_label|purpose/),'Quick response publishes as a thread with visible source and no editor metadata');
+check(parsed.querySelector('.blynger-fragment-marker a').href===doc.origin+doc.page,'Newest permalink dot uses the Stub thread identity');
+const frame=document.createElement('iframe');document.body.append(frame);const loaded=new Promise(resolve=>frame.onload=resolve);frame.srcdoc=raw.replace(/<base[^>]*>/,'');await loaded;
+const fd=frame.contentDocument,positions=()=>[...fd.querySelectorAll('p,h3')].map(e=>[e.getBoundingClientRect().top,e.getBoundingClientRect().width,e.getBoundingClientRect().height]);
+const pos=JSON.stringify(positions());fd.querySelectorAll('.blynger-fragment-marker').forEach(e=>e.remove());check(JSON.stringify(positions())===pos,'Public dots cause no layout shift');
+report.textContent+='\nALL CHECKS PASSED';
+}catch(e){report.textContent+='\nFAIL '+e.stack}}
+</script>
