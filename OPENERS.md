@@ -1,4 +1,4 @@
-# Openers — current behavior in Blynger 0.9.18
+# Openers — current behavior in Blynger 0.9.21
 
 ## Using it
 
@@ -10,9 +10,13 @@ the normal irrevocable Blyg pin only when that prepared publication succeeds.
 It can be unchecked before adding the Opener. A quick Reader Stub to Opener
 uses the same default and publishes as a `thread` with immutable `stub_of`.
 Its editor begins with a linked **Stub of:** line and the complete source item,
-followed by the new response. That copied source is editable prose rather than
-a frozen quotation, so it may be shortened or deleted while the response
-identity remains. Ordinary Openers remain `fragment` items.
+followed by the new response. For a genuine Blyg source, the complete source is
+a protected whole-item transclusion backed by the exact Reader snapshot. Its
+words cannot be edited while retaining that claim, but the author may delete
+the entire source block without removing the response identity. A plain-web
+Stub has no Blyg identity and keeps ordinary editable quoted context. Older UI
+submissions that contain copied Blyg context are upgraded from the exact cached
+source version when saved. Ordinary Openers remain `fragment` items.
 
 Each dated Opener automatically represents one reusable fragment, including all of its paragraphs. The quiet right-margin dot has a “Fragment” tooltip. A normal publication adds a similarly small dot to the public page, linking to `/blyg/f/{id}/` for an ordinary Opener or `/blyg/t/{id}/` for a response. Public dots occupy no text space and are not included in protocol content. Nothing is automatically pushed when adding an Opener.
 
@@ -36,11 +40,15 @@ Post dividers now designate body sections directly on first use. Explicitly unma
 
 ## Interoperability
 
-The authoritative contract is [Blyg 0.2](https://blygger.org/spec/0.2/). The comparison implementation was [aneeshsathe/blygger-desktop](https://github.com/aneeshsathe/blygger-desktop/tree/6151e4dbccc7d72c20d2511860088c1b29c82acf), commit `6151e4dbccc7d72c20d2511860088c1b29c82acf`.
+The current authoritative contract is the living [Blyg 0.3 specification](https://blygger.org/spec/0.3/), consulted at source revision `e6740e8`. The earlier comparison implementation was [aneeshsathe/blygger-desktop](https://github.com/aneeshsathe/blygger-desktop/tree/6151e4dbccc7d72c20d2511860088c1b29c82acf), commit `6151e4dbccc7d72c20d2511860088c1b29c82acf`.
 
 Both use stable fragment IDs, integer versions, Markdown hashes, rendered HTML, and ID/version provenance. Ordinary Openers emit `kind: fragment`; a response Opener with immutable `stub_of` emits the protocol-required `kind: thread`. There is never an Opener-specific kind. Machine-readable `/blyg/items/{id}.json` and human-readable standalone pages remain separate.
 
-The reference client’s owner authentication/sync API, imported items, nested threads, and newer fork behavior are extensions beyond the published 0.2 contract. They were not copied. Its 1,000-character studio limit is an authoring choice. Blynger preserves multi-paragraph Openers; the specification requires readers to accept fragments beyond the recommended size. Compatibility was checked structurally and with real HTTP/Apache route tests, not by running the reference native application against this site.
+The reference client’s owner authentication/sync API and its authoring choices
+are not Blynger requirements. Blynger preserves multi-paragraph Openers; the
+specification requires readers to accept fragments beyond the recommended
+size. Compatibility is checked at the final canonical JSON boundary as well as
+with HTTP/Apache route tests, rather than inferred from editor markup.
 
 ## Changed files and verification
 

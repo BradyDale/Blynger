@@ -1,6 +1,6 @@
-# Reader quoting and response stubs — current behavior in Blynger 0.9.17
+# Reader quoting and response stubs — current behavior in Blynger 0.9.21
 
-The live Blyg 0.3 specification still places partial quotation in its ruled/future section rather than the normative protocol. Blynger therefore publishes a highlighted passage as an ordinary frozen citation: the private draft remembers the enclosing source and exact selection, but public item JSON carries no selector or transclusion reference, public Markdown carries no `![[id]]` directive, and the HTML does not claim `blyg-transclusion`. No selected passage receives a synthetic item ID.
+The October 3, 2026 revision of the living Blyg 0.3 specification promoted partial transclusion into the normative protocol. Blynger still publishes a highlighted passage as an ordinary frozen citation: the private draft remembers the enclosing source and exact selection, but public item JSON carries no selector or transclusion reference, public Markdown carries no `![[id]]` directive, and the HTML does not claim `blyg-transclusion`. No selected passage receives a synthetic item ID. This remains an explicit interoperability limitation; it is separate from the whole-item Stub repair described below.
 
 Ordinary RSS/Atom and plain-web selections remain semantic blockquotes/citations with their actual URL and no Blyg ID, version, kind, or selector. **Quote** alone never creates `stub_of`. **Stub** is the explicit response action and records exactly one immutable target: `{origin, id, version}` for a genuine Blyg item, or the normative `{url}` form when a plain-web response is supported. A Blyg target may also carry the specification's optional `cited` context. Repeated selections from that same source can be added to the current response; each quotation keeps its own frozen snapshot/selector while the response keeps one target.
 
@@ -13,6 +13,11 @@ local Reader snapshot, emits `![[id]]`, records the baked version in
 requires. Removing the transclusion does not clear `stub_of`; the relationship
 is metadata, not an inference from quoted HTML. A plain-web target has no
 versioned Blyg identity and therefore remains ordinary editable quoted context.
+The server repeats that enforcement when saving: protected blocks are restored
+from their private source record, while obsolete copied Blyg Stub context is
+upgraded from the exact cached Reader version. Publication strips every editor-
+only class and token and writes the bare Blyg 0.3 transclusion block to canonical
+JSON. Tests inspect those final JSON files rather than stopping at draft markup.
 
 Empty editable paragraphs are placed before and after a newly inserted quotation so the author can write on either side. They are removed from publication if left empty. The earlier automatic “respond here” sentence is gone. A composer Blockquote is independent authored HTML, optionally with `cite` and a visible `<cite>` link; it never becomes a transclusion merely because it is a quotation.
 

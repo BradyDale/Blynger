@@ -1,3 +1,14 @@
+## 0.9.21 — Stub transclusions verified at the publication boundary
+
+- Repair the real Reader-to-publication failure shared by full Post and Quick Opener Stubs. If older UI code submits editable copied context for a genuine Blyg target, saving now replaces it with the exact locally cached source version and a protected private snapshot before the draft is accepted.
+- Match legacy Quick Opener Stub blocks to their private ranges structurally instead of assuming the archive's raw HTML and normalized block map are byte-identical.
+- Let a protocol-only maintenance revision preserve existing authored typography byte-for-byte instead of applying the normal new-writing quotation-mark normalization.
+- Restore protected source blocks from their private snapshot during every save, including after an HTML-source round trip. Deleting the entire block remains intentional and leaves `stub_of` intact without a transclusion.
+- Emit the bare Blyg 0.3 transclusion wrapper in final `content_html`; editor-only citation classes, private tokens, and convenience attributes no longer leak into the wire representation.
+- Replace the misleading copied-context Opener regression with remote-source publication tests that inspect final canonical item JSON on disk. Add equivalent full-Post, save/reload, HTML-tampering, whole-block deletion, legacy-UI, and plain-web regressions.
+- Confirm these rules against the living Blyg 0.3 specification published from revision `e6740e8`, including whole-item directives, publish-time snapshot resolution, reference/version agreement, bare baked wrappers, and the separate `{url}` plain-web Stub form.
+- Do not rewrite or republish the two forensic failures, post 73, or any other existing website content.
+
 ## 0.9.20 — Blyg-native response stubs
 
 - Start every new Blyg-target Stub—full post or quick Opener—with a genuine whole-item transclusion backed by the Reader's private source record. Publication re-resolves the local snapshot, emits `![[id]]` in `content_md`, records the exact baked version in `transclusions[]`, and keeps `stub_of.version` in agreement.

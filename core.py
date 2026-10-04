@@ -311,6 +311,53 @@ class Studio:
         kind='page' if name in self.state['standalone_pages'] else 'main' if name in self.non_blyg_pages else 'post'
         iid=self.state['ids'].get(name);pin_available=bool(draft and name!='openers.html' and kind=='post' and iid not in self.state['published'])
         return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':fragment_model.validate((draft or saved or {}).get('fragments'),clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False))}
+    def protect_quote_snapshots(self,raw,quotes):
+        """Restore atomic source blocks from private records; whole-block deletion wins."""
+        if not quotes:return raw
+        soup=BeautifulSoup(raw,'html.parser');changed=False
+        for block in list(soup.select('blockquote[data-blynger-quote]')):
+            record=quotes.get(block.get('data-blynger-quote'))
+            if not isinstance(record,dict) or not isinstance(record.get('visible_html'),str):continue
+            replacement=BeautifulSoup(record['visible_html'],'html.parser').find('blockquote')
+            if replacement is not None:block.replace_with(replacement);changed=True
+        return str(soup) if changed else raw
+    def upgrade_stub_context(self,raw,target,quotes):
+        """Turn the obsolete editable context of a Blyg stub into its exact snapshot."""
+        if not isinstance(target,dict) or not {'origin','id','version'}<=set(target):return raw
+        soup=BeautifulSoup(raw,'html.parser');legacy=soup.select_one('blockquote.blynger-stub-context')
+        if legacy is None:return raw
+        key=self.reader.key(target['origin'],target['id'])
+        try:item=self.reader.item(key)
+        except (KeyError,ValueError):raise ValueError('This Blyg Stub still has editable copied context, but its source snapshot is unavailable. Refresh the source in Reader before saving.')
+        if item['doc'].get('version')!=target['version']:
+            raise ValueError('This Blyg Stub still has editable copied context, but Reader no longer has the exact source version. Reopen that version before saving.')
+        quoted=self.reader.snapshot(key,{'mode':'whole'},self);record=quoted['snapshot']
+        legacy.replace_with(BeautifulSoup(quoted['html'],'html.parser'))
+        quotes[record['token']]=record
+        return str(soup)
+    def upgrade_opener_stub_contexts(self,raw,meta,previous,quotes):
+        """Upgrade genuine Stub blocks without assuming block-map bytes equal page bytes."""
+        if not isinstance(meta,dict):return raw
+        prior={row.get('key'):body for row,start,end,body in fragment_model.ranges(previous)} if isinstance(previous,dict) else {}
+        rows=[]
+        for opener,start,end,body in fragment_model.ranges(meta):
+            if BeautifulSoup(body,'html.parser').select_one('blockquote.blynger-stub-context'):
+                old=prior.get(opener.get('key'),'')
+                untouched=bool(BeautifulSoup(old,'html.parser').select_one('blockquote.blynger-stub-context'))
+                rows.append((opener.get('stub_of'),not untouched))
+        pattern=re.compile(r'<blockquote\b(?=[^>]*class=["\'][^"\']*\bblynger-stub-context\b)[^>]*>.*?</blockquote\s*>',re.I|re.S)
+        matches=list(pattern.finditer(raw))
+        if len(matches)!=len(rows):
+            raise ValueError('Openers Stub layout is inconsistent. Reopen the draft before saving.')
+        pieces=[];position=0
+        for match,(target,upgrade) in zip(matches,rows):
+            pieces.append(raw[position:match.start()])
+            upgraded=self.upgrade_stub_context(match.group(),target,quotes) if upgrade else match.group()
+            block=BeautifulSoup(upgraded,'html.parser').find('blockquote')
+            pieces.append(str(block) if block is not None else match.group())
+            position=match.end()
+        pieces.append(raw[position:])
+        return ''.join(pieces)
     def save_draft(self,d):
         name=d['name']
         if self.state['deleted_posts'].get(name,{}).get('active'):raise ValueError('Restore this deleted post before editing it.')
@@ -318,21 +365,36 @@ class Studio:
         actual=digest(p.read_bytes()) if p.exists() else None
         if d.get('base')!=actual: raise ValueError('This page changed outside Blynger. Reopen it before saving so those changes are preserved.')
         if not isinstance(d.get('raw'),str) or len(d['raw'])>3000000: raise ValueError('Page content is missing or too large.')
+        quotes=copy.deepcopy(d.get('quotes',existing.get('quotes',{}) if existing else {}))
+        d['raw']=self.protect_quote_snapshots(d['raw'],quotes)
         a,b=region(d['raw'])
         previous=existing or self.state.get('fragment_posts',{}).get(name,{})
-        if not (d.get('forked_from') or previous.get('forked_from')):
+        if name!='openers.html':
+            target=d.get('stub_of',previous.get('stub_of'))
+            d['raw']=self.upgrade_stub_context(d['raw'],target,quotes);a,b=region(d['raw'])
+        if not (d.get('forked_from') or previous.get('forked_from') or d.get('preserve_authored_typography')):
             body=normalize_authored_quotes(d['raw'][a:b]);d['raw']=d['raw'][:a]+body+d['raw'][b:];a,b=region(d['raw'])
         meta=copy.deepcopy(d.get('fragments',previous.get('fragments')))
         if isinstance(meta,dict) and isinstance(meta.get('blocks'),list):
             for block in meta['blocks']:
                 if isinstance(block,dict) and isinstance(block.get('html'),str):
                     block['html']=clean(block['html'])
-                    if not (d.get('forked_from') or previous.get('forked_from')):block['html']=normalize_authored_quotes(block['html'])
+                    if not (d.get('forked_from') or previous.get('forked_from') or d.get('preserve_authored_typography')):block['html']=normalize_authored_quotes(block['html'])
             # Dividers are private editor guides. If a browser paragraph merge
             # removes their block, never let the invisible guide trap a draft.
             meta=fragment_model.repair_editor_anchors(meta)
         if name=='openers.html':
+            # Older UI code inserted copied editable context even for genuine
+            # Blyg targets. Upgrade each such Opener from its exact Reader
+            # snapshot before rebuilding the block map.
+            submitted=copy.deepcopy(meta);submitted_stubs=[]
+            if isinstance(submitted,dict):
+                submitted_stubs=[copy.deepcopy(row.get('stub_of')) for row in submitted.get('ranges',[])]
+                d['raw']=self.upgrade_opener_stub_contexts(d['raw'],submitted,previous.get('fragments'),quotes)
+                a,b=region(d['raw'])
             meta=fragment_model.openers_metadata(clean(d['raw'][a:b]),previous.get('fragments'),meta)
+            for index,target in enumerate(submitted_stubs):
+                if target is not None and index<len(meta.get('ranges',[])):meta['ranges'][index]['stub_of']=target
             prior={r['key']:r for r in (previous.get('fragments') or {}).get('ranges',[]) if isinstance(r,dict) and isinstance(r.get('key'),str)}
             for opener in meta.get('ranges',[]):
                 old_stub=prior.get(opener['key'],{}).get('stub_of');new_stub=opener.get('stub_of')
@@ -351,7 +413,7 @@ class Studio:
             if supplied is not None:lineage[field]=copy.deepcopy(supplied)
         self.state['drafts'][name]={'raw':d['raw'],'base':actual,'new':existing.get('new',False) if existing else False,'kind':'page' if name in self.state['standalone_pages'] else 'post','at':existing.get('at',now()) if existing else now(),'updated':now(),'generated':d.get('generated',existing.get('generated',[]) if existing else []),'note':d.get('note',existing.get('note','') if existing else ''),'revision':existing.get('revision',False) if existing else False}
         self.state['drafts'][name]['fragments']=meta
-        self.state['drafts'][name]['quotes']=copy.deepcopy(d.get('quotes',previous.get('quotes',{})))
+        self.state['drafts'][name]['quotes']=quotes
         if existing and 'pin_on_publish' in existing:self.state['drafts'][name]['pin_on_publish']=bool(d.get('pin_on_publish',existing['pin_on_publish']))
         self.state['drafts'][name].update(lineage)
         if (existing or previous).get('blogroll_snapshot') is not None:self.state['drafts'][name]['blogroll_snapshot']=copy.deepcopy((existing or previous)['blogroll_snapshot'])
@@ -744,9 +806,11 @@ class Studio:
             reference={'id':quote['data-blyg-id'],'version':int(quote['data-blyg-version']),'origin':quote['data-blyg-origin']}
             quoted,reference=self.quote_source(reference['id'],item_id,docs,files,reference['origin'])
             quote.clear();quote.append(BeautifulSoup(quoted,'html.parser'))
-            quote['data-blyg-version']=str(reference['version'])
+            # The editor's citation class, private token, and convenience
+            # attributes are authoring state. The wire wrapper is the bare
+            # protocol shape required by §10.2.
+            quote.attrs={'class':['blyg-transclusion'],'data-blyg-id':reference['id'],'data-blyg-version':str(reference['version'])}
             if reference.get('origin'):quote['data-blyg-origin']=reference['origin']
-            else:quote.attrs.pop('data-blyg-origin',None)
             transclusions.append(reference)
         for node in list(soup.find_all(['p','div','h1','h2','h3','h4','h5','h6'])):
             if node.find(['p','div','h1','h2','h3','h4','h5','h6','pre','code']) or node.find_parent(['pre','code']):continue

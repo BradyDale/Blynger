@@ -1,4 +1,5 @@
 import copy, json, tempfile, unittest
+from bs4 import BeautifulSoup
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from reader import Reader, digest, normalized
@@ -144,6 +145,43 @@ class ReaderPublicationTests(unittest.TestCase):
         q=self.s.quote_item('remote',self.s.reader.key(ORIGIN,IID));page=self.s.create('Response',stub_of=q['stub_of']);page['raw']=page['raw'].replace('<p>Start writing here.</p>',q['html']);self.s.save_draft(page)
         newer=doc(version=2,text='New source words');newer['changelog']=[{'version':1,'at':'2026-01-01T00:00:00Z'},{'version':2,'at':'2026-01-02T00:00:00Z'}];self.net.add(items=[newer]);self.s.reader.sync();self.s.prepare();out=json.loads((self.s.root/'blyg/items'/f"{self.s.state['ids'][page['name']]}.json").read_text())
         self.assertEqual(out['transclusions'][0]['version'],2);self.assertEqual(out['stub_of'],{'id':IID,'version':2,'origin':ORIGIN})
+
+    def test_remote_stub_real_save_reload_html_roundtrip_writes_canonical_transclusion(self):
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s)
+        page=self.s.create('Real remote response',stub_of=quoted['stub_of'])
+        page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_label_html']+quoted['html']+'<p>My response—it’s mine.</p>')
+        page['quotes']={quoted['snapshot']['token']:quoted['snapshot']};page['preserve_authored_typography']=True;self.s.save_draft(page)
+        reopened=self.s.page(page['name']);self.assertIn('blynger-citation blyg-transclusion',reopened['raw'])
+        self.assertIn('My response—it’s mine.',reopened['raw'])
+        reopened['raw']=reopened['raw'].replace('Remote words','Altered source words');self.s.save_draft(reopened);again=self.s.page(page['name'])
+        protected=BeautifulSoup(again['raw'],'html.parser').select_one('blockquote[data-blynger-quote]')
+        self.assertIn('Remote words',protected.get_text(' ',strip=True));self.assertNotIn('Altered source words',protected.get_text(' ',strip=True))
+        self.s.prepare();own=self.s.state['ids'][page['name']];final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text())
+        reference={'id':IID,'version':1,'origin':ORIGIN}
+        self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],quoted['stub_of']);self.assertEqual(final['transclusions'],[reference])
+        self.assertIn('![['+IID+']]',final['content_md']);self.assertIn('class="blyg-transclusion"',final['content_html']);self.assertIn('data-blyg-origin="'+ORIGIN+'"',final['content_html'])
+        self.assertNotIn('blynger-citation',final['content_html']);self.assertNotIn('data-blynger-quote',final['content_html'])
+
+    def test_legacy_remote_stub_context_is_upgraded_before_final_json(self):
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s);page=self.s.create('Legacy UI response',stub_of=quoted['stub_of'])
+        page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_html']+'<p>My response.</p>');self.s.save_draft(page);reopened=self.s.page(page['name'])
+        self.assertNotIn('blynger-stub-context',reopened['raw']);self.assertIn('data-blynger-quote',reopened['raw']);self.s.prepare();own=self.s.state['ids'][page['name']]
+        final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['transclusions'],[{'id':IID,'version':1,'origin':ORIGIN}])
+        self.assertIn('![['+IID+']]',final['content_md']);self.assertIn('blyg-transclusion',final['content_html'])
+        self.assertNotIn('blynger-citation',final['content_html']);self.assertNotIn('data-blynger-quote',final['content_html'])
+
+    def test_deleting_protected_stub_source_keeps_only_response_relationship(self):
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s);page=self.s.create('Response without source block',stub_of=quoted['stub_of'])
+        page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_label_html']+quoted['html']+'<p>My response.</p>');page['quotes']={quoted['snapshot']['token']:quoted['snapshot']};self.s.save_draft(page)
+        reopened=self.s.page(page['name']);soup=BeautifulSoup(reopened['raw'],'html.parser');soup.select_one('blockquote[data-blynger-quote]').decompose();reopened['raw']=str(soup);self.s.save_draft(reopened);self.s.prepare();own=self.s.state['ids'][page['name']]
+        final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],quoted['stub_of']);self.assertEqual(final['transclusions'],[]);self.assertNotIn('![['+IID+']]',final['content_md'])
+
+    def test_plain_web_stub_remains_editable_context_without_transclusion(self):
+        url='https://plain.example/story';self.net.urls[url]=('<html><head><title>Plain story</title></head><body><main><p>Ordinary web words.</p></main></body></html>','text/html')
+        opened=self.s.reader.open_url(url);quoted=self.s.reader.snapshot(opened['selected'],{'mode':'whole'},self.s);page=self.s.create('Web response',stub_of=quoted['stub_of'])
+        page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_html']+'<p>My response.</p>');self.s.save_draft(page);reopened=self.s.page(page['name'])
+        self.assertIn('blynger-stub-context',reopened['raw']);self.assertNotIn('data-blyg-id',reopened['raw']);self.s.prepare();own=self.s.state['ids'][page['name']]
+        final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],{'url':url});self.assertEqual(final['transclusions'],[]);self.assertNotIn('![[',final['content_md'])
 
     def test_quote_is_not_implicitly_a_stub_and_response_survives_without_quote(self):
         quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s)

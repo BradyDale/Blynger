@@ -3,7 +3,9 @@ import copy, json, subprocess, unittest
 from bs4 import BeautifulSoup
 from core import Studio, new_page, clean, region
 from fragments import openers_metadata, ranges
+from reader import Reader
 from test_core import StudioTests
+from test_reader import Net, ORIGIN, IID, doc as remote_doc
 
 class OpenerTests(unittest.TestCase):
     setUp=StudioTests.setUp
@@ -76,17 +78,30 @@ class OpenerTests(unittest.TestCase):
         changed=self.studio.page('openers.html');changed['fragments']['ranges'][0]['stub_of']={**target,'version':4}
         with self.assertRaisesRegex(ValueError,'cannot be changed'):self.studio.save_draft(changed)
 
-    def test_quick_opener_first_save_keeps_visible_source_and_stub_target(self):
-        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html')
-        source='<p class="blynger-stub-label"><strong>Stub of:</strong> <a href="https://remote.example/t/source/">Source title</a></p><blockquote class="blynger-stub-context"><h1>Source title</h1><p>Complete source text.</p></blockquote>'
-        d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 3, 2026, VI</h3>'+source+'<p>A concise response.</p><h3 id="same">',1)
-        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments'])
-        target={'origin':'https://remote.example/','id':'0'*25+'1','version':3};d['fragments']['ranges'][0]['stub_of']=target
+    def test_quick_opener_legacy_ui_path_writes_remote_transclusion_to_final_json(self):
+        self.seed();self.studio.migrate_openers();net=Net();net.add(items=[remote_doc(kind='thread')]);self.studio.reader=Reader(self.studio.data,net,lambda:'2026-01-02T00:00:00Z');self.studio.reader.subscribe(ORIGIN)
+        quoted=self.studio.reader.snapshot(self.studio.reader.key(ORIGIN,IID),{'mode':'whole'},self.studio);d=self.studio.page('openers.html')
+        d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 3, 2026, VI</h3>'+quoted['stub_html']+'<p>A concise response.</p><h3 id="same">',1)
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments']);d['fragments']['ranges'][0]['stub_of']=quoted['stub_of']
+        # The real archive's submitted block map and raw HTML are equivalent,
+        # but whitespace/entity serialization makes the range body unequal as
+        # a byte string. Conversion must identify the actual block, not replace
+        # a manufactured block-map substring.
+        d['raw']=d['raw'].replace('</p><blockquote class="blynger-stub-context">','</p>\n<blockquote class="blynger-stub-context">',1)
+        self.assertNotIn(next(ranges(d['fragments']))[3],d['raw'])
         self.studio.save_draft(d);saved=self.studio.page('openers.html');reply=saved['fragments']['ranges'][0]
-        self.assertEqual(reply['stub_of'],target);self.assertIn('Complete source text.',saved['body']);self.studio.prepare()
-        iid=self.studio.state['fragment_ids']['openers.html'][reply['key']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
-        self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['stub_of'],target);self.assertIn('Stub of:',doc['content_html']);self.assertIn('Complete source text.',doc['content_html'])
-        self.assertIn('RewriteRule ^t/'+iid+'/?$ t/'+iid+'/index.html [END]',(self.root/'blyg/.htaccess').read_text())
+        self.assertNotIn('blynger-stub-context',saved['body']);self.assertIn('data-blynger-quote',saved['body']);self.studio.prepare()
+        iid=self.studio.state['fragment_ids']['openers.html'][reply['key']];final=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],quoted['stub_of']);self.assertEqual(final['transclusions'],[{'id':IID,'version':1,'origin':ORIGIN}])
+        self.assertIn('![['+IID+']]',final['content_md']);self.assertIn('class="blyg-transclusion"',final['content_html']);self.assertIn('RewriteRule ^t/'+iid+'/?$ t/'+iid+'/index.html [END]',(self.root/'blyg/.htaccess').read_text())
+        self.assertNotIn('blynger-citation',final['content_html']);self.assertNotIn('data-blynger-quote',final['content_html'])
+
+    def test_untouched_historical_legacy_stub_is_not_silently_republished(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html')
+        legacy='<blockquote class="blynger-stub-context"><p>Historical copied words.</p></blockquote>'
+        d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 3, 2026, VI</h3>'+legacy+'<p>Old response.</p><h3 id="same">',1)
+        a,b=region(d['raw']);meta=openers_metadata(clean(d['raw'][a:b]),d['fragments']);meta['ranges'][0]['stub_of']={'origin':ORIGIN,'id':IID,'version':1}
+        self.assertEqual(self.studio.upgrade_opener_stub_contexts(d['raw'],meta,meta,{}),d['raw'])
 
     def test_blyg_stub_opener_bakes_genuine_transclusion(self):
         self.seed();self.studio.migrate();self.studio.state['published']={p.stem:json.loads(p.read_text()) for p in (self.root/'blyg/items').glob('*.json') if p.name!='index.json'};self.studio.migrate_openers()
