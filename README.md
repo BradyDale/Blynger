@@ -10,6 +10,7 @@ stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
 ### History
 
 Blynger started as an app to automate updating a handcoded website built to run on the no-frills webhosting service, NearlyFreeSpeech.net. When Blygger was released, scope expanded to make the site partly static and partly a Blygger compliant blog.
+Blynger was originally built to manage bradydale.com, which remains its primary real-world test site. It would be very interesting to see if others find Blynger useful.
 
 ## Current status
 
