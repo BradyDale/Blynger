@@ -2,23 +2,24 @@
 
 **Blynger is a static personal website manager with Blygger interoperability built in.**
 
-Blynger is a local Mac application for writing, maintaining, reading from, and
-publishing a hand-built static website. It preserves ordinary HTML files and Git
-publication while adding Blyg 0.3 items, fragments, threads, transclusions,
-stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
+Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.3 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
 
 ### History
 
 Blynger started as an app to automate updating a handcoded website built to run on the no-frills webhosting service, NearlyFreeSpeech.net. When Blygger was released, scope expanded to make the site partly static and partly a Blygger compliant blog.
 Blynger was originally built to manage bradydale.com, which remains its primary real-world test site. It would be very interesting to see if others find Blynger useful.
 
+### Two kinds of posts
+
+The code distinguishes between two kinds of updates:
+- Posts are individual HTML pages with headlines, numbered filenames, homepage links, version history, fragments, and normal post tools.
+- Openers are shorter, headline-free entries collected on openers.html. Each dated entry gets its own Blyg identity and standalone permalink even though it remains part of the aggregate page.
+- Either can become a response thread when created as a Stub.
+- The idea is that Openers are for one continuous page of quick updates or short thoughts, whereas Posts are for more fully developed ideas.
+
 ## Current status
 
-Blynger is pre-1.0 software. It was built around one established static site and
-is being generalized for other installations. Back up a site before trying it,
-review every proposed publication, and expect setup work. The application never
-needs a private key's contents; settings store only the path to a key chosen by
-the operator.
+Blynger is pre-1.0 software. It was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
 
 ## Requirements
 
