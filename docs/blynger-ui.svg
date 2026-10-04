@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <rect width="1440" height="900" fill="#416b67"/>
+  <rect x="18" y="16" width="1404" height="866" fill="#d4d4cd" stroke="#fff" stroke-width="3"/>
+  <rect x="23" y="21" width="1394" height="42" fill="#183e43"/>
+  <rect x="31" y="26" width="32" height="32" rx="5" fill="#f5f1dc" stroke="#86a28e"/>
+  <text x="47" y="51" text-anchor="middle" fill="#174b47" font-family="Georgia,serif" font-size="27" font-weight="bold">B</text>
+  <text x="72" y="48" fill="#fff" font-family="Tahoma,Arial,sans-serif" font-size="17" font-weight="bold">Blynger — Personal Publisher</text>
+  <text x="1391" y="48" text-anchor="end" fill="#fff" font-family="monospace" font-size="18">_  ▢  ×</text>
+
+  <g font-family="Tahoma,Arial,sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">
+    <rect x="30" y="72" width="224" height="58" fill="#285c43" stroke="#f5f5ec"/><text x="142" y="107">Posts</text>
+    <rect x="257" y="72" width="224" height="58" fill="#2d6953" stroke="#f5f5ec"/><text x="369" y="107">Openers</text>
+    <rect x="484" y="72" width="224" height="58" fill="#337463" stroke="#f5f5ec"/><text x="596" y="107">Pages</text>
+    <rect x="711" y="72" width="224" height="58" fill="#397a72" stroke="#f5f5ec"/><text x="823" y="107">Images</text>
+    <rect x="938" y="72" width="224" height="58" fill="#3e7280" stroke="#f5f5ec"/><text x="1050" y="107">Reader</text>
+    <rect x="1165" y="72" width="224" height="58" fill="#43688a" stroke="#f5f5ec"/><text x="1277" y="107">Saved</text>
+  </g>
+
+  <rect x="30" y="140" width="1380" height="57" fill="#d4d4cd" stroke="#8d9189"/>
+  <g font-family="Tahoma,Arial,sans-serif" font-size="14" fill="#202322">
+    <g fill="#d4d4cd" stroke="#fff"><rect x="42" y="151" width="112" height="35"/><rect x="164" y="151" width="112" height="35"/><rect x="286" y="151" width="120" height="35"/><rect x="416" y="151" width="92" height="35"/><rect x="1106" y="151" width="97" height="35"/><rect x="1213" y="151" width="180" height="35" fill="#e9e7c7"/></g>
+    <text x="98" y="174" text-anchor="middle">New post</text><text x="220" y="174" text-anchor="middle">Save draft</text><text x="346" y="174" text-anchor="middle">Preview</text><text x="462" y="174" text-anchor="middle">Queue</text><text x="1154" y="174" text-anchor="middle">Images</text><text x="1303" y="174" text-anchor="middle" font-weight="bold">Review &amp; publish</text>
+  </g>
+
+  <rect x="30" y="205" width="1380" height="653" fill="#285c43"/>
+  <rect x="40" y="215" width="300" height="633" fill="#eeeee5" stroke="#858982"/>
+  <text x="62" y="250" fill="#536459" font-family="Tahoma,Arial,sans-serif" font-size="13" font-weight="bold" letter-spacing="2">POSTS</text>
+  <rect x="58" y="269" width="264" height="43" fill="#fff" stroke="#858982"/><text x="75" y="296" fill="#80847d" font-family="Tahoma,Arial,sans-serif" font-size="14">⌕  Search posts…</text>
+  <g font-family="Tahoma,Arial,sans-serif" font-size="13" text-anchor="middle"><rect x="58" y="325" width="84" height="34" fill="#214e51"/><rect x="146" y="325" width="84" height="34" fill="#d4d4cd"/><rect x="234" y="325" width="88" height="34" fill="#d4d4cd"/><text x="100" y="347" fill="#fff">Updated</text><text x="188" y="347">Created</text><text x="278" y="347">Alphabetical</text></g>
+  <g font-family="Tahoma,Arial,sans-serif" fill="#202322"><text x="68" y="403" font-size="16">▤</text><text x="96" y="397" font-size="15">A small web, carefully tended</text><text x="96" y="418" font-size="11" fill="#73786f">3.html · updated Oct 4, 2026</text><text x="68" y="466" font-size="16">▤</text><text x="96" y="460" font-size="15">Notes from the quiet web</text><text x="96" y="481" font-size="11" fill="#73786f">2.html · updated Oct 4, 2026</text><text x="68" y="529" font-size="16">▤</text><text x="96" y="523" font-size="15">Why keep a personal website?</text><text x="96" y="544" font-size="11" fill="#73786f">1.html · updated Oct 4, 2026</text></g>
+
+  <rect x="350" y="215" width="1050" height="633" fill="#fdfcf7" stroke="#858982"/>
+  <text x="390" y="260" fill="#708273" font-family="Tahoma,Arial,sans-serif" font-size="13" letter-spacing="2">PAGE EDITOR</text>
+  <text x="390" y="305" fill="#223c34" font-family="Georgia,serif" font-size="37">A small web, carefully tended</text>
+  <text x="390" y="335" fill="#8a8b7c" font-family="monospace" font-size="14">example.com / 3.html</text>
+  <rect x="380" y="360" width="92" height="43" fill="#fdfcf7" stroke="#c9cbbc"/><rect x="476" y="360" width="126" height="43" fill="#eeeee5" stroke="#c9cbbc"/><text x="426" y="387" text-anchor="middle" font-family="Tahoma,Arial,sans-serif" font-size="14" font-weight="bold">Write</text><text x="539" y="387" text-anchor="middle" font-family="Tahoma,Arial,sans-serif" font-size="14" fill="#6a7366">HTML source</text>
+  <line x1="350" y1="404" x2="1400" y2="404" stroke="#c9cbbc"/>
+  <rect x="351" y="405" width="1048" height="54" fill="#f5f5ec"/>
+  <g font-family="Tahoma,Arial,sans-serif" font-size="15" fill="#202322"><text x="390" y="438" font-weight="bold">B</text><text x="432" y="438" font-style="italic">I</text><text x="472" y="438">Link</text><text x="532" y="438">H2</text><text x="576" y="438">¶</text><text x="620" y="438">❞ Blockquote</text><text x="744" y="438">• List</text><text x="820" y="438">Image</text><text x="880" y="438">Fragment</text><text x="970" y="438">Versions</text></g>
+  <line x1="350" y1="460" x2="1400" y2="460" stroke="#e4e5da"/>
+  <g font-family="Georgia,serif" fill="#283129"><text x="408" y="526" font-size="24">Static pages can preserve the history of how a site was made.</text><text x="408" y="584" font-size="24">The tools should help without taking over the work.</text></g>
+  <line x1="350" y1="811" x2="1400" y2="811" stroke="#e1e3d7"/><text x="380" y="835" fill="#73786f" font-family="Tahoma,Arial,sans-serif" font-size="12">Changes stay on this Mac until you publish.</text>
+  <rect x="23" y="862" width="1394" height="15" fill="#d4d4cd"/>
+</svg>
