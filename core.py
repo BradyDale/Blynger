@@ -9,10 +9,12 @@ from bs4 import BeautifulSoup, Comment, NavigableString
 from markdownify import markdownify
 import bleach
 from PIL import Image
-from metadata import enrich, sitemap, discovery_markup
+from metadata import enrich, sitemap, discovery_markup, favicon_markup
 from configuration import DEFAULT_SETTINGS
 from version import APP_VERSION, BLYG_VERSION
 import fragments as fragment_model
+from conformance import validate_surface
+from generation_disclosure import decorate as decorate_generation
 
 NS='https://blygger.org/ns/0.1'
 ET.register_namespace('blyg', NS)
@@ -81,6 +83,13 @@ class FragmentFileConflict(ValueError):
             message=label+' changed outside Blynger, including its writing or links. Blynger will not guess how its private fragment identities should move.'
         super().__init__(message)
 
+class FragmentStateError(ValueError):
+    """Fragment metadata failed validation for one specific authoring page."""
+    code='fragment-state'
+    def __init__(self,page,problem):
+        self.page=page
+        super().__init__(str(problem))
+
 def post_navigation(config=None):
     links=(config or DEFAULT_SETTINGS).get('navigation',[])
     return '<nav aria-label="Site navigation">'+''.join('<a href="'+item['url']+'"><img src="/images/'+item['image']+'" alt="'+html.escape(item['label'],quote=True)+'"></a>' for item in links)+'</nav>'
@@ -121,6 +130,14 @@ class Studio:
         self.state.setdefault('standalone_pages',[])
         self.state.setdefault('item_titles',{})
         self.state.setdefault('site_feed_titles',{})
+        # Pages are not fragment-bearing authoring objects. Older builds could
+        # leave a block map on a main or standalone Page; remove only that
+        # impossible metadata while preserving the page, drafts, and published
+        # Blyg history. Openers are the intentional exception.
+        for records in (self.state['drafts'],self.state['fragment_posts']):
+            for name,source in records.items():
+                if not self.fragment_capable(name) and isinstance(source,dict):
+                    source['fragments']=None
         for doc in self.state['published'].values():
             if isinstance(doc.get('title'),str) and doc['title'].strip():
                 self.state['item_titles'].setdefault(doc['id'],doc['title'].strip())
@@ -144,6 +161,7 @@ class Studio:
         self.save_state()
         from reader import Reader
         self.reader=Reader(self.data,own_origin=self.origin)
+        self.reader.backfill_publications(self.state['history'])
         self.configure_remote()
 
     def apply_config(self,config):
@@ -154,6 +172,14 @@ class Studio:
             self.state['remote']=self.config['publishing']['remote']; self.state['branch']=self.config['publishing']['branch']
             if hasattr(self,'reader'): self.reader.own_origin=self.origin
             self.configure_remote(); self.save_state()
+
+    def fragment_capable(self,name):
+        return name=='openers.html' or (name not in self.non_blyg_pages and name not in set(self.state.get('standalone_pages',[])))
+
+    def validate_fragments(self,name,meta,body):
+        if not self.fragment_capable(name):return None
+        try:return fragment_model.validate(meta,body)
+        except ValueError as problem:raise FragmentStateError(name,problem) from problem
 
     def configure_remote(self):
         pub=self.config['publishing']
@@ -309,8 +335,12 @@ class Studio:
         if 'blyg-transclusion' in raw: raw=str(soup)
         a,b=region(raw)
         kind='page' if name in self.state['standalone_pages'] else 'main' if name in self.non_blyg_pages else 'post'
-        iid=self.state['ids'].get(name);pin_available=bool(draft and name!='openers.html' and kind=='post' and iid not in self.state['published'])
-        return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':fragment_model.validate((draft or saved or {}).get('fragments'),clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False))}
+        iid=self.state['ids'].get(name)
+        # A pin is a choice about the version being prepared, not just version
+        # one. Keep the control available whenever a Post is editable so a
+        # later revision can be made permanent too.
+        pin_available=bool(name!='openers.html' and kind=='post')
+        return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':self.validate_fragments(name,(draft or saved or {}).get('fragments'),clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False))}
     def protect_quote_snapshots(self,raw,quotes):
         """Restore atomic source blocks from private records; whole-block deletion wins."""
         if not quotes:return raw
@@ -374,7 +404,11 @@ class Studio:
             d['raw']=self.upgrade_stub_context(d['raw'],target,quotes);a,b=region(d['raw'])
         if not (d.get('forked_from') or previous.get('forked_from') or d.get('preserve_authored_typography')):
             body=normalize_authored_quotes(d['raw'][a:b]);d['raw']=d['raw'][:a]+body+d['raw'][b:];a,b=region(d['raw'])
-        meta=copy.deepcopy(d.get('fragments',previous.get('fragments')))
+        # Clearing fragments is an explicit destructive choice in the editor.
+        # Do not allow an older fragment-aware source to fill them back in when
+        # handling a recovery save.
+        clear_fragments=d.get('clear_fragments') is True
+        meta=None if clear_fragments or not self.fragment_capable(name) else copy.deepcopy(d.get('fragments',previous.get('fragments')))
         if isinstance(meta,dict) and isinstance(meta.get('blocks'),list):
             for block in meta['blocks']:
                 if isinstance(block,dict) and isinstance(block.get('html'),str):
@@ -405,7 +439,7 @@ class Studio:
                         if not isinstance(new_stub['url'],str) or urlsplit(new_stub['url']).scheme not in ('http','https'):raise ValueError('An Opener response needs one public source URL.')
                     elif not {'origin','id','version'}<=set(new_stub) or set(new_stub)-{'origin','id','version','cited'}:
                         raise ValueError('An Opener response lost its Blyg source identity.')
-        meta=fragment_model.validate(meta,clean(d['raw'][a:b]))
+        meta=self.validate_fragments(name,meta,clean(d['raw'][a:b]))
         lineage={}
         for field in ('stub_of','forked_from'):
             prior=(existing or previous).get(field);supplied=d.get(field,prior)
@@ -414,7 +448,8 @@ class Studio:
         self.state['drafts'][name]={'raw':d['raw'],'base':actual,'new':existing.get('new',False) if existing else False,'kind':'page' if name in self.state['standalone_pages'] else 'post','at':existing.get('at',now()) if existing else now(),'updated':now(),'generated':d.get('generated',existing.get('generated',[]) if existing else []),'note':d.get('note',existing.get('note','') if existing else ''),'revision':existing.get('revision',False) if existing else False}
         self.state['drafts'][name]['fragments']=meta
         self.state['drafts'][name]['quotes']=quotes
-        if existing and 'pin_on_publish' in existing:self.state['drafts'][name]['pin_on_publish']=bool(d.get('pin_on_publish',existing['pin_on_publish']))
+        if name!='openers.html' and self.fragment_capable(name):
+            self.state['drafts'][name]['pin_on_publish']=bool(d.get('pin_on_publish',existing.get('pin_on_publish',False) if existing else False))
         self.state['drafts'][name].update(lineage)
         if (existing or previous).get('blogroll_snapshot') is not None:self.state['drafts'][name]['blogroll_snapshot']=copy.deepcopy((existing or previous)['blogroll_snapshot'])
         self.save_state(); return {'message':'Draft saved on this Mac. The website has not changed.'}
@@ -446,7 +481,9 @@ class Studio:
     def create(self,title,body=None,stub_of=None,forked_from=None):
         title=title.strip()
         if not title: raise ValueError('Give the post a title.')
-        names={p.name for p in self.root.glob('*.html')} | set(self.state['drafts']) | set(self.state['ids']) | set(self.state['deleted_posts'])
+        # Standalone Pages may intentionally use year-like filenames (for
+        # example 2018.html), but they are not part of the post sequence.
+        names=({p.name for p in self.root.glob('*.html')} | set(self.state['drafts']) | set(self.state['ids']) | set(self.state['deleted_posts']))-set(self.state['standalone_pages'])
         numbers=[int(name[:-5]) for name in names if re.fullmatch(r'[0-9]+\.html',name)]
         name=str(max(numbers,default=0)+1)+'.html'
         authored=body if isinstance(body,str) else '<p>Start writing here.</p>'
@@ -460,8 +497,8 @@ class Studio:
         title=title.strip() if isinstance(title,str) else ''
         name=name.strip() if isinstance(name,str) else ''
         if not title: raise ValueError('Give the page a title.')
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*\.html',name) or name=='template.html':
-            raise ValueError('Use a simple HTML filename such as 2015-2017.html.')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*\.html',name) or name=='template.html' or re.fullmatch(r'[0-9]+\.html',name):
+            raise ValueError('Use a descriptive HTML filename such as year-2018.html. Numbered filenames are reserved for Posts.')
         reserved={p.name for p in self.root.glob('*.html')}|set(self.state['drafts'])|set(self.state['ids'])|set(self.state['deleted_posts'])
         if name in reserved: raise ValueError(name+' already exists. Choose a different filename so nothing is overwritten.')
         raw=enrich(new_page(title,'<p>Start writing here.</p>',self.config),name,self.root,standalone=True,config=self.config)
@@ -619,7 +656,8 @@ class Studio:
             page=f'blyg/{kind}/{iid}/v{v}/index.html'
             if not (self.root/page).exists():
                 current=self.permalink(doc)
-                files[page]='<!doctype html><meta charset="utf-8"><link rel="canonical" href="'+html.escape(current,quote=True)+'">'+discovery_markup(self.config,blyg=True,rss=True)+'<title>Frozen version '+str(v)+'</title><style>body{font:18px/1.6 Georgia;max-width:800px;margin:40px auto;padding:20px}img{max-width:100%}</style><header><b>Frozen snapshot · version '+str(v)+'</b><p><a href="'+html.escape(current,quote=True)+'">Current version</a> · <a href="/'+rel+'">Pinned JSON</a></p></header><article>'+pin['content_html']+'</article>'
+                frozen='<!doctype html><html><head><meta charset="utf-8"><link rel="canonical" href="'+html.escape(current,quote=True)+'">'+favicon_markup(self.config)+discovery_markup(self.config,blyg=True,rss=True)+'<title>Frozen version '+str(v)+'</title><style>body{font:18px/1.6 Georgia;max-width:800px;margin:40px auto;padding:20px}img{max-width:100%}</style></head><body><header><b>Frozen snapshot · version '+str(v)+'</b><p><a href="'+html.escape(current,quote=True)+'">Current version</a> · <a href="/'+rel+'">Pinned JSON</a></p></header><article>'+pin['content_html']+'</article></body></html>'
+                files[page]=decorate_generation(frozen,pin.get('generated',[]))
     def version_footer(self,doc):
         links=[]
         for c in doc['changelog']:
@@ -852,7 +890,7 @@ class Studio:
             meta=source.get('fragments')
             if not meta: continue
             if name=='openers.html': self.state['ids'].setdefault(name,uid())  # Private parent key; the aggregate page is not a public Blyg item.
-            a,b=region(raw); meta=fragment_model.validate(meta,clean(raw[a:b]))
+            a,b=region(raw); meta=self.validate_fragments(name,meta,clean(raw[a:b]))
             blocks=[x['html'] for x in meta['blocks']]
             identities=self.state['fragment_ids'].setdefault(name,{})
             for r,start,end,body in reversed(list(fragment_model.ranges(meta))):
@@ -976,11 +1014,14 @@ class Studio:
                 advertise=iid in touched_fragments or not existing.exists()
                 if existing.exists() and BeautifulSoup(existing.read_text(),'html.parser').find('link',rel=lambda value:value and 'blyg' in value):advertise=True
                 links=discovery_markup(self.config,blyg=advertise,rss=advertise,item_json=self.origin+'items/'+iid+'.json')
-                page=page.replace('</head>',links+'\n</head>',1)
+                head='\n'.join(part for part in (favicon_markup(self.config),links) if part)
+                page=page.replace('</head>',head+'\n</head>',1)
+                keep_disclosure=existing.exists() and 'id="blynger-generation-disclosure-script"' in existing.read_text()
+                if iid in touched_fragments or not existing.exists() or keep_disclosure:page=decorate_generation(page,doc.get('generated',[]))
                 files[rel]=self.place_versions(page,'fragment.html',doc)
         ordered=sorted(docs.values(),key=lambda d:(d['updated'],d['id']),reverse=True)
         updated=max((d['updated'] for d in ordered),default=stamp)
-        manifest={'blyg':BLYG_VERSION,'level':2,'generator':'Blynger/'+APP_VERSION,'site':self.origin,'title':self.config['blyg_title'],'author':{'name':self.author,'links':[{'label':'Home','url':self.site}]},'feed':'feed.xml','items':'items/index.json','updated':updated}
+        manifest={'blyg':BLYG_VERSION,'level':2,'generator':'Blynger/'+APP_VERSION,'generator_url':'https://github.com/BradyDale/Blynger','site':self.origin,'title':self.config['blyg_title'],'author':{'name':self.author,'links':[{'label':'Home','url':self.site}]},'feed':'feed.xml','items':'items/index.json','updated':updated}
         blogroll=self.blogroll_entries()
         if blogroll:
             manifest['blogroll']='blogroll.opml'
@@ -1038,8 +1079,12 @@ class Studio:
             elem(item,'guid',link,isPermaLink='true');elem(item,'link',link);elem(item,'title',self.state['site_feed_titles'].get(current['id'],self.item_title(current)));elem(item,'description',current['content_html']);elem(item,'pubDate',rfc(at))
         files['feed.xml']=ET.tostring(site_rss,encoding='utf-8',xml_declaration=True)
         blogroll_link='<link rel="blogroll" href="blogroll.opml">' if blogroll else ''
-        files['blyg/index.html']='<!doctype html><meta charset="utf-8"><title>'+html.escape(self.config['blyg_title'])+'</title>'+discovery_markup(self.config,blyg=True,rss=True)+blogroll_link+'<style>body{font:18px/1.6 monospace;max-width:800px;margin:40px auto;padding:20px}</style><h1>'+html.escape(self.config['blyg_title'])+'</h1><p><a href="/">Home</a> · <a href="feed.xml">Blyg feed</a></p>'+''.join('<p><a href="'+html.escape(self.permalink(d),quote=True)+'">'+html.escape(self.item_title(d))+'</a> · v'+str(d['version'])+'</p>' for d in ordered if d['kind']!='withdrawn')
+        blyg_head=''.join(part for part in (favicon_markup(self.config),discovery_markup(self.config,blyg=True,rss=True),blogroll_link) if part)
+        files['blyg/index.html']='<!doctype html><html><head><meta charset="utf-8"><title>'+html.escape(self.config['blyg_title'])+'</title>'+blyg_head+'<style>body{font:18px/1.6 monospace;max-width:800px;margin:40px auto;padding:20px}</style></head><body><h1>'+html.escape(self.config['blyg_title'])+'</h1><p><a href="/">Home</a> · <a href="feed.xml">Blyg feed</a></p>'+''.join('<p><a href="'+html.escape(self.permalink(d),quote=True)+'">'+html.escape(self.item_title(d))+'</a> · v'+str(d['version'])+'</p>' for d in ordered if d['kind']!='withdrawn')+'</body></html>'
         files['blyg/.htaccess']='<IfModule mod_headers.c>\nHeader set Access-Control-Allow-Origin "*"\n</IfModule>\nAddType application/json .json\nAddType application/rss+xml .xml\n'+self.permalink_rules(docs)
+        # Observe the final wire artifacts independently before private state
+        # is saved or any website file is written.
+        self.last_conformance=validate_surface(self.root,self.origin,files,strict_existing=False)
         self.save_state(); return files,docs
     def migrate(self):
         if any(d.get('fragments') for d in self.state['drafts'].values()):
@@ -1107,7 +1152,7 @@ class Studio:
                 rendered=re.sub(r'<!-- blynger-versions-start -->.*?<!-- blynger-versions-end -->','',strip_fragment_markers(raw),flags=re.S)
                 source=self.state['drafts'].get(name) or self.state.get('fragment_posts',{}).get(name,{})
                 if source.get('fragments',{}):
-                    a,b=region(rendered);meta=fragment_model.validate(source['fragments'],clean(rendered[a:b]));blocks=[x['html'] for x in meta['blocks']]
+                    a,b=region(rendered);meta=self.validate_fragments(name,source['fragments'],clean(rendered[a:b]));blocks=[x['html'] for x in meta['blocks']]
                     identities=self.state['fragment_ids'].get(name,{})
                     for r,start,end,body in reversed(list(fragment_model.ranges(meta))):
                         iid=identities[r['key']]
@@ -1145,6 +1190,7 @@ class Studio:
             rendered=restore_post_navigation(rendered,name,self.config)
             rendered=self.place_blogroll(rendered,source.get('blogroll_snapshot',[]))
             rendered=self.place_versions(rendered,name,doc)
+            rendered=decorate_generation(rendered,doc.get('generated',[]))
             rendered=enrich(rendered,name,self.root,published=self.state['drafts'].get(name,{}).get('at') if self.state['drafts'].get(name,{}).get('new') else None,modified=doc['updated'] if doc['version']>1 else None,config=self.config,item_json=self.origin+'items/'+doc['id']+'.json',blyg_item=True,blyg_discovery=True,rss_discovery=True)
             if not BeautifulSoup(rendered,'html.parser').find('base'):
                 rendered=re.sub(r'<head\b[^>]*>',lambda m:m.group()+'<base href="'+html.escape(self.site+name,quote=True)+'">',rendered,count=1,flags=re.I)
@@ -1231,7 +1277,9 @@ class Studio:
                 if diff: comparisons.append({'path':c['path'],'diff':diff})
         signature=digest(base+json.dumps([(c['path'],'deleted' if c.get('deleted') else digest((self.root/c['path']).read_bytes())) for c in changes])+self.git('rev-parse','HEAD')+json.dumps(self.settings(),sort_keys=True))
         planned_pins=sum(1 for c in changes if re.fullmatch(r'blyg/items/[0-7][0-9a-hjkmnp-tv-z]{25}/v[0-9]+\.json',c['path']))
-        return {'commit_message':self.state.get('publication_note') or self.publication_message(changes),'changes':changes,'comparisons':comparisons,'base':base,'signature':signature,'settings':self.settings(),'planned_pins':planned_pins,'message':'Review these local files before publishing. Includes existing site edits.'}
+        report=(validate_surface(self.root,self.origin,strict_existing=False).public()
+                if (self.root/'blyg/blyg.json').is_file() else None)
+        return {'commit_message':self.state.get('publication_note') or self.publication_message(changes),'changes':changes,'comparisons':comparisons,'base':base,'signature':signature,'settings':self.settings(),'planned_pins':planned_pins,'conformance':report,'message':'Review these local files before publishing. Includes existing site edits.'}
     def publish(self,signature,note=None):
         pending=self.state.get('pending_publication')
         if pending:
@@ -1280,6 +1328,9 @@ class Studio:
             if p.name!='index.json':
                 d=json.loads(p.read_text())
                 if d['id'] not in excluded_ids:docs[d['id']]=d
+        # Record only interactions made real by this successful publication.
+        # The log is private Reader state and never enters generated site files.
+        self.reader.record_publications(self.state['published'],docs)
         self.remember(docs)
         for name,draft in self.state['drafts'].items():
             if draft.get('fragments') is None and not draft.get('quotes'):

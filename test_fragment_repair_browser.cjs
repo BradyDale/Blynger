@@ -22,6 +22,22 @@ const path=require('path');
     if(result.after.dividers.includes(result.lost)||!result.allDividersLive)throw Error('Deleted divider was not repaired');
     if(!result.after.ranges.some(range=>range.key===result.oldKey))throw Error('Repair lost fragment identity');
     if(!result.notices.some(message=>message.includes('repaired')))throw Error('Repair was not explained');
-    console.log('Browser check passed: deleted fragment boundaries repair themselves without losing prose or identity.');
+    const headings=await page.evaluate(()=>{
+      const editor=document.getElementById('editor'),notices=[];
+      editor.innerHTML='<h1>Title</h1><p>Introduction.</p><p><ul><li>List thought.</li></ul><h2>Second thought</h2><p>Body two.</p><h2>Third thought</h2><p>Body three.</p></p>';
+      const meta={version:1,blocks:[
+        {id:'title',html:'<h1>Title</h1>'},
+        {id:'intro',html:'<p>Introduction.</p>'},
+        {id:'legacy',html:'<p><ul><li>List thought.</li></ul><h2>Second thought</h2><p>Body two.</p><h2>Third thought</h2><p>Body three.</p></p>'}
+      ],dividers:['intro','legacy'],ranges:[{key:'intro-key',start:'intro',end:'legacy'},{key:'legacy-key',start:'legacy',end:null}]};
+      let dirty=0;const f=new FragmentEditor(editor,()=>dirty++,message=>notices.push(message));f.load(meta);const after=f.snapshot();
+      const h2=[...editor.querySelectorAll(':scope > h2')].map(el=>el.dataset.fragmentBlock);
+      return {after,h2,dirty,notices,text:editor.innerText};
+    });
+    if(headings.h2.length!==2||!headings.h2.every(id=>headings.after.dividers.includes(id)))throw Error('Repaired H2 did not become fragment boundaries');
+    if(!headings.after.ranges.some(range=>range.key==='legacy-key'))throw Error('Expanded legacy block lost fragment identity');
+    if(headings.dirty!==1||!headings.notices.some(message=>message.includes('H2 headings')))throw Error('Automatic structural repair was not surfaced as an unsaved change');
+    if(!headings.text.includes('List thought.')||!headings.text.includes('Body three.'))throw Error('Structural repair lost authored prose');
+    console.log('Browser checks passed: deleted boundaries self-repair, malformed blocks expand safely, and every H2 becomes a fragment boundary.');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error);process.exit(1);});

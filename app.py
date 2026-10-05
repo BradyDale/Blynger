@@ -42,6 +42,7 @@ class Handler(BaseHTTPRequestHandler):
         data={'error':str(e)}
         if getattr(e,'code',None):
             data.update(code=e.code,files=getattr(e,'files',[]),can_accept=getattr(e,'can_accept',False))
+            if getattr(e,'page',None):data['page']=e.page
         return self.send(data,400)
     def do_GET(self):
         if not self.valid_host(): return self.send({'error':'Invalid host'},403)
@@ -66,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
                 if p=='/api/reader-item':
                     with self.server.reader_lock:
                         key=q['key'][0];item=self.server.studio.reader.item(key);return self.send({**item,'html':self.server.studio.reader.rendered(key),'fragments':self.server.studio.reader.source_fragments(key),'original_url':self.server.studio.reader.page_url(item),'fingerprint':__import__('hashlib').sha256(json.dumps(item['doc'],sort_keys=True).encode()).hexdigest()})
+                if p=='/api/interactions':
+                    with self.server.reader_lock:return self.send({'items':self.server.studio.reader.interactions(q.get('q',[''])[0])})
                 if p=='/api/quote-choices':
                     with self.server.reader_lock:
                         with self.server.lock:return self.send(self.server.studio.quote_choices())
@@ -108,12 +111,13 @@ class Handler(BaseHTTPRequestHandler):
             if length>30*1024*1024: return self.send({'error':'Upload too large'},413)
             d=json.loads(self.rfile.read(length)); p=urlsplit(self.path).path; studio=self.server.studio
             if p=='/api/tk': return self.send(generate(studio,d['instruction'],d.get('context',''),d.get('name')))
-            if p in ('/api/reader-subscribe','/api/reader-open','/api/reader-sync','/api/reader-mark','/api/reader-blogroll','/api/reader-unsubscribe'):
+            if p in ('/api/reader-subscribe','/api/reader-open','/api/reader-sync','/api/reader-mark','/api/reader-react','/api/reader-blogroll','/api/reader-unsubscribe'):
                 with self.server.reader_lock:
                     if p=='/api/reader-subscribe':result=studio.reader.subscribe(d['url'])
                     elif p=='/api/reader-open':result=studio.reader.open_url(d['url'],bool(d.get('allow_subscription',True)))
                     elif p=='/api/reader-sync':result=studio.reader.sync(d.get('subscription'))
                     elif p=='/api/reader-mark':result=studio.reader.mark(d['key'],d['field'],d['value'])
+                    elif p=='/api/reader-react':result=studio.reader.react(d['key'],d.get('reaction'))
                     elif p=='/api/reader-blogroll':result=studio.reader.set_blogroll(d['subscription'],d['value'])
                     else:result=studio.reader.unsubscribe(d['subscription'])
                 return self.send(result)

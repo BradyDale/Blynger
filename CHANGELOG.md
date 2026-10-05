@@ -1,3 +1,72 @@
+## 0.9.30 — Public generated-text disclosures
+
+- Turn the existing robot on newly generated or legitimately republished pages into an accessible hover, focus, and tap control.
+- Show the version's self-reported model, generation date range, and source count, explicitly labeled as self-reported rather than verified. Generated text quoted from another Blyg points readers back to that item's disclosure.
+- Keep `content_html` and `generated[]` unchanged: the button, popover, and private presentation metadata exist only on human HTML pages and never enter protocol objects or feeds.
+- Preserve forward-only static history. Existing pages are not rewritten merely to add the interactive disclosure; new frozen pins and touched generated fragments receive it naturally.
+- Adapt Blygger Studio's MIT-licensed generated-disclosure interaction, reviewed at revision `f32519b`, to Blynger's static, embedded-style pages and robot convention.
+
+## 0.9.29 — Faster ordinary-feed refresh
+
+- Stop reimporting every ordinary RSS/Atom entry when only channel metadata or XML formatting changes. Entry wire hashes provide a fast path, with a normalized-content comparison as a safe fallback.
+- Download and inspect media only for genuinely new or changed entries. Unchanged entries retain their original observation time, cached media, Saved state, Like, and private response.
+- Replace cached full ordinary-feed response bodies with compact hashes while retaining ETag and Last-Modified support. Existing caches migrate during their next successful refresh.
+- Check up to six independent subscription origins concurrently; per-origin Blyg item downloads remain bounded at four.
+- Report real changed-entry counts instead of treating every entry in a refreshed ordinary feed as downloaded.
+- Adapt the content-change short-circuit introduced in Blygger Studio 0.26.1 and its bounded-polling approach, reviewed in the MIT-licensed 0.28.1 source at revision `f036594`, to Blynger's file-backed Reader.
+
+## 0.9.28 — Private interaction history
+
+- Add a private, append-only activity log for Saved/unsaved, Like/unlike, emoji responses, and successfully published remote quotes, Stubs, and forks.
+- Keep Like as its own `👍` action and add five separate private responses: `🤯`, `🙄`, `👎`, `😂`, and `❓`. One emoji response can be active per item without changing its Like state.
+- Show the history under **Saved → Private activity**, newest first, with local search and honest labels for records reconstructed from existing private state.
+- Record publication interactions only after a push succeeds; abandoned drafts and failed publications create no response history. Retry completion is idempotent.
+- Store every record exclusively in the configured private Reader data. No reaction, activity, or interaction field enters website HTML, Blyg JSON, RSS, OPML, the site repository, or the public Blynger source export.
+- Adapt the interaction-log concept from MIT-licensed Blygger Studio 0.28.1 at source revision `f036594`, while keeping Blynger's file-backed local architecture and vocabulary.
+
+## 0.9.27 — Independent Blyg publication checks
+
+- Add an independent, read-only validator for the final Blyg 0.3 static surface and run it before publication preparation can write website files or save its generated protocol state.
+- Verify current items, archive rows, content hashes, contiguous versions, withdrawals, frozen pins, absolute HTML addresses, whole-item directives, baked transclusions, Stub version agreement, generation disclosure, feed events, and private-metadata exclusion.
+- Include a Blyg-check summary in publication review data; required-rule failures stop preparation with artifact-specific diagnostics.
+- Add a production-path adapter for the official conformance and intent toolkit proposed in `blygger/blygger-spec#11`, using only disposable sites, private state, and Git remotes.
+- Advertise Blynger's public source with the recommended manifest `generator_url`.
+- Credit Aneesh Sathe's toolkit and Blygger Studio's independent-oracle approach while documenting exactly what the local checker does and does not establish.
+- Verify against living Blyg 0.3 source revision `8e7a080`, toolkit proposal `98af8da`, and the compatible Blygger Studio 0.21.0 harness. The 203-check run finishes with no Blynger failures or warnings; its remaining seven warnings and two informational findings belong to the reference-client/grammar columns.
+
+## 0.9.26 — Everyday authoring and Reader distinctions
+
+- Keep the next-version pin choice visible for every editable Post, including revisions made after the first publication.
+- Replace the link prompt with a link dialog that accepts safe public or root-relative addresses and can choose an existing permanent Page. Reserve bare numeric filenames exclusively for Posts; use descriptive Page names such as `year-2018.html`.
+- Give Blyg-native and ordinary Web/RSS entries distinct, subdued Reader cards and opened-item backgrounds, with an explicit source badge.
+- Render the shared `blyg-tk-gen` robot convention inside Reader and show the imported version's self-reported model, date, and source-count disclosure without claiming verification.
+- Consult and credit Blygger Studio's open MIT-licensed implementation of generated-text disclosure; this release adapts the interaction concept to Blynger's existing static Reader rather than copying its application architecture.
+
+## 0.9.25 — Draft-state recovery and Page-safe post numbering
+
+- Explicitly clearing fragments now overrides every older fragment-aware source when saving a recovery draft.
+- Fragment repair state is initialized before every editor repair path.
+- Only Posts and Openers can retain fragment metadata; legacy fragment sidecars on static Pages are removed without changing their HTML.
+- Fragment validation errors now identify the actual affected post, so recovery controls cannot clear the wrong draft.
+- Standalone Pages no longer participate in numbered post allocation.
+- Added regressions for stale fragment cleanup, numeric standalone Page filenames, and the complete repaired-H2 save/reopen/publication path.
+- Credit the open-source Blygger Studio reference implementation in the project documentation before future interoperability work begins.
+
+## 0.9.24 — Reliable H2 fragment boundaries
+
+- Make every H2 in a fragment-enabled post start a fragment even when the heading arrived through HTML source or repaired legacy markup instead of the H2 toolbar button.
+- Repair browser-expanded legacy blocks whose invalid paragraph/list nesting previously hid several H2 headings inside one saved fragment. Preserve the authored words and the existing fragment identity, mark the repair as unsaved, and explain it before the author saves.
+
+## 0.9.23 — Favicons on Blyg permalinks
+
+- Include the configured site favicon on generated Blyg thread, fragment, Opener-permalink, pinned-version, and Blyg-index pages so browser tabs retain the site's identity outside ordinary HTML pages.
+- Treat this as functional metadata repair: the next reviewed publication may list existing generated Blyg HTML pages whose only change is the missing favicon.
+
+## 0.9.22 — Upload from the Images workspace
+
+- Restore the missing **Upload image** action directly on the Images page. Uploaded PNG, JPEG, GIF, and WebP files appear in the library immediately and remain queued for the next publication without requiring an open draft.
+- Reuse the existing validated, content-addressed image upload path rather than creating a second storage mechanism.
+
 ## 0.9.21 — Stub transclusions verified at the publication boundary
 
 - Repair the real Reader-to-publication failure shared by full Post and Quick Opener Stubs. If older UI code submits editable copied context for a genuine Blyg target, saving now replaces it with the exact locally cached source version and a protected private snapshot before the draft is accepted.

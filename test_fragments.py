@@ -2,7 +2,7 @@ import copy, json, subprocess, unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from bs4 import BeautifulSoup
-from core import Studio, new_page, digest, FragmentFileConflict
+from core import Studio, new_page, digest, FragmentFileConflict, FragmentStateError
 from test_core import StudioTests
 import fragments
 
@@ -25,8 +25,23 @@ class FragmentTests(unittest.TestCase):
         d=self.draft();before=(self.root/'1.html').read_bytes();self.studio.save_draft(d)
         s=Studio(self.root,self.base/'private');self.assertEqual(s.page('1.html')['fragments'],d['fragments'])
         self.assertEqual(before,(self.root/'1.html').read_bytes());self.assertEqual(s.state['published'],{});self.assertEqual(s.state['fragment_ids'],{})
+    def test_browser_repaired_h2_boundaries_survive_save_reopen_and_prepare(self):
+        d=self.studio.page('1.html')
+        blocks=['<h1>Test title</h1>','<p>Introduction.</p>','<ul><li>List thought.</li></ul>','<h2>Second thought</h2>','<p>Body two.</p>','<h2>Third thought</h2>','<p>Body three.</p>','<p>—Example Author<br>September 26, 2026</p>']
+        d['raw']=new_page('Test title',''.join(blocks[1:]))
+        d['fragments']={'version':1,'blocks':[{'id':f'h{i}','html':block} for i,block in enumerate(blocks)],'dividers':['h1','h3','h5','h7'],'ranges':[{'key':'intro','start':'h1','end':'h3'},{'key':'second','start':'h3','end':'h5'},{'key':'third','start':'h5','end':'h7'}]}
+        self.studio.save_draft(d)
+        reopened=Studio(self.root,self.base/'private');saved=reopened.page('1.html')
+        self.assertEqual(saved['fragments'],d['fragments'])
+        reopened.prepare()
+        identities=reopened.state['fragment_ids']['1.html']
+        self.assertIn('second',identities);self.assertIn('third',identities)
+        second=json.loads((self.root/f"blyg/items/{identities['second']}.json").read_text())
+        third=json.loads((self.root/f"blyg/items/{identities['third']}.json").read_text())
+        self.assertIn('Second thought',second['content_html']);self.assertIn('Body two.',second['content_html'])
+        self.assertIn('Third thought',third['content_html']);self.assertIn('Body three.',third['content_html'])
     def test_git_publication_reopen_versions_and_provenance(self):
-        self.connect();d=self.draft();self.studio.save_draft(d);self.publish()
+        self.connect();self.studio.config['favicon']='/images/favicon.png';d=self.draft();self.studio.save_draft(d);self.publish()
         ids=self.studio.state['fragment_ids']['1.html'];iid=ids['first'];tid=self.studio.state['ids']['1.html'];docs=self.studio.state['published']
         f=docs[iid];t=docs[tid]
         self.assertEqual(f['kind'],'fragment');self.assertEqual(f['version'],1);self.assertNotIn('transclusions',f)
@@ -40,7 +55,7 @@ class FragmentTests(unittest.TestCase):
             self.assertNotIn('fragment-block',doc['content_html']);self.assertNotIn('fragment-dot',doc['content_md'])
         self.assertTrue((self.root/f'blyg/f/{iid}/index.html').exists())
         page=(self.root/f'blyg/f/{iid}/index.html').read_text()
-        discovery=BeautifulSoup(page,'html.parser');self.assertEqual(discovery.find('link',rel='blyg')['href'],'/blyg/');self.assertEqual(discovery.find('link',rel='alternate',type='application/rss+xml')['href'],'/feed.xml')
+        discovery=BeautifulSoup(page,'html.parser');self.assertEqual(discovery.find('link',rel='blyg')['href'],'/blyg/');self.assertEqual(discovery.find('link',rel='alternate',type='application/rss+xml')['href'],'/feed.xml');self.assertEqual(discovery.find('link',rel='icon')['href'],'/images/favicon.png')
         self.assertIn('<h1>FROM: Test title</h1>',page)
         self.assertIn('<a href="https://example.com/1.html">Full thread</a>',page)
         self.assertLess(page.index('Full thread'),page.index('id="blynger-versions"'))
@@ -80,7 +95,8 @@ class FragmentTests(unittest.TestCase):
         self.assertIsNotNone(fragments.validate(m,''.join(b['html'] for b in m['blocks'])))
     def test_invalid_or_stale_anchors_fail_before_writes(self):
         d=self.draft();d['raw']=d['raw'].replace('First thought','Unexpected source edit')
-        with self.assertRaisesRegex(ValueError,'anchors'):self.studio.save_draft(d)
+        with self.assertRaisesRegex(FragmentStateError,'anchors') as problem:self.studio.save_draft(d)
+        self.assertEqual(problem.exception.page,'1.html')
         d=self.draft();d['fragments']['ranges'][0]['start']='b0'
         with self.assertRaisesRegex(ValueError,'Titles'):self.studio.save_draft(d)
     def test_orphaned_editor_divider_does_not_trap_draft(self):
@@ -131,6 +147,37 @@ class FragmentTests(unittest.TestCase):
         self.connect();d=self.draft();self.studio.save_draft(d);self.publish()
         d=self.studio.page('1.html');d['fragments']=None;self.studio.save_draft(d);self.publish()
         self.assertIsNone(self.studio.page('1.html')['fragments'])
+
+    def test_explicit_recovery_clear_overrides_stale_fragment_source(self):
+        d=self.draft();self.studio.save_draft(d)
+        saved=copy.deepcopy(self.studio.state['drafts'].pop('1.html'));saved['file_hash']=digest((self.root/'1.html').read_bytes());self.studio.state['fragment_posts']['1.html']=saved;self.studio.save_state()
+        reopened=self.studio.page('1.html');reopened['raw']=reopened['raw'].replace('First thought.','Edited without fragments.')
+        reopened['fragments']=copy.deepcopy(saved['fragments'])
+        reopened['clear_fragments']=True
+        self.studio.save_draft(reopened)
+        self.assertIsNone(self.studio.state['drafts']['1.html']['fragments'])
+        self.assertIsNone(self.studio.page('1.html')['fragments'])
+
+    def test_pages_shed_legacy_fragment_metadata_without_changing_html(self):
+        before=(self.root/'index.html').read_bytes();source={'raw':before.decode(),'base':digest(before),'new':False,'fragments':self.draft()['fragments']}
+        self.studio.state['drafts']['index.html']=copy.deepcopy(source)
+        (self.root/'year-2018.html').write_text(new_page('2018','<p>Archive.</p>'))
+        self.studio.state['standalone_pages'].append('year-2018.html')
+        self.studio.state['fragment_posts']['year-2018.html']=copy.deepcopy(source)|{'raw':(self.root/'year-2018.html').read_text(),'file_hash':digest((self.root/'year-2018.html').read_bytes())}
+        self.studio.save_state();reopened=Studio(self.root,self.base/'private')
+        self.assertIsNone(reopened.state['drafts']['index.html']['fragments'])
+        self.assertIsNone(reopened.state['fragment_posts']['year-2018.html']['fragments'])
+        self.assertEqual((self.root/'index.html').read_bytes(),before)
+
+    def test_page_save_cannot_reintroduce_fragment_metadata(self):
+        d=self.studio.page('index.html');d['fragments']=self.draft()['fragments'];self.studio.save_draft(d)
+        self.assertIsNone(self.studio.state['drafts']['index.html']['fragments'])
+
+    def test_fragment_dialog_names_the_actual_page(self):
+        script=(Path(__file__).parent/'static/app.js').read_text()
+        self.assertIn("e.code==='fragment-state'",script)
+        self.assertIn('openBrokenFragmentPage',script)
+        self.assertIn('affected===page?.name',script)
     def test_generation_provenance_belongs_to_each_fragment(self):
         d=self.draft();m=d['fragments'];m['blocks'][2]['html']='<div class="blyg-tk-gen"><h1>A generated heading</h1><p>First generated thought.</p></div>'
         d['raw']=new_page('Test title',''.join(b['html'] for b in m['blocks'][1:]))

@@ -4,6 +4,9 @@
 
 Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.3 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
 
+For a fuller explanation of the static-first design and how its workspaces and
+Blyg features fit together, see [How Blynger Works](HOW_BLYNGER_WORKS.md).
+
 ![Blynger’s desktop interface](docs/blynger-ui.svg)
 
 ### History
@@ -60,6 +63,16 @@ and guided first-run setup are not yet provided.
 Blynger targets the living Blyg 0.3 Level 2 specification. See
 <https://blygger.org/spec/0.3/> and the local interoperability notes in
 `QUOTING.md`, `FRAGMENTS.md`, `OPENERS.md`, and `READER.md`.
+
+## Acknowledgments
+
+Blynger was conceived and directed by Brady Dale, and its code was written by
+ChatGPT/Codex.
+
+The open-source [Blygger Studio](https://github.com/blygger/blygger-studio)
+project is an important reference client and source of implementation ideas.
+Blynger credits adapted work in its changelog and remains an independent
+application; reused ideas and code remain subject to their applicable license.
 
 ## Tests
 

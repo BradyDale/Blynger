@@ -1,4 +1,4 @@
-# Reader — current behavior in Blynger 0.9.18
+# Reader — current behavior in Blynger 0.9.29
 
 The protocol source of truth for this release was the live [Blyg 0.3 specification](https://blygger.org/spec/0.3/), checked against official specification source commit `ac932cfeeaa2872f8429c248c39307226bbc6d8a`. Human Blyg pages advertise their origin base with `rel="blyg"`; readers resolve that link and probe the fixed `blyg.json` manifest. Older implementation reports below are retained as history, not as the current feature boundary.
 
@@ -10,13 +10,44 @@ retain their real source titles.
 
 ## Sync and diagnostics
 
-Each subscription keeps conditional-response state (`ETag` and `Last-Modified`). An unchanged Blyg feed returning 304 ends the normal sync immediately. Blynger also recognizes an identical response body from servers without those cache headers. A changed feed conditionally checks the archive index, compares index versions with local watermarks, and downloads only changed/new canonical documents with at most four concurrent requests. Up to three independent subscriptions are checked concurrently, so one slow origin does not make every other origin wait behind it. Once daily, Blynger forces an archive-index and recent-item reconciliation so missed notifications and improper same-version edits are still detected. Ordinary RSS/Atom feeds likewise skip reparsing an identical body.
+Each subscription keeps conditional-response state (`ETag` and `Last-Modified`). An unchanged Blyg feed returning 304 ends the normal sync immediately. Blynger also recognizes an identical response body from servers without those cache headers. A changed feed conditionally checks the archive index, compares index versions with local watermarks, and downloads only changed/new canonical documents with at most four concurrent requests. Up to six independent subscriptions are checked concurrently, so one slow origin does not make every other origin wait behind it. Once daily, Blynger forces an archive-index and recent-item reconciliation so missed notifications and improper same-version edits are still detected. Ordinary RSS/Atom feeds retain only a response hash rather than a complete duplicate feed body. When channel metadata changes, per-entry hashes skip unchanged entries before sanitization and media inspection; a normalized-content comparison catches XML-only reformatting.
 
 The Reader rejects overlapping syncs, retains good cached content on failure, continues after an individual subscription fails, labels network versus invalid-data errors, and records duration, checked-item, and downloaded-item diagnostics. Reader network work uses a dedicated lock rather than Blynger's general authoring lock, so opening pages and saving drafts remain available during a refresh. Reader-dependent actions wait for a consistent cache snapshot. Opening Reader starts a sync; a 90-minute in-app timer repeats it while Reader remains open. Nothing survives Blynger's process as a background daemon.
 
 The reading desk shows one local **Last sync** date and time rather than per-subscription performance timings. Actual feed errors remain visible; detailed timing stays in private diagnostics for troubleshooting. The Saved shelf has its own local loading and item-count status rather than subscription-sync messages. Switching between Reader and Saved clears the prior list immediately, and delayed responses are discarded when they belong to a workspace the user has already left.
 
+Blyg-native items and ordinary Web/RSS items have separate badges and quiet
+background treatments in both the feed and opened-item view. Generated passages
+using the interoperable `blyg-tk-gen` class display the robot convention used by
+Blynger and Blygger Studio. When `generated[]` is present, Reader exposes the
+imported version-level model, date, and source-count claim and labels it as
+self-reported rather than verified.
+
 The Saved shelf records and displays the local date and time when an item is saved. Items saved before that field was introduced remain labeled honestly rather than receiving an invented timestamp.
+
+## Private signals and activity
+
+Like remains a separate local `👍` action. Reader also offers five private
+responses—`🤯`, `🙄`, `👎`, `😂`, and `❓`—with at most one of those responses
+active on an item at a time. A response does not replace Like, so both may be
+present. Setting, changing, and clearing these choices appends an event to the
+private activity history.
+
+**Saved → Private activity** lists Saved/unsaved, Like/unlike, emoji-response,
+published-quote, Stub, and fork actions newest first. Publication actions are
+recorded only after the website push succeeds, never when a draft button is
+clicked. Each remote target is keyed by origin plus item ID, so its record
+survives unsubscribing. The one-time migration reconstructs what it can from
+current markers and publication history and labels those entries as earlier
+records rather than inventing an original click time.
+
+The implementation is isolated in `interactions.py`, adapting the interaction
+log introduced by MIT-licensed Blygger Studio 0.28.1 at source revision
+`f036594c70542a4853ccd3ae985ebb37b85fae9d`. Blynger stores the actual records
+only inside `remote-reader/reader.json` beneath the configured private support
+directory. The source repository contains the mechanism, never the operator's
+log. Activity is excluded from HTML, Blyg objects, both RSS feeds, OPML, the
+website Git repository, and the sanitized public-source export.
 
 ## URLs and local reading state
 
@@ -39,7 +70,7 @@ source item directly into the editor before the response. This copy is normal
 editable material rather than a transclusion: it can be shortened or deleted,
 but doing so does not remove or change the response identity.
 
-Unsaved Reader items expire three years after immutable `first_downloaded_at`. Unsaved cached media may be cleared after one year while the text remains readable. **Saved** items and all their cached media are exempt indefinitely. **Liked** is a separate filter. Saved/Liked are local fields only: the current specification defines no reaction/thumb wire format, and Blynger emits neither in JSON, RSS, OPML, nor public HTML.
+Unsaved Reader items expire three years after immutable `first_downloaded_at`. Unsaved cached media may be cleared after one year while the text remains readable. **Saved** items and all their cached media are exempt indefinitely. **Liked** is a separate filter. Saved, Like, and emoji responses are local fields only: the current specification defines no reaction/thumb wire format, and Blynger emits none of them in JSON, RSS, OPML, nor public HTML.
 
 ## Forks, pins, and blogroll
 

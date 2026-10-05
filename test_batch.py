@@ -45,6 +45,17 @@ class ReaderBatchTests(unittest.TestCase):
         net=Net();url='https://feed.example/rss.xml';net.urls[url]=('<rss><channel><title>Feed</title><item><guid>one</guid><title>One</title><description>Text</description></item></channel></rss>','application/rss+xml');reader=Reader(self.data,net);sid=reader.subscribe(url)['subscriptions'][0]['id'];net.calls=[]
         result=reader.sync(sid)
         self.assertEqual(net.calls,[url]);self.assertIn('0 changed items',result['message']);self.assertEqual(reader.state['subscriptions'][sid]['last_result'],'unchanged')
+        self.assertIn('hash',reader.state['subscriptions'][sid]['feed_cache']);self.assertNotIn('body',reader.state['subscriptions'][sid]['feed_cache'])
+    def test_plain_feed_wrapper_change_does_not_reimport_unchanged_entries(self):
+        net=Net();url='https://feed.example/rss.xml';item='<item><guid>one</guid><title>One</title><description>Text</description></item>'
+        net.urls[url]=('<rss><channel><title>Feed</title><lastBuildDate>one</lastBuildDate>'+item+'</channel></rss>','application/rss+xml')
+        clock=['2026-01-02T00:00:00Z'];reader=Reader(self.data,net,lambda:clock[0]);sid=reader.subscribe(url)['subscriptions'][0]['id'];key=reader.key(url,'one');before=json.loads(json.dumps(reader.state['items'][key]))
+        net.urls[url]=('<rss><channel><title>Feed</title><lastBuildDate>two</lastBuildDate>'+item+'</channel></rss>','application/rss+xml');clock[0]='2026-01-03T00:00:00Z';result=reader.sync(sid)
+        self.assertIn('0 changed items',result['message']);self.assertEqual(reader.state['items'][key],before);self.assertEqual(reader.state['subscriptions'][sid]['last_downloaded'],0)
+    def test_plain_feed_xml_reformat_with_same_meaning_is_not_changed(self):
+        net=Net();url='https://feed.example/rss.xml';net.urls[url]=('<rss><channel><title>Feed</title><item><guid>one</guid><title>One</title><description>Text</description></item></channel></rss>','application/rss+xml');reader=Reader(self.data,net);sid=reader.subscribe(url)['subscriptions'][0]['id'];key=reader.key(url,'one');before=reader.state['items'][key]['observed_at']
+        net.urls[url]=('<rss><channel><title>Feed</title><item>\n<guid>one</guid><title>One</title><description>Text</description>\n</item></channel></rss>','application/rss+xml');result=reader.sync(sid)
+        self.assertIn('0 changed items',result['message']);self.assertEqual(reader.state['items'][key]['observed_at'],before)
     def test_distinct_subscriptions_check_concurrently(self):
         net=ConcurrentNet();other='https://other.example/';net.add();net.add(other,[doc(iid='0'*25+'2',origin=other)]);reader=Reader(self.data,net);reader.subscribe(ORIGIN);reader.subscribe(other);net.high_water=0
         reader.sync()
@@ -131,14 +142,16 @@ class StudioBatchTests(unittest.TestCase):
         page=self.s.create('October post',body='<p><br></p><blockquote class="blynger-citation" cite="https://source.example/"><p>Words</p><cite class="blynger-blockquote-source"><a href="https://source.example/">—source.example</a></cite></blockquote><div class="blyg-tk-gen"><p>Structure</p></div><p><br></p>');self.s.prepare();raw=(self.s.root/page['name']).read_text();iid=self.s.state['ids'][page['name']];doc=json.loads((self.s.root/f'blyg/items/{iid}.json').read_text());today=datetime.now().astimezone()
         self.assertIn(today.strftime('%B ')+str(today.day)+today.strftime(', %Y'),raw);self.assertIn('>RSS</a>',raw);self.assertIn('<blockquote cite="https://source.example/" class="blynger-citation">',doc['content_html']);self.assertIn('<cite class="blynger-blockquote-source">',doc['content_html']);self.assertIn('—source.example',raw);self.assertIn('class="blyg-tk-gen"',doc['content_html']);self.assertNotIn('<p><br/></p>',doc['content_html'])
     def test_local_markers_never_enter_protocol_output(self):
-        net=Net();net.add();self.s.reader=Reader(self.s.data,net,lambda:'2026-01-02T00:00:00Z');self.s.reader.subscribe(ORIGIN);key=self.s.reader.key(ORIGIN,IID);self.s.reader.mark(key,'saved',True);self.s.reader.mark(key,'liked',True);self.s.create('Ordinary');self.s.prepare();self.assertNotIn('"saved"',(self.s.root/'blyg/items/index.json').read_text());self.assertNotIn('"liked"',(self.s.root/'blyg/items/index.json').read_text())
+        net=Net();net.add();self.s.reader=Reader(self.s.data,net,lambda:'2026-01-02T00:00:00Z');self.s.reader.subscribe(ORIGIN);key=self.s.reader.key(ORIGIN,IID);self.s.reader.mark(key,'saved',True);self.s.reader.mark(key,'liked',True);self.s.reader.react(key,'🤯');self.s.create('Ordinary');self.s.prepare();public=(self.s.root/'blyg/items/index.json').read_text();self.assertNotIn('"saved"',public);self.assertNotIn('"liked"',public);self.assertNotIn('"reaction"',public);self.assertNotIn('"interactions"',public)
     def test_ui_contains_localized_controls_and_states(self):
         app=(Path(__file__).parent/'static/app.js').read_text();html=(Path(__file__).parent/'static/index.html').read_text();fragments=(Path(__file__).parent/'static/fragments.js').read_text()
         for text in ('reader-open','Open original','90*60*1000','Posting','b.textContent=\'Close\'','sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft'):self.assertIn(text,app)
         for identifier in ('readerViewFilter','readerBlogroll','readerManage','removeFragment','blockquote','sourceFindText','queue','pinOnPublish','responseMarker'):self.assertIn('id="'+identifier+'"',html)
         self.assertIn("modal('Manage subscriptions'",app);self.assertIn("api('reader-blogroll'",app);self.assertIn('Saved and Liked posts are kept',app);self.assertIn('saved for the next publication',app)
+        self.assertIn("modal('Add link'",app);self.assertIn('year-2018.html',app);self.assertIn('reader-source-badge',app);self.assertIn('reader-generated',app);self.assertIn('What the author disclosed',app)
         self.assertNotIn("$('source').readOnly=!!fragmentEditor.meta",app);self.assertIn('addDivider()',fragments);self.assertIn('removeDivider()',fragments);self.assertIn('replace(html)',fragments)
-        self.assertIn('editor-safety.js',html);self.assertIn('saveQueue.enqueue(saveOnce)',app);self.assertIn('pageRequests.accepts(ticket,editRevision)',app);self.assertIn('if(requireClean&&dirty)',app)
+        self.assertIn('this.lockTransclusions();let repaired=false;if(this.meta)',fragments)
+        self.assertIn('editor-safety.js',html);self.assertIn('saveQueue.enqueue(()=>saveOnce(clearFragments))',app);self.assertIn('clear_fragments:clearFragments',app);self.assertIn('pageRequests.accepts(ticket,editRevision)',app);self.assertIn('if(requireClean&&dirty)',app)
         self.assertLess(app.index('pageRequests.accepts(ticket,editRevision)'),app.index('currentWorkspace=workspaceForPage(page)'))
         self.assertIn("const p=await api('new'",app);self.assertIn('await openPage(p.name)',app)
 

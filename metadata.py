@@ -24,6 +24,9 @@ def discovery_markup(config,blyg=False,rss=False,item_json=None):
     if item_json:lines.append('<link rel="alternate" type="application/json" href="'+html.escape(item_json,quote=True)+'">')
     return '\n'.join(lines)
 
+def favicon_markup(config):
+    return '<link rel="icon" type="image/png" href="'+html.escape(config['favicon'],quote=True)+'">' if config.get('favicon') else ''
+
 def enrich(raw,name,root,published=None,modified=None,standalone=False,config=None,item_json=None,blyg_item=None,blyg_discovery=None,rss_discovery=None):
     config=config or DEFAULT_SETTINGS; site=config['site_url'].rstrip('/')+'/'; author=config['author_name']
     main_pages=set(config.get('main_pages',[]))
@@ -124,7 +127,7 @@ def enrich(raw,name,root,published=None,modified=None,standalone=False,config=No
     oldhead=re.sub(r'<script\b[^>]*id=[\"\']blynger-structured-data[\"\'][^>]*>.*?</script\s*>[ \t]*(?:\r?\n)?','',oldhead,flags=re.I|re.S)
     oldhead=re.sub(r'(?:\r?\n)?<title\b[^>]*>.*?</title\s*>[ \t]*(?:\r?\n)?','',oldhead,flags=re.I|re.S)
     lines=['<title>'+html.escape(title)+'</title>']
-    if config.get('favicon'):lines.append('<link rel="icon" type="image/png" href="'+html.escape(config['favicon'],quote=True)+'">')
+    if favicon_markup(config):lines.append(favicon_markup(config))
     lines += ['<meta '+kind+'="'+key+'" content="'+html.escape(str(value),quote=True)+'">' for kind,data in [('name',metas),('property',props)] for key,value in data.items()]
     lines += ['<link rel="canonical" href="'+canonical+'">']
     links=discovery_markup(config,blyg_discovery,rss_discovery,item_json)

@@ -60,3 +60,14 @@ class TKLinkTests(unittest.TestCase):
         self.studio.save_draft(d);self.studio.prepare()
         published=(self.root/'1.html').read_text()
         self.assertIn(old,published);self.assertNotIn('data:image/svg+xml',published)
+    def test_public_robot_discloses_without_changing_protocol_content(self):
+        provenance={'sources':[{'id':'0'*25+'1'}],'model':'test-model','at':'2026-10-05T12:00:00Z'}
+        d=self.studio.create('Disclosing robot');d['raw']=d['raw'].replace('<p>Start writing here.</p>','<div class="blyg-tk-gen"><p>Generated words.</p></div>');d['generated']=[provenance];d['pin_on_publish']=True;self.studio.save_draft(d)
+        self.studio.prepare();page=(self.root/d['name']).read_text();soup=BeautifulSoup(page,'html.parser');iid=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        self.assertEqual(json.loads(soup.article['data-generated']),[provenance]);self.assertIsNotNone(soup.find('style',id='blynger-generation-disclosure-style'));self.assertIsNotNone(soup.find('script',id='blynger-generation-disclosure-script'))
+        self.assertNotIn('data-generated',doc['content_html']);self.assertNotIn('blynger-gen-badge',doc['content_html']);self.assertEqual(doc['generated'],[provenance])
+        frozen=BeautifulSoup((self.root/f'blyg/f/{iid}/v1/index.html').read_text(),'html.parser');self.assertEqual(json.loads(frozen.article['data-generated']),[provenance]);self.assertIsNotNone(frozen.find('script',id='blynger-generation-disclosure-script'))
+        first=page;self.studio.prepare();self.assertEqual((self.root/d['name']).read_text(),first)
+    def test_disclosure_script_labels_claim_and_quoted_author(self):
+        from generation_disclosure import SCRIPT
+        self.assertIn('Self-reported, not verified.',SCRIPT);self.assertIn('quoted author marked this text',SCRIPT);self.assertIn("e.key==='Escape'",SCRIPT)

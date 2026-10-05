@@ -126,6 +126,27 @@ class ReaderTests(unittest.TestCase):
         d=doc();d['content_html']='<img src="media/avatar.png" width="16" height="16" alt="avatar">';self.net.add(items=[d]);self.net.urls[ORIGIN+'media/avatar.png']=(b'icon','image/png');self.sub();self.assertFalse(self.item()['has_visual_media'])
     def test_origin_claim_does_not_replace_fetch_identity(self):
         self.net.urls[ORIGIN+'blyg.json'][0]['site']='https://imposter.example/';self.sub();self.assertEqual(self.item()['origin'],ORIGIN);self.assertTrue(self.r.state['subscriptions'][digest(ORIGIN)]['warning'])
+    def test_like_and_private_responses_are_distinct_and_append_only(self):
+        self.sub();key=self.r.key(ORIGIN,IID)
+        self.r.mark(key,'liked',True);self.r.react(key,'🤯');self.r.react(key,'🙄');self.r.react(key,'🙄')
+        item=self.r.item(key);self.assertTrue(item['liked']);self.assertIsNone(item['reaction'])
+        rows=self.r.interactions();self.assertEqual([row['kind'] for row in rows],['reaction_clear','reaction','reaction','like'])
+        self.assertEqual(rows[1]['reaction'],'🙄');self.assertEqual(rows[2]['reaction'],'🤯')
+        reloaded=Reader(self.data,self.net,lambda:self.time);self.assertTrue(reloaded.item(key)['liked']);self.assertIsNone(reloaded.item(key)['reaction']);self.assertEqual(len(reloaded.interactions()),4)
+    def test_private_response_allowlist_and_search(self):
+        self.sub();key=self.r.key(ORIGIN,IID)
+        for reaction in ('🤯','🙄','👎','😂','❓'):self.r.react(key,reaction)
+        with self.assertRaisesRegex(ValueError,'Unknown private response'):self.r.react(key,'🔥')
+        self.assertEqual(self.r.item(key)['reaction'],'❓');self.assertEqual(len(self.r.interactions('remote words')),5)
+    def test_existing_markers_backfill_without_entering_item_document(self):
+        self.sub();key=self.r.key(ORIGIN,IID);self.r.state['items'][key].update(saved=True,saved_at=self.time,liked=True,reaction='😂');self.r.state.pop('interaction_marker_backfill_v1',None);self.r.state['interactions']=[];self.r.state['interaction_seq']=0;self.r.save()
+        reloaded=Reader(self.data,self.net,lambda:self.time);self.assertEqual({row['kind'] for row in reloaded.interactions()},{'save','like','reaction'});self.assertTrue(all(row['backfilled'] for row in reloaded.interactions()));self.assertNotIn('interactions',reloaded.item(key)['doc'])
+    def test_publication_interactions_dedupe_and_ignore_own_origin(self):
+        self.sub();own='https://mine.example/blyg/';remote={'origin':ORIGIN,'id':IID,'version':1};local={'origin':own,'id':'0'*25+'2','version':1}
+        current={'id':'0'*25+'3','version':1,'created':self.time,'updated':self.time,'transclusions':[remote,local],'stub_of':remote,'forked_from':remote}
+        self.r.own_origin=own;self.r.record_publications({}, {current['id']:current});self.r.record_publications({}, {current['id']:current})
+        self.assertEqual([row['kind'] for row in reversed(self.r.interactions())],['quote','stub','fork'])
+        self.assertTrue(all(row['origin']==ORIGIN for row in self.r.interactions()))
 
 class ReaderPublicationTests(unittest.TestCase):
     def setUp(self):
@@ -216,11 +237,13 @@ class ReaderPublicationTests(unittest.TestCase):
         q=self.s.quote_item('remote',self.s.reader.key(ORIGIN,IID));page=self.s.create('Picture response');page['raw']=page['raw'].replace('<p>Start writing here.</p>',q['html']);self.s.save_draft(page)
         remote=self.fixture.base/'remote.git';subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True);self.s.git('remote','add','website',str(remote));review=self.s.prepare();self.s.publish(review['signature'])
         iid=self.s.state['ids'][page['name']];before=json.loads((self.s.root/f'blyg/items/{iid}.json').read_text());assets=list((self.s.root/'blyg/media').glob('*'));self.assertTrue(assets)
+        quote_actions=[row for row in self.s.reader.interactions() if row['kind']=='quote' and row.get('own_item_id')==iid]
+        self.assertEqual(len(quote_actions),1);self.assertEqual(quote_actions[0]['remote_id'],IID)
         self.s.reader.clock=lambda:'2028-01-01T00:00:00Z';self.s.reader.cleanup();self.assertEqual(len(self.s.reader.listing()),1);self.assertTrue(all(p.exists() for p in assets));self.net.calls=[];self.net.urls={}
         self.s.create('Unrelated post');self.s.prepare();after=json.loads((self.s.root/f'blyg/items/{iid}.json').read_text());self.assertEqual(before['content_html'],after['content_html']);self.assertEqual(before['version'],after['version']);self.assertEqual(self.net.calls,[])
     def test_local_thread_reference_and_indirect_cycle(self):
         self.s.migrate();self.s.state['published']={p.stem:json.loads(p.read_text()) for p in (self.s.root/'blyg/items').glob('*.json') if p.name!='index.json'}
-        iid=self.s.state['ids']['1.html'];self.s.state['published'][iid]['kind']='thread';q=self.s.quote_item('local',iid);self.assertEqual(q['kind'],'thread');page=self.s.create('Local quote');page['raw']=page['raw'].replace('<p>Start writing here.</p>',q['html']);self.s.save_draft(page);self.s.prepare();own=self.s.state['ids'][page['name']];output=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(output['transclusions'],[{'id':iid,'version':1}]);self.assertIn('Original',output['content_html'])
+        iid=self.s.state['ids']['1.html'];self.s.state['published'][iid]['kind']='thread';self.s.state['published'][iid]['transclusions']=[];q=self.s.quote_item('local',iid);self.assertEqual(q['kind'],'thread');page=self.s.create('Local quote');page['raw']=page['raw'].replace('<p>Start writing here.</p>',q['html']);self.s.save_draft(page);self.s.prepare();own=self.s.state['ids'][page['name']];output=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(output['transclusions'],[{'id':iid,'version':1}]);self.assertIn('Original',output['content_html'])
         self.s.state['published'][iid]['transclusions']=[{'id':own,'version':1}]
         with self.assertRaisesRegex(ValueError,'cannot quote itself'):self.s.prepare()
 

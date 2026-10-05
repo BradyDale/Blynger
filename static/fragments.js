@@ -10,17 +10,31 @@ class FragmentEditor {
  }
  lockTransclusions(){for(const quote of this.editor.querySelectorAll('blockquote.blynger-citation.blyg-transclusion'))quote.setAttribute('contenteditable','false');}
  id(){return 'b'+crypto.randomUUID().replaceAll('-','');}
+ expandMeta(meta,els){
+  const expanded=structuredClone(meta),mapping=new Map(),meaningful=el=>el.textContent.trim()||el.querySelector('img,audio,video,br'),signature=el=>publicImages(el.outerHTML).replace(/\s+/g,' ').trim();
+  const actual=els.filter(meaningful),plans=[];for(const block of expanded.blocks||[]){const holder=document.createElement('div');holder.innerHTML=block.html;plans.push({id:block.id,children:[...holder.children].filter(meaningful)});}
+  const expected=plans.flatMap(plan=>plan.children);if(expected.length!==actual.length||expected.some((el,i)=>signature(el)!==signature(actual[i])))return null;
+  const ids=new Map(),used=new Set();let cursor=0;for(const plan of plans){const first=actual[cursor];if(first){ids.set(first,plan.id);used.add(plan.id);mapping.set(plan.id,plan.id);}cursor+=plan.children.length;}
+  const blocks=els.map(el=>{let id=ids.get(el);if(!id){do{id=this.id();}while(used.has(id));used.add(id);}return {id,html:publicImages(el.outerHTML)};});
+  expanded.blocks=blocks;expanded.dividers=(expanded.dividers||[]).map(id=>mapping.get(id)||id);for(const range of expanded.ranges||[]){range.start=mapping.get(range.start)||range.start;if(range.end!==null)range.end=mapping.get(range.end)||range.end;}return expanded;
+ }
+ syncHeadingDividers(){
+  if(!this.meta||this.meta.purpose==='openers')return false;let changed=false;
+  for(const heading of this.editor.querySelectorAll(':scope > h2')){const id=heading.dataset.fragmentBlock;if(id&&!this.meta.dividers.includes(id)){this.meta.dividers.push(id);changed=true;}}
+  if(changed){const prior=this.meta.ranges||[];this.meta.ranges=this.sections().map(range=>({...range,key:prior.find(old=>old.start===range.start)?.key||range.start}));this.meta.ordinary=[];}
+  return changed;
+ }
  excluded(el){const t=(el.innerText||el.textContent).trim(),author=(document.querySelector('meta[name="blynger-author"]')?.content||'').trim();return t.includes('![[')||el.matches('blockquote.blyg-transclusion,blockquote.blynger-citation')||!!el.querySelector('blockquote.blyg-transclusion,blockquote.blynger-citation')||el.matches('h1')||(author&&new RegExp('^(?:[—–-]\\s*)?(?:By\\s+)?'+author.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','i').test(t))||/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}$/.test(t);}
  assign(){
   // Only opt-in posts acquire private block anchors; legacy prose remains untouched.
   for(const n of [...this.editor.childNodes])if(n.nodeType===3&&n.textContent.trim()){const p=document.createElement('p');n.replaceWith(p);p.append(n);}
   const seen=new Set();for(const el of this.editor.children){let id=el.dataset.fragmentBlock;if(!id||seen.has(id))el.dataset.fragmentBlock=id=this.id();seen.add(id);}
-  const order=[...this.editor.children].map(e=>e.dataset.fragmentBlock);
+  const order=[...this.editor.children].map(e=>e.dataset.fragmentBlock);let repaired=false;
   if(this.meta){
    // A contenteditable merge or deletion can remove the paragraph carrying a
    // private boundary. Move that boundary to the next surviving paragraph (or
    // remove it at the end) so an invisible editor anchor can never trap prose.
-   const priorOrder=this.order.slice(),live=new Set(order),next=id=>{const at=priorOrder.indexOf(id);if(at<0)return null;for(let i=at+1;i<priorOrder.length;i++)if(live.has(priorOrder[i]))return priorOrder[i];return null;};let repaired=false;
+   const priorOrder=this.order.slice(),live=new Set(order),next=id=>{const at=priorOrder.indexOf(id);if(at<0)return null;for(let i=at+1;i<priorOrder.length;i++)if(live.has(priorOrder[i]))return priorOrder[i];return null;};
    if(priorOrder.length){
     const dividers=[];for(const id of this.meta.dividers||[]){const replacement=live.has(id)?id:next(id);if(replacement!==id)repaired=true;const el=replacement&&[...this.editor.children].find(n=>n.dataset.fragmentBlock===replacement);if(el&&!this.excluded(el)&&!dividers.includes(replacement))dividers.push(replacement);else if(replacement)repaired=true;}this.meta.dividers=dividers;
     const ranges=[];for(const original of this.meta.ranges||[]){let start=original.start,end=original.end;if(!live.has(start)){start=next(start);repaired=true;}if(end!==null&&!live.has(end)){end=next(end);repaired=true;}const a=start?order.indexOf(start):-1,z=end?order.indexOf(end):order.length;if(a<0||z<=a){repaired=true;continue;}ranges.push({...original,start,end});}this.meta.ranges=ranges;
@@ -33,7 +47,7 @@ class FragmentEditor {
   }
   this.order=order;
  }
- load(meta){this.order=[];this.ends=new Map();this.meta=meta?structuredClone(meta):null;this.lockTransclusions();if(this.meta){this.assign();const els=[...this.editor.children];if(els.length!==meta.blocks.length){this.notify('Fragment layout changed; review boundaries before saving.');return;}els.forEach((el,i)=>el.dataset.fragmentBlock=meta.blocks[i].id);this.assign();if(this.meta.purpose==='openers')this.syncOpeners();}this.draw();}
+ load(meta){this.order=[];this.ends=new Map();this.meta=meta?structuredClone(meta):null;this.lockTransclusions();let repaired=false;if(this.meta){const els=[...this.editor.children];if(els.length!==this.meta.blocks.length){const expanded=this.expandMeta(this.meta,els);if(expanded){this.meta=expanded;repaired=true;}else {this.notify('Fragment layout changed; review boundaries before saving.');return false;}}els.forEach((el,i)=>el.dataset.fragmentBlock=this.meta.blocks[i].id);this.assign();if(this.meta.purpose==='openers')this.syncOpeners();else if(this.syncHeadingDividers())repaired=true;if(repaired){this.changed();this.notify('Blynger repaired the page structure and added fragment breaks for its H2 headings. Your writing is unchanged.');}}this.draw();return repaired;}
  replace(html){
   const previous=this.meta?.blocks||[],queues=new Map(),used=new Set();
   const signature=value=>publicImages(value).replace(/\s+/g,' ').trim();

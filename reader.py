@@ -8,11 +8,13 @@ from urllib.parse import urlsplit, urlunsplit, urljoin
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from core import atomic, clean, digest, now
+import interactions as interaction_log
 
 ID=re.compile(r'^[0-7][0-9a-hjkmnp-tv-z]{25}$')
 ASSET=re.compile(r'^[a-f0-9]{64}\.(png|jpg|gif|webp|avif|mp4|webm|ogg|mp3)$')
 MIMES={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp','image/avif':'avif','video/mp4':'mp4','video/webm':'webm','video/ogg':'ogg','audio/mpeg':'mp3','audio/ogg':'ogg'}
 NS='https://blygger.org/ns/0.1'
+REACTIONS=('🤯','🙄','👎','😂','❓')
 def timestamp(value):
     try:return datetime.fromisoformat(value.replace('Z','+00:00')).astimezone(timezone.utc)
     except (ValueError,AttributeError,TypeError):raise ValueError('Invalid Blyg timestamp.')
@@ -59,8 +61,10 @@ class Reader:
         self.file=self.root/'reader.json';self.clock=clock;self.fetch=fetcher or fetch;self.own_origin=own_origin
         self.state=json.loads(self.file.read_text()) if self.file.exists() else {'subscriptions':{},'items':{},'watermarks':{}}
         self.state.setdefault('subscriptions',{});self.state.setdefault('items',{});self.state.setdefault('watermarks',{})
+        self.state.setdefault('interactions',[]);self.state.setdefault('interaction_seq',0)
         self._sync_lock=threading.Lock()
         self.cleanup_legacy_comment_feeds()
+        self.backfill_markers()
         self.cleanup()
     def save(self):atomic(self.file,json.dumps(self.state,ensure_ascii=False,indent=2))
     def cleanup_legacy_comment_feeds(self):
@@ -79,7 +83,7 @@ class Reader:
             if not unmistakable:continue
             sub['active']=False;sub['blogroll']=False;sub['removed_reason']='Legacy Reader link opened a WordPress comments feed.';changed=True
             for key,item in list(self.state['items'].items()):
-                if item.get('subscription')==sid and not item.get('saved') and not item.get('liked'):del self.state['items'][key]
+                if item.get('subscription')==sid and not item.get('saved') and not item.get('reaction') and not item.get('liked'):del self.state['items'][key]
         self.state['comment_feed_cleanup_v1']=True
         self.save()
     def key(self,origin,iid):return digest(origin+'\0'+iid)
@@ -192,8 +196,11 @@ class Reader:
         final,body,h,status=self.fetch(sub['origin'],headers=headers)
         if status==304:
             return 0
-        text=body.decode('utf-8');unchanged=old.get('body')==text
-        sub['feed_cache']={'body':text,'etag':next((v for k,v in h.items() if k.lower()=='etag'),None),'modified':next((v for k,v in h.items() if k.lower()=='last-modified'),None)}
+        body_hash=digest(body);unchanged=old.get('hash')==body_hash or old.get('body')==body.decode('utf-8')
+        # Ordinary feeds do not need their complete response body to interpret a
+        # later 304. Keeping only a digest makes the private cache dramatically
+        # smaller for large feeds while preserving validator-less comparison.
+        sub['feed_cache']={'hash':body_hash,'etag':next((v for k,v in h.items() if k.lower()=='etag'),None),'modified':next((v for k,v in h.items() if k.lower()=='last-modified'),None)}
         if unchanged:return 0
         try:root=ET.fromstring(body)
         except ET.ParseError:raise ValueError('Invalid RSS or Atom feed.')
@@ -226,6 +233,9 @@ class Reader:
             url=urljoin(final,link) if link else final
             if urlsplit(url).scheme not in ('http','https'):url=final
             key=self.key(sub['origin'],identity);previous=self.state['items'].get(key,{})
+            entry_hash=digest(ET.tostring(entry,encoding='utf-8'))
+            if previous and previous.get('feed_entry_hash')==entry_hash:
+                continue
             try:at=timestamp(date).isoformat().replace('+00:00','Z')
             except ValueError:
                 try:at=parsedate_to_datetime(date).astimezone(timezone.utc).isoformat().replace('+00:00','Z')
@@ -241,8 +251,18 @@ class Reader:
             source_label=title.strip() if isinstance(title,str) and title.strip() else url
             content='<p class="reader-l0-source"><a href="'+html.escape(url,quote=True)+'">'+html.escape(source_label)+'</a></p>'+content
             doc={'title':title,'url':url,'author':{'name':author} if author else {},'created':at,'updated':at,'content_html':clean(content),'content_md':BeautifulSoup(content,'html.parser').get_text(' ',strip=True),'media':[]}
+            doc_hash=digest(json.dumps(doc,sort_keys=True,ensure_ascii=False))
+            previous_hash=previous.get('feed_content_hash')
+            if previous and not previous_hash:
+                previous_hash=digest(json.dumps(previous.get('doc',{}),sort_keys=True,ensure_ascii=False))
+            if previous and previous_hash==doc_hash:
+                # A publisher may reformat its XML or change channel metadata
+                # without changing this entry. Remember the new wire hash but
+                # leave observation time, media and local markers untouched.
+                previous['feed_entry_hash']=entry_hash;previous['feed_content_hash']=doc_hash
+                continue
             assets,visual,issues=self.download_assets(doc,url,previous)
-            self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':sub['origin'],'source_type':'l0','feed_identity':identity,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False)}
+            self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':sub['origin'],'source_type':'l0','feed_identity':identity,'feed_entry_hash':entry_hash,'feed_content_hash':doc_hash,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction')}
             count+=1
         return count
     def download_assets(self,doc,origin,previous):
@@ -352,7 +372,7 @@ class Reader:
                     self.state['watermarks'][key]={'version':v,'hash':actual}
                     if doc['kind']=='withdrawn':self.state['items'].pop(key,None);continue
                     assets,visual,issues=self.download_assets(doc,origin,old);warnings.extend(issues)
-                    self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':origin,'doc':doc,'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock() if v!=water.get('version') else old.get('observed_at',self.clock()),'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),'liked':old.get('liked',False)}
+                    self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':origin,'doc':doc,'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock() if v!=water.get('version') else old.get('observed_at',self.clock()),'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),'liked':old.get('liked',False),'reaction':old.get('reaction')}
                     downloaded+=1
                 except (ValueError,TypeError,AttributeError) as e:warnings.append(str(e))
             sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=warnings;sub['last_result']='updated' if downloaded else 'unchanged';return downloaded
@@ -367,7 +387,9 @@ class Reader:
             self.cleanup();subs=self.state['subscriptions'];targets=[subs[sid]] if sid in subs and subs[sid].get('active',True) else [s for s in subs.values() if s.get('active',True)] if sid is None else []
             if sid is not None and not targets:raise ValueError('Unknown subscription.')
             if len(targets)>1:
-                with ThreadPoolExecutor(max_workers=min(3,len(targets))) as pool:imported=sum(pool.map(self._sync_subscription,targets))
+                # Origins are independent. Six workers keep a mixed Reader from
+                # waiting in long serial batches without hammering any one site.
+                with ThreadPoolExecutor(max_workers=min(6,len(targets))) as pool:imported=sum(pool.map(self._sync_subscription,targets))
             else:imported=sum(self._sync_subscription(sub) for sub in targets)
             self.save();self.cleanup()
             return {'message':f'Sync finished in {time.monotonic()-started:.1f}s: {imported} changed items.','subscriptions':list(subs.values())}
@@ -386,7 +408,7 @@ class Reader:
             text=BeautifulSoup(d['content_html'],'html.parser').get_text(' ',strip=True)
             if query.lower() not in (text+' '+str(name)+' '+sub['title']).lower():continue
             published=d.get('created') or d.get('updated') or item['first_downloaded_at'];first_seen=item.get('first_downloaded_at',item.get('observed_at',published))
-            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'sort':min(published,first_seen),'title':self.display_title(item),'excerpt':text[:280],'url':self.page_url(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked'))})
+            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'sort':min(published,first_seen),'title':self.display_title(item),'excerpt':text[:280],'url':self.page_url(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction')})
         return sorted(out,key=lambda i:(i['sort'],i['key']),reverse=True)
     def mark(self,key,field,value):
         if field not in ('saved','liked'):raise ValueError('Unknown Reader marker.')
@@ -395,7 +417,52 @@ class Reader:
         if field=='saved':
             if value:item['saved_at']=self.clock()
             else:item.pop('saved_at',None)
+        interaction_log.marker(self.state,item,field,value,self.clock(),self.display_title(item))
         self.save();return {'message':('Saved' if field=='saved' else 'Liked') if value else ('Removed from Saved' if field=='saved' else 'Removed from Liked')}
+    def react(self,key,reaction):
+        if key not in self.state['items']:raise ValueError('That Reader item is no longer available.')
+        if reaction is not None and reaction not in REACTIONS:raise ValueError('Unknown private response.')
+        item=self.state['items'][key];previous=item.get('reaction')
+        value=None if reaction==previous else reaction
+        item['reaction']=value
+        interaction_log.reaction(self.state,item,value,self.clock(),self.display_title(item),previous)
+        self.save();return {'message':'Private response saved.' if value else 'Private response cleared.','reaction':value}
+    def interactions(self,query=''):
+        return interaction_log.view(self.state.get('interactions',[]),query)
+    def _interaction_label(self,origin,iid):
+        item=self.state['items'].get(self.key(origin,iid))
+        if not item:return {'label':iid,'target_url':origin,'source_type':'blyg'}
+        return {'label':self.display_title(item),'target_url':self.page_url(item),'source_type':item.get('source_type','blyg')}
+    def record_publications(self,previous,current,backfilled=False):
+        changed=False
+        for iid,doc in current.items():
+            before=previous.get(iid)
+            if before and int(before.get('version',0))>=int(doc.get('version',0)):continue
+            for entry in interaction_log.publication_entries(before,doc,self.own_origin,self._interaction_label,backfilled):
+                changed=interaction_log.append(self.state,entry) or changed
+        if changed:self.save()
+        return changed
+    def backfill_markers(self):
+        if self.state.get('interaction_marker_backfill_v1'):return
+        for item in self.state['items'].values():
+            label=self.display_title(item)
+            if item.get('saved'):
+                interaction_log.marker(self.state,item,'saved',True,item.get('saved_at') or self.clock(),label,True)
+            if item.get('liked'):
+                interaction_log.marker(self.state,item,'liked',True,self.clock(),label,True)
+            reaction=item.get('reaction')
+            if reaction in REACTIONS:
+                interaction_log.reaction(self.state,item,reaction,self.clock(),label,None,True)
+        self.state['interaction_marker_backfill_v1']=True;self.save()
+    def backfill_publications(self,history):
+        if self.state.get('interaction_publication_backfill_v1'):return
+        for versions in history.values():
+            before=None
+            for version in sorted(versions,key=lambda value:int(value)):
+                doc=versions[version]
+                self.record_publications({doc.get('id'):before} if before else {},{doc.get('id'):doc},True)
+                before=doc
+        self.state['interaction_publication_backfill_v1']=True;self.save()
     def set_blogroll(self,sid,value):
         if sid not in self.state['subscriptions']:raise ValueError('Unknown subscription.')
         self.state['subscriptions'][sid]['blogroll']=bool(value);self.save();return {'message':'Blogroll choice saved locally.'}
@@ -403,7 +470,7 @@ class Reader:
         if sid not in self.state['subscriptions'] or not self.state['subscriptions'][sid].get('active',True):raise ValueError('Unknown subscription.')
         sub=self.state['subscriptions'][sid];sub['active']=False;sub['blogroll']=False
         for key,item in list(self.state['items'].items()):
-            if item.get('subscription')==sid and not item.get('saved') and not item.get('liked'):del self.state['items'][key]
+            if item.get('subscription')==sid and not item.get('saved') and not item.get('reaction') and not item.get('liked'):del self.state['items'][key]
         self.save();self.cleanup();return {'message':'Subscription removed. Saved and Liked posts remain on this Mac.'}
     def open_url(self,url,allow_subscription=True):
         """Open a Blyg/feed URL normally, or retain a sanitized one-page web item."""
@@ -426,7 +493,7 @@ class Reader:
             self.state['subscriptions'].setdefault(sid,{'id':sid,'origin':url,'title':urlsplit(final).netloc,'type':'web','added_at':self.clock(),'blogroll':False,'active':True})
             doc={'title':title,'url':final,'author':{},'created':previous.get('doc',{}).get('created',self.clock()),'updated':self.clock(),'content_html':markup,'content_md':BeautifulSoup(markup,'html.parser').get_text(' ',strip=True),'media':[]}
             assets,visual,warnings=self.download_assets(doc,final,previous)
-            self.state['items'][key]={'key':key,'subscription':sid,'origin':url,'source_type':'web','feed_identity':url,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False)}
+            self.state['items'][key]={'key':key,'subscription':sid,'origin':url,'source_type':'web','feed_identity':url,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction')}
             self.state['subscriptions'][sid].update(last_sync=self.clock(),error='',warnings=warnings)
             self.save();return {'message':'Opened a sanitized web page in Reader.','selected':key,'subscriptions':list(self.state['subscriptions'].values())}
     def fork_source(self,key,version=None):

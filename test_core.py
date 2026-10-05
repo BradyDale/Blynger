@@ -28,7 +28,12 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(rss.find('./channel/{'+NS+'}manifest').text,self.studio.origin+'blyg.json')
         links=rss.findall('./channel/{http://www.w3.org/2005/Atom}link'); self.assertEqual(len(links),1)
         self.assertEqual(links[0].attrib,{'href':self.studio.origin+'feed.xml','rel':'self','type':'application/rss+xml'})
-        manifest=json.loads((self.root/'blyg/blyg.json').read_text());self.assertEqual(manifest['level'],2);self.assertEqual(manifest['feed'],'feed.xml');self.assertEqual(manifest['items'],'items/index.json')
+        manifest=json.loads((self.root/'blyg/blyg.json').read_text());self.assertEqual(manifest['level'],2);self.assertEqual(manifest['feed'],'feed.xml');self.assertEqual(manifest['items'],'items/index.json');self.assertEqual(manifest['generator_url'],'https://github.com/BradyDale/Blynger')
+
+    def test_blyg_index_uses_configured_favicon(self):
+        self.studio.config['favicon']='/images/favicon.png';self.studio.migrate()
+        soup=__import__('bs4').BeautifulSoup((self.root/'blyg/index.html').read_text(),'html.parser')
+        self.assertEqual([link['href'] for link in soup.find_all('link',rel='icon')],['/images/favicon.png'])
         blyg_home=__import__('bs4').BeautifulSoup((self.root/'blyg/index.html').read_text(),'html.parser');self.assertEqual(blyg_home.find('link',rel='blyg')['href'],'/blyg/');self.assertEqual(blyg_home.find('link',rel='alternate',type='application/rss+xml')['href'],'/feed.xml')
 
     def test_plain_blyg_id_link_is_a_link_not_a_transclusion(self):
@@ -83,11 +88,22 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.studio.create('After that')['name'],'44.html')
         self.assertIn('Keep this too',(self.root/'2026-09-25-new-post.html').read_text())
 
+    def test_standalone_page_does_not_advance_post_sequence(self):
+        self.studio.create_page('Archive for 2018','year-2018.html')
+        self.assertEqual(self.studio.create('Next post')['name'],'2.html')
+
     def test_new_post_pin_choice_defaults_off_persists_and_prepares_pin(self):
         d=self.studio.create('Pin choice');self.assertTrue(d['pin_available']);self.assertFalse(d['pin_on_publish'])
         d['pin_on_publish']=True;self.studio.save_draft(d);self.assertTrue(Studio(self.root,self.studio.data).page(d['name'])['pin_on_publish'])
         review=self.studio.prepare();iid=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         self.assertTrue(doc['changelog'][-1]['pinned']);self.assertTrue((self.root/f'blyg/items/{iid}/v1.json').exists());self.assertEqual(review['planned_pins'],1)
+
+    def test_later_post_revision_can_be_pinned_from_editor(self):
+        remote=self.base/'later-pin.git';subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True);self.studio.git('remote','add','website',str(remote))
+        d=self.studio.create('Later pin');review=self.studio.prepare();self.studio.publish(review['signature']);self.assertTrue(self.studio.page(d['name'])['pin_available'])
+        revised=self.studio.revise(d['name'],'Second version');revised['raw']=revised['raw'].replace('Start writing here.','Changed later.');revised['pin_on_publish']=True;self.studio.save_draft(revised)
+        review=self.studio.prepare();iid=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        self.assertEqual(doc['version'],2);self.assertTrue(doc['changelog'][-1]['pinned']);self.assertEqual(review['planned_pins'],1)
 
     def test_authored_quotes_become_ascii_but_quoted_and_forked_text_stays_exact(self):
         d=self.studio.create('Quotes');d['raw']=d['raw'].replace('Start writing here.','“Authored” isn’t curly. <blockquote class="blynger-citation"><p>“Exact source”</p></blockquote>');self.studio.save_draft(d);saved=self.studio.page(d['name'])['raw']
@@ -126,7 +142,7 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.studio.create('Next post')['name'],'2.html')
 
     def test_new_page_rejects_unsafe_or_existing_filename(self):
-        for name in ('../escape.html','nested/page.html','bad.txt','template.html','1.html'):
+        for name in ('../escape.html','nested/page.html','bad.txt','template.html','1.html','2018.html'):
             with self.subTest(name=name),self.assertRaises(ValueError):self.studio.create_page('Nope',name)
 
     def test_new_page_ui_and_filename_suggestion_exist(self):
@@ -240,6 +256,8 @@ class StudioTests(unittest.TestCase):
         for label in ('Posts','Openers','Pages','Images','Reader','Saved','Updated','Created','Alphabetical','Deleted'):
             self.assertIn('>'+label+'<',html)
         self.assertIn('Blockquote</button>',html)
+        self.assertIn('id="imageUpload"',html)
+        self.assertIn('id="imageUploadFile"',html)
         self.assertIn('class="tk-robot"',html)
         self.assertNotIn('✦ TK assistant',html)
         self.assertIn('id="help"',html)
@@ -250,10 +268,14 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn("+' took '+",js)
         self.assertIn("workspace==='saved'?'saved'",js)
         self.assertIn('Saved before date tracking',js)
-        self.assertIn("currentWorkspace==='saved'?'Loading saved posts…':'Loading Reader…'",js)
+        self.assertIn("savedView==='activity'?'Loading private activity…':'Loading saved posts…'",js)
+        self.assertIn("api('reader-react'",js)
+        self.assertIn('Private activity</button>',html)
         self.assertIn('request!==readerLoadRevision||workspace!==currentWorkspace',js)
         self.assertIn("if(currentWorkspace==='reader')readerMessage('Checking subscriptions…')",js)
         self.assertIn("workspace==='saved'?(d.items.length+' saved '",js)
+        self.assertIn("$('imageUpload').onclick",js)
+        self.assertIn("Image uploaded. It will be included with your next publication.",js)
         Image.new('RGB',(7,5),'white').save(self.root/'images'/'used.png')
         (self.root/'1.html').write_text(new_page('Old post','<p>Original.</p><img src="/images/used.png" alt="">'))
         image=next(item for item in self.studio.images() if item['name']=='used.png')
@@ -339,7 +361,7 @@ class VersionTests(unittest.TestCase):
         tid=self.studio.state['ids'][d['name']]; path=self.root/'blyg/items'/f'{tid}.json'; doc=json.loads(path.read_text())
         self.assertEqual(doc['kind'],'thread'); self.assertEqual(doc['transclusions'],[{'id':iid,'version':1}]); self.assertIn('![['+iid+']]',doc['content_md']); self.assertIn('blyg-transclusion',doc['content_html'])
         self.studio.state['published'][tid]=doc; self.studio.remember({tid:doc}); self.studio.state['drafts']={}
-        src=self.studio.state['published'][iid]; src['version']=2; src['content_html']='<p>Source changed</p>'
+        src=self.studio.state['published'][iid]; src['version']=2; src['content_html']='<p>Source changed</p>';src['updated']='2026-10-01T00:00:00Z';src['changelog'].append({'version':2,'at':src['updated'],'note':'Changed source'})
         self.studio.prepare(); same=json.loads(path.read_text()); self.assertEqual(same['version'],1); self.assertIn('Original',same['content_html'])
         self.studio.revise(d['name'],'Refresh quoted source'); self.studio.prepare(); updated=json.loads(path.read_text()); self.assertEqual(updated['version'],2); self.assertEqual(updated['transclusions'][0]['version'],2)
     def test_reserved_and_unknown_quotes_rejected(self):
