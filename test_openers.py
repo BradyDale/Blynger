@@ -80,7 +80,7 @@ class OpenerTests(unittest.TestCase):
 
     def test_quick_opener_legacy_ui_path_writes_remote_transclusion_to_final_json(self):
         self.seed();self.studio.migrate_openers();net=Net();net.add(items=[remote_doc(kind='thread')]);self.studio.reader=Reader(self.studio.data,net,lambda:'2026-01-02T00:00:00Z');self.studio.reader.subscribe(ORIGIN)
-        quoted=self.studio.reader.snapshot(self.studio.reader.key(ORIGIN,IID),{'mode':'whole'},self.studio);d=self.studio.page('openers.html')
+        quoted=self.studio.reader.snapshot(self.studio.reader.key(ORIGIN,IID),{'mode':'whole','transclude':True},self.studio);d=self.studio.page('openers.html')
         d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 3, 2026, VI</h3>'+quoted['stub_html']+'<p>A concise response.</p><h3 id="same">',1)
         a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments']);d['fragments']['ranges'][0]['stub_of']=quoted['stub_of']
         # The real archive's submitted block map and raw HTML are equivalent,

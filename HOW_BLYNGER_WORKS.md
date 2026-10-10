@@ -95,6 +95,15 @@ It understands genuine Blyg sources, ordinary RSS/Atom feeds and ordinary webpag
 
 Those sources are deliberately not presented as though they were equivalent. Current Blynger gives Blyg-native and ordinary Web/RSS material distinct Reader treatments and explicit source badges.
 
+Reader content is also a separate trust domain. Remote markup is sanitized with `nh3` and displayed in an opaque sandboxed frame, never in the application document that holds Blynger's private API token and authoring controls. A small per-opening message bridge carries only quotation selections, genuine-fragment choices, and safe link clicks. Imported markup cannot call local APIs, style or replace the application UI, submit forms, or navigate its parent.
+
+Remote fetching pins every connection to the public address Blynger actually
+validated, hardens untrusted XML parsing, and places finite limits on feed,
+archive, item, and media work. A canonical Blyg item with a false content hash,
+wrong origin, or changed bytes under the same version is rejected rather than
+quietly entering the cache; Reader displays the rejection while retaining any
+last known-good copy.
+
 ### Saved
 
 Saved is a local shelf of material retained from Reader.
@@ -221,7 +230,7 @@ A Blyg transclusion says something stronger:
 
 Blynger therefore does not treat every blockquote as a transclusion.
 
-A highlighted passage or ordinary webpage quotation may remain a conventional frozen citation. A genuine whole-item Blyg transclusion preserves the item's actual identity and the exact source/version incorporated into the published document. Blynger deliberately keeps nonnormative partial excerpts as ordinary frozen citations rather than inventing protocol identity they do not possess.
+Reader **Quote** is always a conventional editable blockquote headed **From:** with a linked page title. It makes no protocol transclusion claim. A genuine whole-item Blyg transclusion is reserved for **Stub**, where it preserves the item's actual identity and the exact source/version incorporated into the published response.
 
 ### Blynger's interface opinion
 

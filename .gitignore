@@ -11,6 +11,6 @@ site.json
 *.key
 id_rsa*
 id_ed25519*
-Blynger-support/
-private/
 private-data/
+private/
+Blynger-support/

@@ -1,4 +1,4 @@
-import json, tempfile, threading, time, unittest
+import json, re, tempfile, threading, time, unittest
 from datetime import datetime
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -85,6 +85,13 @@ class ReaderBatchTests(unittest.TestCase):
         self.assertNotIn('script',fork['html']);self.assertNotIn('onclick',fork['html']);self.assertNotIn('javascript:',fork['html'])
         reader.state['items'][reader.key(ORIGIN,IID)]['doc']['changelog'][0].pop('pinned')
         with self.assertRaisesRegex(ValueError,'not pinned'):reader.fork_source(reader.key(ORIGIN,IID),1)
+    def test_fork_flattens_inherited_transclusion_and_generation_disclosure(self):
+        net=Net();source=doc(kind='thread');source['changelog'][0]['pinned']=True
+        source['content_html']='<p>Own prose.</p><blockquote class="blyg-transclusion blyg-partial" data-blyg-origin="https://quoted.example/blyg/" data-blyg-id="'+'0'*25+'2'+'" data-blyg-version="3"><p>Quoted words.</p></blockquote><div class="blyg-tk-gen">Generated words.</div>'
+        source['generated']=[{'sources':[{'origin':'https://quoted.example/blyg/','id':'0'*25+'2','version':3}],'model':'example-model','at':'2026-01-01T00:00:00Z'}]
+        net.add(items=[source]);reader=Reader(self.data,net);reader.subscribe(ORIGIN);fork=reader.fork_source(reader.key(ORIGIN,IID),1)
+        self.assertNotIn('blyg-transclusion',fork['html']);self.assertNotIn('blyg-partial',fork['html']);self.assertNotIn('data-blyg-',fork['html']);self.assertIn('Quoted from quoted.example',fork['html'])
+        self.assertEqual(fork['generated'],[{'sources':[],'model':'example-model','at':'2026-01-01T00:00:00Z'}])
 
     def test_fork_makes_remote_addresses_absolute_without_changing_absolute_ones(self):
         net=Net();source=doc(kind='thread');source['changelog'][0]['pinned']=True
@@ -144,16 +151,18 @@ class StudioBatchTests(unittest.TestCase):
     def test_local_markers_never_enter_protocol_output(self):
         net=Net();net.add();self.s.reader=Reader(self.s.data,net,lambda:'2026-01-02T00:00:00Z');self.s.reader.subscribe(ORIGIN);key=self.s.reader.key(ORIGIN,IID);self.s.reader.mark(key,'saved',True);self.s.reader.mark(key,'liked',True);self.s.reader.react(key,'🤯');self.s.create('Ordinary');self.s.prepare();public=(self.s.root/'blyg/items/index.json').read_text();self.assertNotIn('"saved"',public);self.assertNotIn('"liked"',public);self.assertNotIn('"reaction"',public);self.assertNotIn('"interactions"',public)
     def test_ui_contains_localized_controls_and_states(self):
-        app=(Path(__file__).parent/'static/app.js').read_text();html=(Path(__file__).parent/'static/index.html').read_text();fragments=(Path(__file__).parent/'static/fragments.js').read_text()
-        for text in ('reader-open','Open original','90*60*1000','Posting','b.textContent=\'Close\'','sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft'):self.assertIn(text,app)
+        static=Path(__file__).parent/'static';app=(static/'app.js').read_text()+(static/'reader-ui.js').read_text();html=(static/'index.html').read_text();fragments=(static/'fragments.js').read_text()
+        compact=re.sub(r'\s+','',app);compact_fragments=re.sub(r'\s+','',fragments)
+        def assert_compact(*values):
+            for value in values:self.assertIn(re.sub(r'\s+','',value),compact)
+        assert_compact('reader-open','Open original','90*60*1000','Posting',"b.textContent='Close'",'sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft')
         for identifier in ('readerViewFilter','readerBlogroll','readerManage','removeFragment','blockquote','sourceFindText','queue','pinOnPublish','responseMarker'):self.assertIn('id="'+identifier+'"',html)
-        self.assertIn("modal('Manage subscriptions'",app);self.assertIn("api('reader-blogroll'",app);self.assertIn('Saved and Liked posts are kept',app);self.assertIn('saved for the next publication',app)
-        self.assertIn("modal('Add link'",app);self.assertIn('year-2018.html',app);self.assertIn('reader-source-badge',app);self.assertIn('reader-generated',app);self.assertIn('What the author disclosed',app)
+        assert_compact("modal('Manage subscriptions'","api('reader-blogroll'",'Saved and Liked posts are kept','saved for the next publication')
+        assert_compact("modal('Add link'",'year-2018.html',"$('dialog').close();$('editor').focus();restoreSelection();if(!document.execCommand('createLink'",'reader-source-badge','reader-generated','What the author disclosed','fingerprint:d.fingerprint,transclude:true')
         self.assertNotIn("$('source').readOnly=!!fragmentEditor.meta",app);self.assertIn('addDivider()',fragments);self.assertIn('removeDivider()',fragments);self.assertIn('replace(html)',fragments)
-        self.assertIn('this.lockTransclusions();let repaired=false;if(this.meta)',fragments)
-        self.assertIn('editor-safety.js',html);self.assertIn('saveQueue.enqueue(()=>saveOnce(clearFragments))',app);self.assertIn('clear_fragments:clearFragments',app);self.assertIn('pageRequests.accepts(ticket,editRevision)',app);self.assertIn('if(requireClean&&dirty)',app)
-        self.assertLess(app.index('pageRequests.accepts(ticket,editRevision)'),app.index('currentWorkspace=workspaceForPage(page)'))
-        self.assertIn("const p=await api('new'",app);self.assertIn('await openPage(p.name)',app)
+        self.assertIn('this.lockTransclusions();letrepaired=false;if(this.meta)',compact_fragments)
+        self.assertIn('editor-safety.js',html);assert_compact('saveQueue.enqueue(()=>saveOnce(clearFragments))','clear_fragments:clearFragments','pageRequests.accepts(ticket,editRevision)','if(requireClean&&dirty)',"const p=await api('new'",'await openPage(p.name)')
+        self.assertLess(compact.index('pageRequests.accepts(ticket,editRevision)'),compact.index('currentWorkspace=workspaceForPage(page)'))
 
 
 if __name__=='__main__':unittest.main()

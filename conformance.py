@@ -101,9 +101,13 @@ def _reference(ref, path, problems, origin_required=False):
     if not isinstance(ref, dict):
         problems.append(path + " must be an object")
         return
-    if set(ref) == {"url"}:
+    if set(ref) in ({"url"}, {"url", "cited"}):
         if urlsplit(ref.get("url", "")).scheme not in ("http", "https"):
             problems.append(path + ".url must be an absolute HTTP(S) URL")
+        cited=ref.get("cited")
+        if cited is not None:
+            if not isinstance(cited,dict):problems.append(path + ".cited must be an object")
+            elif not _utc(cited.get("retrieved")):problems.append(path + ".cited.retrieved must be ISO 8601 UTC")
         return
     required = {"id", "version"} | ({"origin"} if origin_required else set())
     if not required <= set(ref):
@@ -212,7 +216,7 @@ def _item(doc, path, expected_origin, problems, warnings=None, strict=True):
         sink.append(path + ": baked transclusion wrappers do not match transclusions[]")
     if "stub_of" in doc:
         stub = doc["stub_of"]
-        _reference(stub, path + ".stub_of", sink, origin_required=set(stub) != {"url"} if isinstance(stub, dict) else True)
+        _reference(stub, path + ".stub_of", sink, origin_required="url" not in stub if isinstance(stub, dict) else True)
         if isinstance(stub, dict) and "id" in stub:
             match = next((ref for ref in transclusions if isinstance(ref, dict) and
                           ref.get("id") == stub.get("id") and

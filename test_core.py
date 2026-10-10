@@ -147,14 +147,22 @@ class StudioTests(unittest.TestCase):
 
     def test_new_page_ui_and_filename_suggestion_exist(self):
         html=(Path(__file__).parent/'static/index.html').read_text();script=(Path(__file__).parent/'static/app.js').read_text()
-        self.assertIn('id="newPage"',html);self.assertIn("$('newPage').onclick",script)
-        self.assertIn("return (stem||'new-page')+'.html'",script)
+        compact=re.sub(r'\s+','',script)
+        self.assertIn('id="newPage"',html);self.assertIn("$('newPage').onclick",compact)
+        self.assertIn("return(stem||'new-page')+'.html'",compact)
 
     def test_fragment_dialog_uses_simple_break_language(self):
         script=(Path(__file__).parent/'static/app.js').read_text()
         self.assertIn('fragmentEditor.addDivider()',script)
         self.assertIn('fragmentEditor.removeDivider()',script)
         self.assertNotIn('Use section as fragment / ordinary prose',script)
+
+    def test_center_control_and_published_alignment_are_preserved(self):
+        html=(Path(__file__).parent/'static/index.html').read_text();script=(Path(__file__).parent/'static/app.js').read_text()
+        self.assertIn('id="center"',html);self.assertIn("classList.toggle('blynger-centered'",script)
+        d=self.studio.create('Centered post',body='<p class="blynger-centered">Centered words.</p>');self.studio.save_draft(d);self.studio.prepare()
+        raw=(self.root/d['name']).read_text();self.assertIn('class="blynger-centered"',raw);self.assertEqual(raw.count('id="blynger-alignment-style"'),1)
+        self.studio.prepare();self.assertEqual((self.root/d['name']).read_text().count('id="blynger-alignment-style"'),1)
 
     def test_new_post_navigation_is_outside_feed_body(self):
         from bs4 import BeautifulSoup
@@ -253,28 +261,31 @@ class StudioTests(unittest.TestCase):
     def test_workspace_tabs_post_sort_blockquote_and_image_usage(self):
         from PIL import Image
         html=(Path(__file__).parent/'static/index.html').read_text()
+        compact_html=re.sub(r'\s+','',html)
         for label in ('Posts','Openers','Pages','Images','Reader','Saved','Updated','Created','Alphabetical','Deleted'):
-            self.assertIn('>'+label+'<',html)
-        self.assertIn('Blockquote</button>',html)
+            self.assertIn('>'+label+'<',compact_html)
+        self.assertIn('Blockquote</button>',compact_html)
         self.assertIn('id="imageUpload"',html)
         self.assertIn('id="imageUploadFile"',html)
         self.assertIn('class="tk-robot"',html)
         self.assertNotIn('✦ TK assistant',html)
         self.assertIn('id="help"',html)
-        js=(Path(__file__).parent/'static/app.js').read_text()
-        self.assertIn("['versions','mainFragment','quote','tk','fragment','removeFragment']",js)
-        self.assertIn("modal('Blynger Help'",js)
-        self.assertIn("'Last sync: '+readerSyncTime",js)
+        static=Path(__file__).parent/'static';js=(static/'app.js').read_text()+(static/'reader-ui.js').read_text()
+        compact_js=re.sub(r'\s+','',js)
+        def assert_compact(value):self.assertIn(re.sub(r'\s+','',value),compact_js)
+        self.assertIn("['versions','mainFragment','quote','tk','fragment','removeFragment'",compact_js)
+        assert_compact("modal('Blynger Help'")
+        assert_compact("'Last sync: '+BlyngerReaderUI.syncTime")
         self.assertNotIn("+' took '+",js)
-        self.assertIn("workspace==='saved'?'saved'",js)
+        assert_compact("workspace==='saved'?'saved'")
         self.assertIn('Saved before date tracking',js)
-        self.assertIn("savedView==='activity'?'Loading private activity…':'Loading saved posts…'",js)
-        self.assertIn("api('reader-react'",js)
+        assert_compact("savedView==='activity'?'Loading private activity…':'Loading saved posts…'")
+        assert_compact("api('reader-react'")
         self.assertIn('Private activity</button>',html)
-        self.assertIn('request!==readerLoadRevision||workspace!==currentWorkspace',js)
-        self.assertIn("if(currentWorkspace==='reader')readerMessage('Checking subscriptions…')",js)
-        self.assertIn("workspace==='saved'?(d.items.length+' saved '",js)
-        self.assertIn("$('imageUpload').onclick",js)
+        assert_compact('request!==readerLoadRevision||workspace!==currentWorkspace')
+        assert_compact("if(currentWorkspace==='reader')readerMessage('Checking subscriptions…')")
+        assert_compact("workspace === 'saved' ? d.items.length + ' saved '")
+        assert_compact("$('imageUpload').onclick")
         self.assertIn("Image uploaded. It will be included with your next publication.",js)
         Image.new('RGB',(7,5),'white').save(self.root/'images'/'used.png')
         (self.root/'1.html').write_text(new_page('Old post','<p>Original.</p><img src="/images/used.png" alt="">'))
@@ -352,9 +363,9 @@ class VersionTests(unittest.TestCase):
         self.studio.revise('1.html','Restore earlier wording',1)
         self.assertEqual(before,(self.root/'1.html').read_bytes()); self.assertTrue(self.studio.page('1.html')['draft'])
     def test_version_actions_refresh_publication_button(self):
-        script=(Path(__file__).parent/'static/app.js').read_text()
-        self.assertRegex(script,r"restore-version.*?api\('revise'.*?await updatePublicationState\(\)")
-        self.assertRegex(script,r"pin-version.*?api\('pin'.*?await updatePublicationState\(\)")
+        script=re.sub(r'\s+','',(Path(__file__).parent/'static/app.js').read_text())
+        self.assertRegex(script,r"restore-version.*?api\('revise'.*?awaitupdatePublicationState\(\)")
+        self.assertRegex(script,r"pin-version.*?api\('pin'.*?awaitupdatePublicationState\(\)")
     def test_transclusion_snapshot_and_republish(self):
         self.baseline(); iid=self.studio.state['ids']['1.html']
         d=self.studio.create('Quoted post'); d['raw']=d['raw'].replace('Start writing here.','![['+iid+']]'); self.studio.save_draft(d); self.studio.prepare()

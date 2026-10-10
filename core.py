@@ -7,7 +7,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit, unquote
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup, Comment, NavigableString
 from markdownify import markdownify
-import bleach
+import nh3
 from PIL import Image
 from metadata import enrich, sitemap, discovery_markup, favicon_markup
 from configuration import DEFAULT_SETTINGS
@@ -15,19 +15,23 @@ from version import APP_VERSION, BLYG_VERSION
 import fragments as fragment_model
 from conformance import validate_surface
 from generation_disclosure import decorate as decorate_generation
+from page_templates import (
+    ALIGN_STYLE,
+    FRAGMENT_DOT_STYLE,
+    IMAGE_STYLE,
+    QUOTE_STYLE,
+    STYLE,
+    new_page,
+    post_navigation,
+    restore_post_navigation,
+)
 
 NS='https://blygger.org/ns/0.1'
 ET.register_namespace('blyg', NS)
 ET.register_namespace('atom','http://www.w3.org/2005/Atom')
 ET.register_namespace('dc','http://purl.org/dc/elements/1.1/')
-TAGS=set(bleach.sanitizer.ALLOWED_TAGS)|{'p','div','span','br','hr','h1','h2','h3','h4','h5','h6','img','figure','figcaption','table','thead','tbody','tr','td','th','pre','code','audio','source','video','s','sub','sup','center','cite'}
-ATTR={'*':['class','id','title'],'a':['href','title'],'img':['src','alt','width','height'],'audio':['src','controls'],'video':['src','controls','poster'],'source':['src','type'],'blockquote':['class','cite','data-blyg-id','data-blyg-version','data-blyg-origin','data-blynger-quote','data-source-origin','data-source-id','data-source-version']}
-STYLE='<style id="blynger-generation-style">.blyg-tk-gen{position:relative;background:#f2f2f2;border:1px dashed #505050;margin:1em 0 1.4em;padding:.65em .8em 1.15em}.blyg-tk-gen::after{content:"";position:absolute;box-sizing:border-box;left:.65em;bottom:-14px;width:30px;height:27px;border:1px solid #444;background:#fff center/20px 20px no-repeat url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23111%22 stroke-width=%221.7%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M12 8V4H8%22/%3E%3Crect width=%2216%22 height=%2212%22 x=%224%22 y=%228%22 rx=%222%22/%3E%3Cpath d=%22M2 14h2M20 14h2M15 13v2M9 13v2%22/%3E%3C/svg%3E")}.blyg-tk-gen> :first-child{margin-top:0}.blyg-tk-gen> :last-child{margin-bottom:0}img{max-width:100%}</style>'
-
-QUOTE_STYLE='<style id="blynger-quote-style">blockquote.blyg-transclusion,blockquote.blynger-citation{background:#eee;border:1px solid #ddd;margin:1em 0;padding:.75em 1em;overflow-wrap:anywhere}blockquote.blyg-transclusion> :first-child{margin-top:0}blockquote.blyg-transclusion> :last-child{margin-bottom:0}.blynger-quote-title{font-size:1em;margin:0 0 .35em}.blynger-quote-author{font-size:.85em;margin:0 0 1em}.blynger-blockquote-source{display:block;margin-top:.65em;text-align:right;font:13px/1.4 Tahoma,Verdana,sans-serif}</style>'
-
-FRAGMENT_DOT_STYLE='<style id="blynger-fragment-dot-style">.blynger-fragment-marker{display:block;position:relative;height:0;margin:0;padding:0;border:0}.blynger-fragment-marker a{position:absolute;right:-17px;top:0;width:14px;height:14px;border:0;text-decoration:none!important;background:none;color:#90958b}.blynger-fragment-marker a::after{content:"";position:absolute;top:5px;left:5px;width:4px;height:4px;border-radius:50%;background:currentColor}.blynger-fragment-marker a:focus-visible{outline:1px dotted currentColor;outline-offset:2px}</style>'
-IMAGE_STYLE='<style id="blynger-image-style">.blynger-image{text-align:center}.blynger-image img{display:block;height:auto;max-width:100%;margin-left:auto;margin-right:auto}.blynger-image-standard img{width:min(400px,77vw)}.blynger-image-small img{width:min(200px,50vw)}.blynger-image-wide img{width:77vw}.blynger-image-full img{width:100%}</style>'
+TAGS={'a','abbr','acronym','b','blockquote','br','code','em','i','li','ol','strong','ul','p','div','span','hr','h1','h2','h3','h4','h5','h6','img','figure','figcaption','table','thead','tbody','tr','td','th','pre','audio','source','video','s','sub','sup','center','cite'}
+ATTR={'*':{'class','id','title'},'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'class','cite','data-blyg-id','data-blyg-version','data-blyg-origin','data-blynger-quote','data-source-origin','data-source-id','data-source-version'}}
 def strip_fragment_markers(raw):
     raw=re.sub(r'<!-- blynger-fragment-link-start -->.*?<!-- blynger-fragment-link-end -->','',raw,flags=re.S)
     return re.sub(r'<style id="blynger-fragment-dot-style">.*?</style>','',raw,flags=re.S)
@@ -40,7 +44,7 @@ def digest(data): return hashlib.sha256(data if isinstance(data,bytes) else data
 def clean(text):
     soup=BeautifulSoup(text,'html.parser')
     for node in soup(['script','style','iframe','object','embed']): node.decompose()
-    return bleach.clean(str(soup),tags=TAGS,attributes=ATTR,protocols={'http','https','mailto'},strip=True)
+    return nh3.clean(str(soup),tags=TAGS,attributes=ATTR,url_schemes={'http','https','mailto'},link_rel=None)
 
 def normalize_authored_quotes(markup):
     """Use straight quotes in authored prose while leaving quoted sources exact."""
@@ -89,25 +93,6 @@ class FragmentStateError(ValueError):
     def __init__(self,page,problem):
         self.page=page
         super().__init__(str(problem))
-
-def post_navigation(config=None):
-    links=(config or DEFAULT_SETTINGS).get('navigation',[])
-    return '<nav aria-label="Site navigation">'+''.join('<a href="'+item['url']+'"><img src="/images/'+item['image']+'" alt="'+html.escape(item['label'],quote=True)+'"></a>' for item in links)+'</nav>'
-
-def restore_post_navigation(raw,name,config=None):
-    # Recognize Blynger's article/nav template; leave hand-authored layouts alone.
-    if name in set((config or DEFAULT_SETTINGS).get('main_pages',[])):return raw
-    article=re.search(r'<article\b',raw,re.I)
-    if not article:return raw
-    top=next((m for m in re.finditer(r'<nav\b[^>]*>.*?</nav\s*>',raw[:article.start()],re.I|re.S) if '/images/home.JPG' in m.group()),None)
-    if not top:return raw
-    raw=raw[:top.start()]+post_navigation(config)+raw[top.end():]
-    end=re.search(r'</article\s*>',raw,re.I)
-    if end and '/images/home.JPG' not in raw[end.end():]:raw=raw[:end.end()]+post_navigation(config)+raw[end.end():]
-    return raw
-
-def new_page(title,body,config=None):
-    return '<!doctype html>\n<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>'+html.escape(title)+'</title><style>body{font:125%/1.5 Menlo,monospace;margin:25px}article{max-width:768px;margin:auto}a{color:blue}img{max-width:100%}nav{text-align:center;margin:20px}nav img{width:18%;height:55px}</style>'+STYLE+'</head><body>'+post_navigation(config)+'<article><h1>'+html.escape(title)+'</h1>'+body+'</article>'+post_navigation(config)+'</body></html>'
 
 class Studio:
     def __init__(self,root,data,config=None):
@@ -349,7 +334,9 @@ class Studio:
             record=quotes.get(block.get('data-blynger-quote'))
             if not isinstance(record,dict) or not isinstance(record.get('visible_html'),str):continue
             replacement=BeautifulSoup(record['visible_html'],'html.parser').find('blockquote')
-            if replacement is not None:block.replace_with(replacement);changed=True
+            # Only genuine Stub transclusions are atomic. Ordinary Reader
+            # quotes are intentionally editable after insertion.
+            if replacement is not None and 'blyg-transclusion' in replacement.get('class',[]):block.replace_with(replacement);changed=True
         return str(soup) if changed else raw
     def upgrade_stub_context(self,raw,target,quotes):
         """Turn the obsolete editable context of a Blyg stub into its exact snapshot."""
@@ -361,7 +348,7 @@ class Studio:
         except (KeyError,ValueError):raise ValueError('This Blyg Stub still has editable copied context, but its source snapshot is unavailable. Refresh the source in Reader before saving.')
         if item['doc'].get('version')!=target['version']:
             raise ValueError('This Blyg Stub still has editable copied context, but Reader no longer has the exact source version. Reopen that version before saving.')
-        quoted=self.reader.snapshot(key,{'mode':'whole'},self);record=quoted['snapshot']
+        quoted=self.reader.snapshot(key,{'mode':'whole','transclude':True},self);record=quoted['snapshot']
         legacy.replace_with(BeautifulSoup(quoted['html'],'html.parser'))
         quotes[record['token']]=record
         return str(soup)
@@ -478,7 +465,7 @@ class Studio:
         backup['active']=False;p=self.path(name);page=copy.deepcopy(backup['page']);page['base']=digest(p.read_bytes()) if p.exists() else None
         self.save_draft(page);self.state['drafts'][name].update(new=not bool(self.state['published'].get(self.state['ids'].get(name))),note='Restore deleted post',revision=True,restore_home=True)
         self.save_state();return {'message':'Post restored as a local draft. Publish to return it to the website.'}
-    def create(self,title,body=None,stub_of=None,forked_from=None):
+    def create(self,title,body=None,stub_of=None,forked_from=None,generated=None):
         title=title.strip()
         if not title: raise ValueError('Give the post a title.')
         # Standalone Pages may intentionally use year-like filenames (for
@@ -492,6 +479,7 @@ class Studio:
         self.state['drafts'][name]={'raw':raw,'base':None,'new':True,'at':now(),'generated':[],'pin_on_publish':False}
         if stub_of is not None:self.state['drafts'][name]['stub_of']=copy.deepcopy(stub_of)
         if forked_from is not None:self.state['drafts'][name]['forked_from']=copy.deepcopy(forked_from)
+        if generated is not None:self.state['drafts'][name]['generated']=copy.deepcopy(generated)
         self.save_state(); return self.page(name)
     def create_page(self,title,name):
         title=title.strip() if isinstance(title,str) else ''
@@ -787,10 +775,18 @@ class Studio:
                 if path.is_symlink() or not path.is_file():raise ValueError('A saved quotation image is missing.')
                 files['blyg/media/'+asset]=path.read_bytes()
             source=record['source']
-            if source.get('type')=='blyg':
+            strict='blyg-transclusion' in quote.get('class',[])
+            if source.get('type')=='blyg' and strict:
                 quote['data-source-origin']=source['origin'];quote['data-source-id']=source['id'];quote['data-source-version']=str(source['version'])
                 if record.get('type')=='excerpt' and isinstance(source.get('selector'),dict):quote['data-blynger-selector']=json.dumps(source['selector'],ensure_ascii=False,separators=(',',':'))
             del quote['data-blynger-quote']
+            if not strict:
+                # An editable citation may contain quoted source HTML that
+                # itself displayed transclusions. Flatten those wrappers so
+                # this author does not make a protocol claim for them.
+                for nested in quote.select('blockquote.blyg-transclusion'):
+                    nested['class']=[value for value in nested.get('class',[]) if value not in ('blyg-transclusion','blyg-partial')]
+                    for key in ('data-blyg-id','data-blyg-version','data-blyg-origin'):nested.attrs.pop(key,None)
         # Preserve images outside article blocks, but omit image-based navigation.
         all_soup=BeautifulSoup(raw,'html.parser')
         present={im.get('src') for im in soup.find_all('img')}
@@ -983,7 +979,7 @@ class Studio:
                 if doc.get('stub_of') is not None:
                     target=doc['stub_of']
                     if not isinstance(target,dict):raise ValueError('A response lost its source identity.')
-                    if set(target)=={'url'}:
+                    if set(target) in ({'url'},{'url','cited'}):
                         if not isinstance(target['url'],str) or urlsplit(target['url']).scheme not in ('http','https'):raise ValueError('A web response needs one public source URL.')
                     elif not {'origin','id','version'}<=set(target) or set(target)-{'origin','id','version','cited'}:
                         raise ValueError('A Blyg response lost its source identity.')
@@ -1124,6 +1120,8 @@ class Studio:
                 raw=raw.replace('</head>',STYLE+'</head>',1); changes[name]=raw; pages[name]=raw
             if 'blynger-image' in raw and 'id="blynger-image-style"' not in raw:
                 raw=raw.replace('</head>',IMAGE_STYLE+'</head>',1);changes[name]=raw;pages[name]=raw
+            if 'blynger-centered' in raw and 'id="blynger-alignment-style"' not in raw:
+                raw=raw.replace('</head>',ALIGN_STYLE+'</head>',1);changes[name]=raw;pages[name]=raw
         # Only pages explicitly being authored (or explicitly pinned) may be
         # re-rendered. Blyg mirrors are rebuilt from all pages, but that must
         # never back-propagate a current template into the static archive.

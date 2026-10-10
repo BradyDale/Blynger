@@ -1,4 +1,4 @@
-import copy, json, subprocess, unittest
+import copy, json, re, subprocess, unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -174,7 +174,7 @@ class FragmentTests(unittest.TestCase):
         self.assertIsNone(self.studio.state['drafts']['index.html']['fragments'])
 
     def test_fragment_dialog_names_the_actual_page(self):
-        script=(Path(__file__).parent/'static/app.js').read_text()
+        script=re.sub(r'\s+','',(Path(__file__).parent/'static/app.js').read_text())
         self.assertIn("e.code==='fragment-state'",script)
         self.assertIn('openBrokenFragmentPage',script)
         self.assertIn('affected===page?.name',script)

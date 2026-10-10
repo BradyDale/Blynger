@@ -14,7 +14,7 @@ Inserting reviewed TK output makes the generated block its own fragment, and des
 
 If ordinary browser editing merges or removes the paragraph carrying a divider, the editor moves the private boundary to the next surviving body paragraph, or removes it when there is no next paragraph. Existing fragment identity is retained whenever any of that fragment remains. A server-side safety check also discards an orphaned editor-only divider rather than preventing the draft from being saved; it never changes the prose.
 
-`fragment_ids[page][range-key]` reserves Blyg identities during publication preparation. Draft divider insertion itself allocates no public item or history. `fragment_posts` retains private editable source after successful publication; `fragment_history` retains that source for restoring a parent revision. Existing state gains empty maps lazily. No existing IDs or posts are migrated. Preserve the private Blynger-support data directory in backups, as before.
+`fragment_ids[page][range-key]` reserves Blyg identities during publication preparation. Draft divider insertion itself allocates no public item or history. `fragment_posts` retains private editable source after successful publication; `fragment_history` retains that source for restoring a parent revision. Existing state gains empty maps lazily. No existing IDs or posts are migrated. Preserve the private private-data data directory in backups, as before.
 
 ## Publication
 

@@ -1,52 +1,42 @@
 """Private, origin-scoped Blyg reader. Never writes to a publication directory."""
-import copy, hashlib, html, ipaddress, json, re, socket, threading, time, urllib.request, urllib.error
+import copy, hashlib, html, json, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit, urljoin
-import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlsplit, urlunsplit
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 from bs4 import BeautifulSoup
+import nh3
 from core import atomic, clean, digest, now
 import interactions as interaction_log
+from reader_network import fetch, normalized, public_url, request_once
 
 ID=re.compile(r'^[0-7][0-9a-hjkmnp-tv-z]{25}$')
 ASSET=re.compile(r'^[a-f0-9]{64}\.(png|jpg|gif|webp|avif|mp4|webm|ogg|mp3)$')
 MIMES={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp','image/avif':'avif','video/mp4':'mp4','video/webm':'webm','video/ogg':'ogg','audio/mpeg':'mp3','audio/ogg':'ogg'}
 NS='https://blygger.org/ns/0.1'
 REACTIONS=('🤯','🙄','👎','😂','❓')
+MAX_FEED_ENTRIES=500
+MAX_ARCHIVE_ITEMS=2000
+MAX_ITEM_FETCHES=100
+MAX_ITEM_BYTES=1024*1024
+MAX_ASSETS_PER_ITEM=16
+MAX_ASSET_BYTES=8*1024*1024
+MAX_ASSET_BYTES_PER_SYNC=64*1024*1024
+READER_TAGS={'a','abbr','b','blockquote','br','code','em','i','li','ol','strong','ul','p','div','span','hr','h1','h2','h3','h4','h5','h6','img','figure','figcaption','table','thead','tbody','tr','td','th','pre','audio','source','video','s','sub','sup','cite'}
+READER_ATTR={'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'cite','data-blyg-id','data-blyg-version','data-blyg-origin'}}
+READER_CLASSES={'div':{'blyg-tk-gen'},'p':{'blyg-tk-gen'},'span':{'blyg-tk-gen'},'blockquote':{'blyg-tk-gen','blyg-transclusion','blyg-partial'}}
+
+def clean_reader(text):
+    """Sanitize hostile imported markup for the isolated Reader document."""
+    return nh3.clean(text,tags=READER_TAGS,attributes=READER_ATTR,allowed_classes=READER_CLASSES,
+        clean_content_tags={'script','style','form','button','input','textarea','select','option','iframe','object','embed','svg','math','link','meta','base'},
+        url_schemes={'http','https','mailto','tel'},link_rel='noopener noreferrer')
 def timestamp(value):
     try:return datetime.fromisoformat(value.replace('Z','+00:00')).astimezone(timezone.utc)
     except (ValueError,AttributeError,TypeError):raise ValueError('Invalid Blyg timestamp.')
-def normalized(url):
-    u=urlsplit(url.strip())
-    if u.scheme not in ('https','http') or not u.hostname or u.username or u.password:raise ValueError('Enter a public https:// Blyg or item URL.')
-    return urlunsplit((u.scheme,u.netloc.lower(),u.path or '/', u.query, ''))
-def public_url(url):
-    u=urlsplit(normalized(url))
-    for address in socket.getaddrinfo(u.hostname,u.port or (443 if u.scheme=='https' else 80),type=socket.SOCK_STREAM):
-        if not ipaddress.ip_address(address[4][0]).is_global:raise ValueError('Reader downloads must use public internet addresses.')
-class Redirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self,req,fp,code,msg,headers,newurl):
-        count=getattr(req,'reader_redirects',0)+1
-        if count>5:raise ValueError('Too many redirects.')
-        public_url(newurl);out=super().redirect_request(req,fp,code,msg,headers,newurl)
-        if out:out.reader_redirects=count
-        return out
-
-def fetch(url,headers=None,limit=4*1024*1024):
-    public_url(url)
-    req=urllib.request.Request(url,headers={'User-Agent':'Blynger/0.6 Blyg reader',**(headers or {})})
-    try:
-        with urllib.request.build_opener(Redirects).open(req,timeout=15) as r:
-            body=r.read(limit+1)
-            if len(body)>limit:raise ValueError('Remote response exceeds the reader size limit.')
-            return r.geturl(),body,dict(r.headers),r.status
-    except urllib.error.HTTPError as e:
-        if e.code==304:return url,b'',dict(e.headers),304
-        raise ValueError(f'HTTP {e.code} from {url}') from e
-    except (OSError,urllib.error.URLError) as e:raise ValueError(f'Could not fetch {url}: {e}') from e
-
 def selection_text(markup):
     """Block boundaries count as whitespace; inline emphasis does not add spaces."""
     soup=BeautifulSoup(markup,'html.parser')
@@ -142,7 +132,7 @@ class Reader:
                 if link is not None and link.text:
                     hit=manifest(urljoin(final,link.text.strip()))
                     if hit:return *hit,target
-            except ET.ParseError:pass
+            except (ET.ParseError,DefusedXmlException):pass
             try:
                 item=json.loads(body)
                 if isinstance(item,dict) and isinstance(item.get('blyg'),str) and final.endswith('/blyg.json'):
@@ -177,7 +167,7 @@ class Reader:
                             hit=manifest(urljoin(feed[0],link.text.strip()))
                             if hit:return *hit,target
                         if tree.tag in ('rss','{http://www.w3.org/2005/Atom}feed'):return feed[0],{'type':'l0'},None
-                    except ET.ParseError:pass
+                    except (ET.ParseError,DefusedXmlException):pass
         raise ValueError('No usable feed found. Enter a Blyg, RSS/Atom feed, or a page linking to a feed. Tried: '+', '.join(tried))
     def subscribe(self,url,added_via='manual'):
         origin,m,target=self.resolve(url);sid=digest(origin)
@@ -190,20 +180,23 @@ class Reader:
             message=self.state['subscriptions'][sid]['error'];del self.state['subscriptions'][sid];self.save();raise ValueError(message)
         result['selected']=self.key(origin,target) if target else None;return result
     def sync_plain(self,sub):
+        sync_warnings=[]
         old=sub.get('feed_cache',{});headers={}
         if old.get('etag'):headers['If-None-Match']=old['etag']
         if old.get('modified'):headers['If-Modified-Since']=old['modified']
         final,body,h,status=self.fetch(sub['origin'],headers=headers)
         if status==304:
+            sub['_pending_warnings']=sync_warnings
             return 0
         body_hash=digest(body);unchanged=old.get('hash')==body_hash or old.get('body')==body.decode('utf-8')
         # Ordinary feeds do not need their complete response body to interpret a
         # later 304. Keeping only a digest makes the private cache dramatically
         # smaller for large feeds while preserving validator-less comparison.
         sub['feed_cache']={'hash':body_hash,'etag':next((v for k,v in h.items() if k.lower()=='etag'),None),'modified':next((v for k,v in h.items() if k.lower()=='last-modified'),None)}
-        if unchanged:return 0
+        if unchanged:
+            sub['_pending_warnings']=sync_warnings;return 0
         try:root=ET.fromstring(body)
-        except ET.ParseError:raise ValueError('Invalid RSS or Atom feed.')
+        except (ET.ParseError,DefusedXmlException):raise ValueError('Invalid or unsafe RSS/Atom feed.')
         atom='{http://www.w3.org/2005/Atom}';is_atom=root.tag==atom+'feed'
         if not is_atom and root.tag!='rss':raise ValueError('Not an RSS or Atom feed.')
         channel=root if is_atom else root.find('channel')
@@ -215,7 +208,10 @@ class Reader:
             return el.text or ''
         sub['title']=BeautifulSoup(value(channel,atom+'title' if is_atom else 'title'),'html.parser').get_text() or sub['origin']
         count=0
-        for entry in channel.findall(atom+'entry' if is_atom else 'item')[:10000]:
+        entries=channel.findall(atom+'entry' if is_atom else 'item')
+        if len(entries)>MAX_FEED_ENTRIES:sync_warnings.append(f'Feed limited to {MAX_FEED_ENTRIES} entries.')
+        asset_budget={'remaining':MAX_ASSET_BYTES_PER_SYNC}
+        for entry in entries[:MAX_FEED_ENTRIES]:
             title=BeautifulSoup(value(entry,atom+'title' if is_atom else 'title'),'html.parser').get_text()
             if is_atom:
                 link=next((x.get('href') for x in entry.findall(atom+'link') if x.get('rel','alternate')=='alternate' and x.get('href')),'')
@@ -261,11 +257,13 @@ class Reader:
                 # leave observation time, media and local markers untouched.
                 previous['feed_entry_hash']=entry_hash;previous['feed_content_hash']=doc_hash
                 continue
-            assets,visual,issues=self.download_assets(doc,url,previous)
+            assets,visual,issues=self.download_assets(doc,url,previous,asset_budget)
+            sync_warnings.extend(issues)
             self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':sub['origin'],'source_type':'l0','feed_identity':identity,'feed_entry_hash':entry_hash,'feed_content_hash':doc_hash,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction')}
             count+=1
+        sub['_pending_warnings']=sync_warnings
         return count
-    def download_assets(self,doc,origin,previous):
+    def download_assets(self,doc,origin,previous,budget=None):
         soup=BeautifulSoup(doc['content_html'],'html.parser');assets=dict(previous.get('assets',{}));used={};visual=False;warnings=[]
         urls={}
         for node in soup.find_all(['img','video','source','audio']):
@@ -281,11 +279,16 @@ class Reader:
         for media in doc.get('media',[]):
             if isinstance(media,dict) and isinstance(media.get('url'),str):
                 url=urljoin(origin,media['url']);urls[url]=urls.get(url,False) or str(media.get('mime','')).startswith(('image/','video/'))
-        for url,meaningful in list(urls.items())[:64]:
+        if len(urls)>MAX_ASSETS_PER_ITEM:warnings.append(f'Media limited to {MAX_ASSETS_PER_ITEM} files for this item.')
+        budget=budget or {'remaining':MAX_ASSET_BYTES_PER_SYNC}
+        for url,meaningful in list(urls.items())[:MAX_ASSETS_PER_ITEM]:
             name=assets.get(url)
             try:
                 if not name or not self.asset_path(name).is_file():
-                    final,body,headers,status=self.fetch(url,limit=32*1024*1024)
+                    if budget['remaining']<=0:
+                        warnings.append('Media download budget reached; remaining files were skipped.');break
+                    final,body,headers,status=self.fetch(url,limit=min(MAX_ASSET_BYTES,budget['remaining']))
+                    budget['remaining']-=len(body)
                     mime=next((v.split(';')[0].strip() for k,v in headers.items() if k.lower()=='content-type'),'')
                     ext=MIMES.get(mime)
                     if not ext:continue
@@ -317,15 +320,15 @@ class Reader:
             if sub.get('type')=='web':
                 sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['last_result']='local page';return 0
             if sub.get('type')=='l0':
-                downloaded=self.sync_plain(sub);sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=[];sub['last_result']='unchanged' if not downloaded else 'updated';return downloaded
+                downloaded=self.sync_plain(sub);sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=sub.pop('_pending_warnings',[]);sub['last_result']='unchanged' if not downloaded else 'updated';return downloaded
             # RSS is the notification plane; canonical documents alone advance state.
             feed_ids=[];feed_changed=True
             try:
                 xml,feed_changed=self.surface(sub,'feed.xml',with_status=True);tree=ET.fromstring(xml)
                 feed_ids=[n.text for n in tree.findall('.//{'+NS+'}id') if n.text and ID.fullmatch(n.text)]
-            except (ValueError,ET.ParseError):pass
+            except (ValueError,ET.ParseError,DefusedXmlException):pass
             last_heal=sub.get('last_archive_heal');heal_due=not last_heal or timestamp(self.clock())-timestamp(last_heal)>=timedelta(days=1)
-            if not feed_changed and not heal_due:
+            if not feed_changed and not heal_due and not sub.get('sync_pending'):
                 sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=warnings;sub['last_result']='unchanged';return 0
             try:
                 index_text,index_changed=self.surface(sub,'items/index.json',with_status=True,force=heal_due)
@@ -335,16 +338,19 @@ class Reader:
                 if not feed_ids:raise
                 index={'items':[{'id':iid} for iid in set(feed_ids)]};index_changed=True;warnings.append('Archive index unavailable: feed-window-only sync is lossy.')
             if not isinstance(index,dict) or not isinstance(index.get('items'),list):raise ValueError('Invalid archive index.')
-            if len(index['items'])>10000:raise ValueError('Archive exceeds the current 10,000-item sync limit.')
+            if len(index['items'])>MAX_ARCHIVE_ITEMS:raise ValueError(f'Archive exceeds the current {MAX_ARCHIVE_ITEMS:,}-item sync limit.')
             rows=[]
             for row in index['items']:
                 iid=row.get('id') if isinstance(row,dict) else None
                 if not isinstance(iid,str) or not ID.fullmatch(iid):continue
                 key=self.key(origin,iid);known=self.state['watermarks'].get(key,{}).get('version')
                 version=row.get('version') if isinstance(row,dict) else None
-                if (index_changed or feed_changed) and (version is None or version!=known or iid in feed_ids):rows.append(row)
+                if (index_changed or feed_changed or sub.get('sync_pending')) and (version is None or version!=known or iid in feed_ids):rows.append(row)
+            remaining=max(0,len(rows)-MAX_ITEM_FETCHES);rows=rows[:MAX_ITEM_FETCHES]
+            sub['sync_pending']=bool(remaining)
+            if remaining:warnings.append(f'{remaining} changed items remain for the next sync.')
             def fetch_item(row):
-                iid=row['id'];return iid,self.fetch(origin+'items/'+iid+'.json')
+                iid=row['id'];return iid,self.fetch(origin+'items/'+iid+'.json',limit=MAX_ITEM_BYTES)
             fetched=[]
             with ThreadPoolExecutor(max_workers=4) as pool:
                 futures=[pool.submit(fetch_item,row) for row in rows]
@@ -352,6 +358,7 @@ class Reader:
                     try:fetched.append(future.result())
                     except (ValueError,TypeError,AttributeError) as e:warnings.append(str(e))
             checked=len(rows)
+            asset_budget={'remaining':MAX_ASSET_BYTES_PER_SYNC}
             for iid,(final,raw,_,_) in fetched:
                 try:
                     doc=json.loads(raw)
@@ -365,13 +372,13 @@ class Reader:
                     key=self.key(origin,iid);old=self.state['items'].get(key,{});water=self.state['watermarks'].get(key,{})
                     if v<water.get('version',0):raise ValueError('Version rollback ignored for '+iid)
                     claimed=doc.get('content_hash');actual='sha256:'+digest(doc['content_md'])
-                    if claimed!=actual:warnings.append('Content hash mismatch for '+iid)
-                    if v==water.get('version') and actual!=water.get('hash'):warnings.append('Same-version edit detected for '+iid)
-                    if doc.get('origin')!=origin:warnings.append('Item origin differs from fetched origin for '+iid)
+                    if claimed!=actual:raise ValueError('Rejected item with content hash mismatch: '+iid)
+                    if doc.get('origin')!=origin:raise ValueError('Rejected item whose origin differs from its subscription: '+iid)
+                    if v==water.get('version') and actual!=water.get('hash'):raise ValueError('Rejected same-version edit: '+iid)
                     if old and v==water.get('version') and actual==water.get('hash') and timestamp(doc['updated'])<timestamp(old['doc']['updated']):continue
                     self.state['watermarks'][key]={'version':v,'hash':actual}
                     if doc['kind']=='withdrawn':self.state['items'].pop(key,None);continue
-                    assets,visual,issues=self.download_assets(doc,origin,old);warnings.extend(issues)
+                    assets,visual,issues=self.download_assets(doc,origin,old,asset_budget);warnings.extend(issues)
                     self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':origin,'doc':doc,'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock() if v!=water.get('version') else old.get('observed_at',self.clock()),'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),'liked':old.get('liked',False),'reaction':old.get('reaction')}
                     downloaded+=1
                 except (ValueError,TypeError,AttributeError) as e:warnings.append(str(e))
@@ -408,7 +415,9 @@ class Reader:
             text=BeautifulSoup(d['content_html'],'html.parser').get_text(' ',strip=True)
             if query.lower() not in (text+' '+str(name)+' '+sub['title']).lower():continue
             published=d.get('created') or d.get('updated') or item['first_downloaded_at'];first_seen=item.get('first_downloaded_at',item.get('observed_at',published))
-            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'sort':min(published,first_seen),'title':self.display_title(item),'excerpt':text[:280],'url':self.page_url(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction')})
+            title=self.display_title(item);excerpt=text
+            if title and excerpt.startswith(title):excerpt=excerpt[len(title):].lstrip(' —–:;,.')
+            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'sort':min(published,first_seen),'title':title,'excerpt':excerpt[:280],'url':self.page_url(item),'stub_target':self.stub_target(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction')})
         return sorted(out,key=lambda i:(i['sort'],i['key']),reverse=True)
     def mark(self,key,field,value):
         if field not in ('saved','liked'):raise ValueError('Unknown Reader marker.')
@@ -510,6 +519,20 @@ class Reader:
         # It also leaves Reader's base URL behind: make addresses permanent here
         # so a later preview or publication cannot reinterpret them as local URLs.
         soup=BeautifulSoup(clean(source.get('content_html','')),'html.parser')
+        # A fork copies a pinned document but does not inherit the source's
+        # verification claims. Flatten every baked transclusion to an ordinary
+        # editable quotation and retain a visible route back to its provenance.
+        for quote in list(soup.select('blockquote.blyg-transclusion')):
+            origin=quote.get('data-blyg-origin');iid=quote.get('data-blyg-id')
+            classes=[name for name in quote.get('class',[]) if name not in ('blyg-transclusion','blyg-partial')]
+            if classes:quote['class']=classes
+            elif quote.has_attr('class'):del quote['class']
+            for attr in list(quote.attrs):
+                if attr.startswith('data-blyg-') or attr.startswith('data-blynger-'):del quote[attr]
+            if isinstance(origin,str) and isinstance(iid,str):
+                attribution=soup.new_tag('p');attribution['class']='blynger-fork-attribution'
+                link=soup.new_tag('a',href=urljoin(origin,'items/'+iid+'.json'));link.string='Quoted from '+urlsplit(origin).netloc+' · '+iid
+                attribution.append(link);quote.insert_after(attribution)
         for node in soup.find_all(True):
             for attr in ('href','src','poster'):
                 value=node.get(attr)
@@ -529,7 +552,16 @@ class Reader:
             soup.append(node);present.add(url)
         markup=str(soup)
         title=re.sub(r'\s+',' ',BeautifulSoup(markup,'html.parser').get_text(' ',strip=True)).strip()
-        return {'title':title[:90] or 'Fork','html':markup,'forked_from':{'id':doc['id'],'version':version,'origin':item['origin']}}
+        inherited=[]
+        if 'blyg-tk-gen' in markup:
+            for entry in source.get('generated',[]):
+                if not isinstance(entry,dict):continue
+                disclosed={'sources':[]}
+                for field in ('model','at'):
+                    if isinstance(entry.get(field),str):disclosed[field]=entry[field]
+                if disclosed not in inherited:inherited.append(disclosed)
+            if not inherited:inherited=[{'sources':[]}]
+        return {'title':title[:90] or 'Fork','html':markup,'generated':inherited,'forked_from':{'id':doc['id'],'version':version,'origin':item['origin']}}
     def item(self,key):
         if key not in self.state['items']:raise ValueError('That item is no longer cached. Sync its Blyg to download it again.')
         return copy.deepcopy(self.state['items'][key])
@@ -540,6 +572,46 @@ class Reader:
             if isinstance(title,str) and title.strip():return title.strip()
         text=re.sub(r'\s+',' ',BeautifulSoup(doc.get('content_html',''),'html.parser').get_text(' ',strip=True)).strip()
         return text[:90] or '(Untitled)'
+    def stub_target(self,item):
+        """Return a safe, presentational link for an imported Stub target."""
+        target=item.get('doc',{}).get('stub_of')
+        if not isinstance(target,dict):return None
+        cited=target.get('cited') if isinstance(target.get('cited'),dict) else {}
+        label=''
+        for value in (cited.get('excerpt'),cited.get('source')):
+            if isinstance(value,str) and value.strip():
+                label=re.sub(r'\s+',' ',value).strip();break
+        result={'version':target.get('version')}
+        if isinstance(target.get('origin'),str) and isinstance(target.get('id'),str):
+            key=self.key(target['origin'],target['id']);cached=self.state['items'].get(key)
+            if cached:
+                result.update(key=key,url=self.page_url(cached))
+                if not label:label=self.display_title(cached)
+            else:
+                result['url']=target['origin']
+                if not label:label=target['id']
+        elif isinstance(target.get('url'),str):
+            parsed=urlsplit(target['url'])
+            if parsed.scheme not in ('http','https') or not parsed.netloc:return None
+            result['url']=target['url']
+            if not label:label=parsed.netloc.removeprefix('www.')
+        else:return None
+        result['label']=(label[:120]+'…') if len(label)>120 else label
+        return result
+    def conversation_links(self,item):
+        """Return locally known response edges without claiming graph completeness."""
+        doc=item.get('doc',{});backward=self.stub_target(item);forward=[]
+        origin=str(item.get('origin','')).rstrip('/');iid=doc.get('id')
+        if not origin or not isinstance(iid,str):return {'backward':backward,'forward':forward}
+        for key,candidate in self.state['items'].items():
+            if candidate.get('source_type') in ('l0','web'):continue
+            target=candidate.get('doc',{}).get('stub_of')
+            if not isinstance(target,dict):continue
+            if str(target.get('origin','')).rstrip('/')!=origin or target.get('id')!=iid:continue
+            cdoc=candidate['doc'];created=cdoc.get('created') or cdoc.get('updated') or candidate.get('observed_at','')
+            forward.append({'key':key,'url':self.page_url(candidate),'label':self.display_title(candidate),'version':cdoc.get('version'),'date':created})
+        forward.sort(key=lambda link:(link.get('date',''),link['key']))
+        return {'backward':backward,'forward':forward}
     def page_url(self,item):
         d=item['doc']
         if item.get('source_type') in ('l0','web'):return d.get('url') or item['origin']
@@ -550,7 +622,7 @@ class Reader:
         if isinstance(d.get('url'),str) and d['url']:return d['url']
         return item['origin']+('t/' if d.get('kind')=='thread' else 'f/')+d['id']+'/'
     def rendered(self,key,asset_prefix='/reader-media/'):
-        item=self.item(key);soup=BeautifulSoup(clean(item['doc']['content_html']),'html.parser')
+        item=self.item(key);soup=BeautifulSoup(clean_reader(item['doc']['content_html']),'html.parser')
         base=item['doc'].get('url',item['origin']) if item.get('source_type') in ('l0','web') else item['origin']
         present={urljoin(base,n.get('src','')) for n in soup.find_all(src=True)}
         for media in item['doc'].get('media',[]):
@@ -640,23 +712,39 @@ class Reader:
             atomic(studio.data/'uploads'/name,path.read_bytes());body=body.replace('/reader-media/'+name,studio.site+'blyg/media/'+name);assets.append(name)
         # Nested source metadata remains inside the snapshot, without private selectors.
         body=clean(body);author=source.get('author');name=author.get('name') if isinstance(author,dict) else None
+        transclude=bool(selection.get('transclude'))
         label='by '+name if isinstance(name,str) and name.strip() else source['site']
         title=source.get('title') if mode=='whole' else ''
         if title:
             title_soup=BeautifulSoup(body,'html.parser');first=title_soup.find(['h1','h2','h3','h4','h5','h6'])
             if first and first.get_text(' ',strip=True)==title:first.decompose();body=str(title_soup)
-        heading='<h4 class="blynger-quote-title">'+html.escape(title)+'</h4>' if isinstance(title,str) and title else ''
-        attribution='<p class="blynger-quote-author"><a href="'+html.escape(source['url'] or item['origin'],quote=True)+'">'+html.escape(label)+'</a>'
-        if not plain:attribution+=' · quoted from v'+str(source['version'])
-        attribution+='</p>'
+        if transclude:
+            heading='<h4 class="blynger-quote-title">'+html.escape(title)+'</h4>' if isinstance(title,str) and title else ''
+            attribution='<p class="blynger-quote-author"><a href="'+html.escape(source['url'] or item['origin'],quote=True)+'">'+html.escape(label)+'</a>'
+            if not plain:attribution+=' · quoted from v'+str(source['version'])
+            attribution+='</p>'
+        else:
+            heading='';candidate=source.get('title') or (selection_text(body) if mode=='fragment' else self.display_title(item))
+            candidate=re.sub(r'\s+',' ',candidate).strip();sentence=re.match(r'.+?(?:[.!?](?=\s|$)|$)',candidate)
+            citation_title=((sentence.group(0) if sentence else candidate)[:140].strip() or 'Source')
+            attribution='<p class="blynger-quote-author"><strong>From:</strong> <a href="'+html.escape(source['url'] or item['origin'],quote=True)+'">'+html.escape(citation_title)+'</a></p>'
         token='q'+secrets.token_hex(16)
         record={'type':mode,'source':source,'html':body,'text':text,'assets':assets,'at':self.clock(),'token':token}
-        # No synthetic protocol identity: this token belongs only to the local editor.
-        native=not plain and mode in ('whole','fragment','excerpt')
+        # Quote is the light, editable citation path. Only Stub explicitly asks
+        # for a protocol transclusion; its protected source block is then
+        # re-verified from this private snapshot at publication.
+        if not transclude:
+            quoted_body=BeautifulSoup(body,'html.parser')
+            for nested in quoted_body.select('blockquote.blyg-transclusion'):
+                nested['class']=[value for value in nested.get('class',[]) if value not in ('blyg-transclusion','blyg-partial')]
+                for key in ('data-blyg-id','data-blyg-version','data-blyg-origin'):nested.attrs.pop(key,None)
+            body=str(quoted_body)
+        native=not plain and transclude and mode in ('whole','fragment')
         attrs=(' data-blyg-id="'+source['id']+'" data-blyg-version="'+str(source['version'])+'" data-blyg-origin="'+html.escape(source['origin'],quote=True)+'"') if native else ''
         visible='<blockquote class="blynger-citation'+(' blyg-transclusion' if native else '')+(' blyg-partial' if native and mode=='excerpt' else '')+'" data-blynger-quote="'+token+'"'+attrs+'>'+heading+attribution+body+'</blockquote>'
         record['visible_html']=visible
-        target={'url':source['url']} if plain else {'id':doc['id'],'version':doc['version'],'origin':item['origin'],'cited':{'source':source['site'],'author':name or source['site'],'excerpt':re.sub(r'\s+',' ',selection_text(body)).strip()[:200],'url':source['url'],'retrieved':self.clock()}}
+        cited={'source':source['site'],'author':name or source['site'],'excerpt':re.sub(r'\s+',' ',selection_text(body)).strip()[:200],'url':source['url'],'retrieved':self.clock()}
+        target={'url':source['url'],'cited':cited} if plain else {'id':doc['id'],'version':doc['version'],'origin':item['origin'],'cited':cited}
         source_soup=BeautifulSoup(body,'html.parser')
         heading=source_soup.find(['h1','h2','h3','h4','h5','h6'])
         stub_title=source.get('title') or (heading.get_text(' ',strip=True) if heading else '')
@@ -666,7 +754,7 @@ class Reader:
             stub_title=(sentence.group(0) if sentence else plain_text)[:140].strip()
         stub_title=stub_title or self.display_title(item)
         stub_url=source.get('url') or item['origin']
-        stub_label_html='<p class="blynger-stub-label"><strong>Stub of:</strong> <a href="'+html.escape(stub_url,quote=True)+'">'+html.escape(stub_title)+'</a></p>'
+        stub_label_html='<p class="blynger-stub-label"><strong>Stubbing:</strong> <a href="'+html.escape(stub_url,quote=True)+'">'+html.escape(stub_title)+'</a></p>'
         # Plain-web responses have no protocol identity to transclude. Blyg
         # targets use ``html`` and the private snapshot record instead.
         stub_html=stub_label_html+'<blockquote class="blynger-stub-context">'+body+'</blockquote>'

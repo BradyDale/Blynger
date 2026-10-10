@@ -47,6 +47,32 @@ class ReaderTests(unittest.TestCase):
         reloaded=Reader(self.data,self.net,lambda:self.time);self.assertEqual(reloaded.item(self.r.key(ORIGIN,IID))['doc']['version'],2)
     def test_multiple_origins_scope_same_id_and_kind(self):
         self.sub();other='https://second.example/';self.net.add(other,[doc(kind='thread',origin=other)]);self.r.subscribe(other);self.assertEqual(len(self.r.listing()),2);self.assertEqual({i['kind'] for i in self.r.listing()},{'fragment','thread'});self.assertEqual(len(self.r.listing(subscription=digest(other))),1);self.assertEqual(len(self.r.listing(query='other author')),2)
+    def test_stub_target_uses_cited_excerpt_and_cached_target(self):
+        target=doc(kind='thread',text='The complete target words that identify this post')
+        stub=doc(iid='0'*25+'2',kind='thread',text='My response')
+        stub['stub_of']={'origin':ORIGIN,'id':IID,'version':1,'cited':{'excerpt':'The frozen first words','source':'Other Author'}}
+        self.net.add(items=[target,stub]);self.sub()
+        row=next(item for item in self.r.listing() if item['id']==stub['id'])
+        self.assertEqual(row['stub_target']['label'],'The frozen first words')
+        self.assertEqual(row['stub_target']['key'],self.r.key(ORIGIN,IID))
+        self.assertEqual(row['stub_target']['url'],ORIGIN+'t/'+IID+'/')
+        self.assertEqual(row['stub_target']['version'],1)
+        links=self.r.conversation_links(self.r.item(self.r.key(ORIGIN,IID)))
+        self.assertIsNone(links['backward'])
+        self.assertEqual([link['key'] for link in links['forward']],[self.r.key(ORIGIN,stub['id'])])
+        reverse=self.r.conversation_links(self.r.item(self.r.key(ORIGIN,stub['id'])))
+        self.assertEqual(reverse['backward']['key'],self.r.key(ORIGIN,IID))
+        self.assertEqual(reverse['forward'],[])
+    def test_listing_does_not_repeat_derived_headline_in_excerpt(self):
+        words='A long opening thought that becomes the Reader headline and then continues into useful preview text.'
+        self.net.add(items=[doc(text=words)]);self.sub();row=self.r.listing()[0]
+        self.assertFalse(row['excerpt'].startswith(row['title']))
+        self.assertNotEqual(row['excerpt'],words)
+    def test_stub_target_plain_web_and_uncached_blyg_fallbacks(self):
+        item={'doc':{'stub_of':{'url':'https://news.example/story','cited':{'excerpt':'A web headline'}}}}
+        self.assertEqual(self.r.stub_target(item),{'version':None,'url':'https://news.example/story','label':'A web headline'})
+        item={'doc':{'stub_of':{'origin':'https://missing.example/blyg/','id':'0'*25+'3','version':4,'cited':{'source':'Missing Blyg'}}}}
+        self.assertEqual(self.r.stub_target(item),{'version':4,'url':'https://missing.example/blyg/','label':'Missing Blyg'})
     def test_read_uses_cache_and_sanitizes_without_network(self):
         d=doc();d['content_html']='<script>evil()</script><p onclick="evil()">Good</p><img src="https://tracker.example/x"><iframe src="https://evil.example"></iframe>';self.net.add(items=[d]);self.sub();self.net.calls=[];self.net.urls={}
         html=self.r.rendered(self.r.key(ORIGIN,IID));self.assertNotIn('<script',html);self.assertNotIn('onclick',html);self.assertNotIn('tracker',html);self.assertNotIn('iframe',html);self.assertIn('Good',html);self.assertEqual(self.net.calls,[])
@@ -97,9 +123,12 @@ class ReaderTests(unittest.TestCase):
         d=doc();d['media']=[{'url':'media/a.png','mime':'image/png'}];self.net.add(items=[d]);self.net.urls[ORIGIN+'media/a.png']=(b'image','image/png');self.sub();self.assertTrue(self.item()['has_visual_media']);self.assertIn('/reader-media/',self.r.rendered(self.item()['key']))
     def test_failure_preserves_cached_content(self):
         sid=self.sub();before=copy.deepcopy(self.r.state['items']);self.net.urls={};self.r.sync(sid);self.assertEqual(before,self.r.state['items']);self.assertTrue(self.r.state['subscriptions'][sid]['error'])
-    def test_rollback_and_stealth_edit(self):
+    def test_rollback_and_stealth_edit_is_rejected(self):
         self.net.add(items=[doc(version=3)]);sid=self.sub();self.net.add(items=[doc(version=2,text='Rollback')]);self.r.sync(sid);self.assertEqual(self.item()['doc']['version'],3)
-        self.net.add(items=[doc(version=3,text='Stealth')]);self.time='2026-02-03T00:00:00Z';self.r.sync(sid);self.assertIn('Stealth',self.item()['doc']['content_md']);self.assertTrue(any('Same-version' in w for w in self.r.state['subscriptions'][sid]['warnings']))
+        self.net.add(items=[doc(version=3,text='Stealth')]);self.time='2026-02-03T00:00:00Z';self.r.sync(sid);self.assertNotIn('Stealth',self.item()['doc']['content_md']);self.assertTrue(any('Rejected same-version' in w for w in self.r.state['subscriptions'][sid]['warnings']))
+    def test_hash_and_origin_mismatches_are_not_stored(self):
+        bad_hash=doc();bad_hash['content_hash']='sha256:'+'0'*64;self.net.add(items=[bad_hash]);sid=self.sub();self.assertEqual(self.r.listing(),[]);self.assertTrue(any('content hash mismatch' in w for w in self.r.state['subscriptions'][sid]['warnings']))
+        bad_origin=doc(version=2,origin='https://imposter.example/');self.net.add(items=[bad_origin]);self.r.sync(sid);self.assertEqual(self.r.listing(),[]);self.assertTrue(any('origin differs' in w for w in self.r.state['subscriptions'][sid]['warnings']))
     def test_withdrawal_and_return_watermark(self):
         sid=self.sub();self.net.add(items=[doc(version=2,kind='withdrawn',text='')]);self.r.sync(sid);self.assertEqual(self.r.listing(),[]);self.assertEqual(self.r.state['watermarks'][self.r.key(ORIGIN,IID)]['version'],2)
         self.net.add(items=[doc()]);self.r.sync(sid);self.assertEqual(self.r.listing(),[])
@@ -168,7 +197,7 @@ class ReaderPublicationTests(unittest.TestCase):
         self.assertEqual(out['transclusions'][0]['version'],2);self.assertEqual(out['stub_of'],{'id':IID,'version':2,'origin':ORIGIN})
 
     def test_remote_stub_real_save_reload_html_roundtrip_writes_canonical_transclusion(self):
-        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s)
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole','transclude':True},self.s)
         page=self.s.create('Real remote response',stub_of=quoted['stub_of'])
         page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_label_html']+quoted['html']+'<p>My response—it’s mine.</p>')
         page['quotes']={quoted['snapshot']['token']:quoted['snapshot']};page['preserve_authored_typography']=True;self.s.save_draft(page)
@@ -184,7 +213,7 @@ class ReaderPublicationTests(unittest.TestCase):
         self.assertNotIn('blynger-citation',final['content_html']);self.assertNotIn('data-blynger-quote',final['content_html'])
 
     def test_legacy_remote_stub_context_is_upgraded_before_final_json(self):
-        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s);page=self.s.create('Legacy UI response',stub_of=quoted['stub_of'])
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole','transclude':True},self.s);page=self.s.create('Legacy UI response',stub_of=quoted['stub_of'])
         page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_html']+'<p>My response.</p>');self.s.save_draft(page);reopened=self.s.page(page['name'])
         self.assertNotIn('blynger-stub-context',reopened['raw']);self.assertIn('data-blynger-quote',reopened['raw']);self.s.prepare();own=self.s.state['ids'][page['name']]
         final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['transclusions'],[{'id':IID,'version':1,'origin':ORIGIN}])
@@ -192,7 +221,7 @@ class ReaderPublicationTests(unittest.TestCase):
         self.assertNotIn('blynger-citation',final['content_html']);self.assertNotIn('data-blynger-quote',final['content_html'])
 
     def test_deleting_protected_stub_source_keeps_only_response_relationship(self):
-        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s);page=self.s.create('Response without source block',stub_of=quoted['stub_of'])
+        quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole','transclude':True},self.s);page=self.s.create('Response without source block',stub_of=quoted['stub_of'])
         page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_label_html']+quoted['html']+'<p>My response.</p>');page['quotes']={quoted['snapshot']['token']:quoted['snapshot']};self.s.save_draft(page)
         reopened=self.s.page(page['name']);soup=BeautifulSoup(reopened['raw'],'html.parser');soup.select_one('blockquote[data-blynger-quote]').decompose();reopened['raw']=str(soup);self.s.save_draft(reopened);self.s.prepare();own=self.s.state['ids'][page['name']]
         final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],quoted['stub_of']);self.assertEqual(final['transclusions'],[]);self.assertNotIn('![['+IID+']]',final['content_md'])
@@ -202,7 +231,7 @@ class ReaderPublicationTests(unittest.TestCase):
         opened=self.s.reader.open_url(url);quoted=self.s.reader.snapshot(opened['selected'],{'mode':'whole'},self.s);page=self.s.create('Web response',stub_of=quoted['stub_of'])
         page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_html']+'<p>My response.</p>');self.s.save_draft(page);reopened=self.s.page(page['name'])
         self.assertIn('blynger-stub-context',reopened['raw']);self.assertNotIn('data-blyg-id',reopened['raw']);self.s.prepare();own=self.s.state['ids'][page['name']]
-        final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of'],{'url':url});self.assertEqual(final['transclusions'],[]);self.assertNotIn('![[',final['content_md'])
+        final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of']['url'],url);self.assertEqual(final['stub_of']['cited']['url'],url);self.assertTrue(final['stub_of']['cited']['excerpt']);self.assertEqual(final['transclusions'],[]);self.assertNotIn('![[',final['content_md'])
 
     def test_quote_is_not_implicitly_a_stub_and_response_survives_without_quote(self):
         quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s)
@@ -216,8 +245,8 @@ class ReaderPublicationTests(unittest.TestCase):
     def test_stub_target_is_exact_and_immutable(self):
         quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s);target=quoted['stub_of']
         self.assertEqual(target['origin'],ORIGIN);self.assertEqual(target['id'],IID);self.assertEqual(target['version'],1);self.assertIn('cited',target)
-        self.assertIn('<strong>Stub of:</strong>',quoted['stub_html'])
-        self.assertIn('<strong>Stub of:</strong>',quoted['stub_label_html'])
+        self.assertIn('<strong>Stubbing:</strong>',quoted['stub_html'])
+        self.assertIn('<strong>Stubbing:</strong>',quoted['stub_label_html'])
         self.assertIn('href="https://remote.example/notes/t/'+IID+'/"',quoted['stub_html'])
         self.assertIn('Remote words',quoted['stub_html'])
         self.assertNotIn('data-blynger-quote',quoted['stub_html'])

@@ -9,6 +9,15 @@ The 0.9.27 review used the published living 0.3 text and its source revision
 source was also inspected at `53be5a1`; the older harness is intentional
 because it is the version targeted by that toolkit proposal.
 
+The 0.9.34 review rechecked the live specification and official source at
+`fde93b694a401d3c458b34dfac84fc833ba861dd`. Blynger already accepts the newly
+normative optional `changelog[].generated` and plain-web `stub_of.cited`
+members as ignorable/extensible data. Fork import now follows the newer
+flattening rule: inherited baked transclusions lose their verification tokens,
+become ordinary attributed quotations, and retain truthful generated-text
+disclosure. Static-only Blynger still does not advertise or receive
+Webmentions, which remains conformant.
+
 Every preparation runs `conformance.validate_surface()` against the complete
 in-memory Blyg surface before those files are written to the website folder. It
 independently checks current item documents, archive rows, pinned snapshots,

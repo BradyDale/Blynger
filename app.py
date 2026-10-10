@@ -34,8 +34,11 @@ class Handler(BaseHTTPRequestHandler):
     def send(self,data,status=200,mime='application/json'):
         if isinstance(data,(dict,list)): data=json.dumps(data,ensure_ascii=False).encode()
         elif isinstance(data,str): data=data.encode()
-        self.send_response(status); self.send_header('Content-Type',mime); self.send_header('Content-Length',str(len(data))); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Frame-Options','SAMEORIGIN');
-        if self.path.startswith('/preview/'): self.send_header('Content-Security-Policy','sandbox')
+        self.send_response(status); self.send_header('Content-Type',mime); self.send_header('Content-Length',str(len(data))); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Frame-Options','SAMEORIGIN'); self.send_header('Referrer-Policy','no-referrer'); self.send_header('Permissions-Policy','camera=(), microphone=(), geolocation=()')
+        path=urlsplit(self.path).path
+        if path=='/': self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+        elif path.startswith('/preview/'): self.send_header('Content-Security-Policy',"sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'none'")
+        elif path.startswith('/api/'): self.send_header('Content-Security-Policy',"default-src 'none'; frame-ancestors 'none'")
         self.end_headers(); self.wfile.write(data)
     def valid_host(self): return self.headers.get('Host')==f'127.0.0.1:{self.server.server_port}'
     def problem(self,e):
@@ -66,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                     with self.server.reader_lock:return self.send({'subscriptions':[s for s in self.server.studio.reader.state['subscriptions'].values() if s.get('active',True)],'items':self.server.studio.reader.listing(q.get('subscription',[None])[0],q.get('q',[''])[0],q.get('view',['all'])[0])})
                 if p=='/api/reader-item':
                     with self.server.reader_lock:
-                        key=q['key'][0];item=self.server.studio.reader.item(key);return self.send({**item,'html':self.server.studio.reader.rendered(key),'fragments':self.server.studio.reader.source_fragments(key),'original_url':self.server.studio.reader.page_url(item),'fingerprint':__import__('hashlib').sha256(json.dumps(item['doc'],sort_keys=True).encode()).hexdigest()})
+                        key=q['key'][0];item=self.server.studio.reader.item(key);return self.send({**item,'html':self.server.studio.reader.rendered(key),'fragments':self.server.studio.reader.source_fragments(key),'original_url':self.server.studio.reader.page_url(item),'stub_target':self.server.studio.reader.stub_target(item),'conversation':self.server.studio.reader.conversation_links(item),'fingerprint':__import__('hashlib').sha256(json.dumps(item['doc'],sort_keys=True).encode()).hexdigest()})
                 if p=='/api/interactions':
                     with self.server.reader_lock:return self.send({'items':self.server.studio.reader.interactions(q.get('q',[''])[0])})
                 if p=='/api/quote-choices':
@@ -123,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(result)
             if p=='/api/reader-fork':
                 with self.server.reader_lock:source=studio.reader.fork_source(d['key'],d.get('version'))
-                with self.server.lock:result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'])
+                with self.server.lock:result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'],generated=source.get('generated'))
                 return self.send(result)
             if p=='/api/quote-item':
                 with self.server.reader_lock:

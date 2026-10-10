@@ -1,57 +1,210 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="blynger-token" content="__TOKEN__">
-  <meta name="blynger-author" content="__AUTHOR_NAME__">
-  <title>Blynger — personal publishing desk</title>
-  <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-<div class="desktop">
-  <main class="window">
-    <header class="titlebar">
-      <span><img class="app-logo" src="/static/blynger-logo.png" alt=""> Blynger — Personal Publisher</span>
-      <span class="title-details">__SITE_LABEL__ · v__APP_VERSION__ · Blyg __BLYG_VERSION__</span>
-      <span class="window-controls">_ &nbsp; ▢ &nbsp; ×</span>
-    </header>
-    <nav class="workspace-tabs" aria-label="Blynger workspaces">
-      <button id="postsNav" data-workspace="posts" class="active">Posts</button>
-      <button id="openersNav" data-workspace="openers">Openers</button>
-      <button id="pagesNav" data-workspace="pages">Pages</button>
-      <button id="imagesNav" data-workspace="images">Images</button>
-      <button id="readerNav" data-workspace="reader">Reader</button>
-      <button id="savedNav" data-workspace="saved">Saved</button>
-    </nav>
-    <div class="toolbar" id="authorToolbar">
-      <button id="new">▤ New post</button><button id="newOpener" hidden>New opener</button><button id="newPage">▣ New page</button><i></i>
-      <button id="save">▣ Save draft</button><button id="preview">◉ Preview</button><button id="images">▧ Insert image</button><button id="versions">◷ Versions</button><button id="mainFragment" title="Add fragment · Control+Shift+F">Fragment</button><button id="quote">❞ Quote post</button><button id="tk"><span class="tk-robot" aria-hidden="true"></span>TK assistant</button>
-      <div class="spacer"></div><button id="queue">Queue</button><button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="blynger-token" content="__TOKEN__" />
+    <meta name="blynger-author" content="__AUTHOR_NAME__" />
+    <title>Blynger — personal publishing desk</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="desktop">
+      <main class="window">
+        <header class="titlebar">
+          <span
+            ><img class="app-logo" src="/static/blynger-logo.png" alt="" /> Blynger —
+            Personal Publisher</span
+          >
+          <span class="title-details"
+            >__SITE_LABEL__ · v__APP_VERSION__ · Blyg __BLYG_VERSION__</span
+          >
+          <span class="window-controls">_ &nbsp; ▢ &nbsp; ×</span>
+        </header>
+        <nav class="workspace-tabs" aria-label="Blynger workspaces">
+          <button id="postsNav" data-workspace="posts" class="active">Posts</button>
+          <button id="openersNav" data-workspace="openers">Openers</button>
+          <button id="pagesNav" data-workspace="pages">Pages</button>
+          <button id="imagesNav" data-workspace="images">Images</button>
+          <button id="readerNav" data-workspace="reader">Reader</button>
+          <button id="savedNav" data-workspace="saved">Saved</button>
+        </nav>
+        <div class="toolbar" id="authorToolbar">
+          <button id="new">▤ New post</button
+          ><button id="newOpener" hidden>New opener</button
+          ><button id="newPage">▣ New page</button><i></i>
+          <button id="save">▣ Save draft</button><button id="preview">◉ Preview</button
+          ><button id="images">▧ Insert image</button
+          ><button id="versions">◷ Versions</button
+          ><button id="mainFragment" title="Add fragment · Control+Shift+F">Fragment</button
+          ><button id="quote">❞ Quote post</button
+          ><button id="tk">
+            <span class="tk-robot" aria-hidden="true"></span>TK assistant
+          </button>
+          <div class="spacer"></div>
+          <button id="queue">Queue</button
+          ><button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
+        </div>
+        <div class="workspace" id="workspace">
+          <aside id="libraryPane">
+            <div class="aside-head" id="libraryTitle">POSTS</div>
+            <label class="search"
+              ><span>⌕</span
+              ><input id="search" placeholder="Search posts…" aria-label="Search posts"
+            /></label>
+            <div class="post-sort" id="postSort" aria-label="Sort posts">
+              <button data-sort="updated" class="active">Updated</button
+              ><button data-sort="created">Created</button
+              ><button data-sort="alpha">Alphabetical</button
+              ><button data-sort="deleted">Deleted</button>
+            </div>
+            <div id="pages"></div>
+          </aside>
+          <section class="document" id="documentView">
+            <div class="document-heading">
+              <div>
+                <div class="eyebrow" id="kind">PAGE EDITOR</div>
+                <h1 id="heading">Your publishing desk</h1>
+                <div class="filename" id="filename">Choose a page to get started.</div>
+                <div class="response-marker" id="responseMarker" hidden></div>
+              </div>
+              <div>
+                <span id="draftBadge" class="badge">LOCAL</span
+                ><button id="editHeadline" hidden>Edit headline</button
+                ><button id="deletePost" hidden>Delete post…</button>
+              </div>
+            </div>
+            <div class="tabs">
+              <button class="active" id="visualTab">Write</button
+              ><button id="sourceTab">HTML source</button
+              ><span id="wordcount">0 words</span>
+            </div>
+            <div class="formatbar">
+              <button data-format="bold"><b>B</b></button
+              ><button data-format="italic"><i>I</i></button><button id="link">Link</button
+              ><i></i><button data-block="h2">H2</button><button data-block="p">¶</button
+              ><button id="center" aria-pressed="false">Center</button
+              ><button id="blockquote">❞ Blockquote</button
+              ><button data-format="insertUnorderedList">• List</button
+              ><button id="fragment" title="Add fragment · Control+Shift+F">Fragment</button
+              ><button id="removeFragment">Remove fragment</button>
+            </div>
+            <div
+              id="editor"
+              contenteditable="true"
+              spellcheck="true"
+              aria-label="Page content"
+            ></div>
+            <div id="sourceFind" class="source-find" hidden>
+              <input
+                id="sourceFindText"
+                aria-label="Find in HTML"
+                placeholder="Find"
+              /><button id="sourceFindPrev">Previous</button
+              ><button id="sourceFindNext">Next</button
+              ><button id="sourceFindClose">Close</button>
+            </div>
+            <textarea
+              id="source"
+              spellcheck="false"
+              aria-label="Full HTML source"
+              hidden
+            ></textarea>
+            <div class="document-foot">
+              <span>✎ Drafts stay on this Mac until you publish.</span
+              ><label id="pinPlan" class="pin-plan" hidden
+                ><input id="pinOnPublish" type="checkbox" /> Pin this version when
+                published</label
+              ><button id="revert">Revert to file</button><span id="saveState">Ready</span>
+            </div>
+          </section>
+          <section id="imagesView" class="library-view" hidden>
+            <div class="document-heading">
+              <div>
+                <div class="eyebrow">SITE FILES</div>
+                <h1>Images</h1>
+                <div class="filename">Browse image files and see where they are used.</div>
+              </div>
+              <div>
+                <button id="imageUpload">Upload image…</button
+                ><button id="imageAddToDraft">Insert in current draft…</button
+                ><input
+                  id="imageUploadFile"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  hidden
+                />
+              </div>
+            </div>
+            <p id="imageStatus" class="hint"></p>
+            <div id="imageLibrary" class="asset-grid"></div>
+          </section>
+          <section id="readerView" class="reader-view" hidden>
+            <div class="document-heading">
+              <div>
+                <div class="eyebrow" id="readerEyebrow">LOCAL READING DESK</div>
+                <h1 id="readerHeading">Reader</h1>
+              </div>
+              <button id="readerBack" hidden>Back to writing</button>
+            </div>
+            <div class="reader-controls" id="readerActions">
+              <button id="readerOpen">Open URL…</button
+              ><button id="readerAdd">Add subscription…</button
+              ><button id="readerManage">Manage subscriptions…</button
+              ><button id="readerSync">Refresh / Sync</button
+              ><button id="readerBlogroll" hidden>Show on blogroll</button>
+            </div>
+            <div id="savedViews" class="saved-views" hidden>
+              <button data-saved-view="saved" class="active">Saved posts</button
+              ><button data-saved-view="activity">Private activity</button>
+            </div>
+            <div class="reader-controls">
+              <select id="readerSource" aria-label="Subscribed Blyg">
+                <option value="">All subscriptions</option></select
+              ><select id="readerViewFilter" aria-label="Reader view">
+                <option value="all">All posts</option>
+                <option value="saved">Saved posts</option>
+                <option value="liked">Liked posts</option></select
+              ><input
+                id="readerSearch"
+                placeholder="Search text or author"
+                aria-label="Search imported items"
+              />
+            </div>
+            <p id="readerStatus" class="hint" role="status"></p>
+            <div id="readerItems"></div>
+            <div class="reader-foot">
+              Reader responses and activity stay in private support data on this Mac. They
+              are never added to the website, feeds, or public source export.
+            </div>
+          </section>
+        </div>
+        <footer class="statusbar">
+          <span id="status" role="status">Opening your site…</span
+          ><span class="local-dot">● LOCAL WORKSPACE</span><span class="resize">◢</span>
+        </footer>
+      </main>
+      <div id="menuHooks" hidden>
+        <button id="settings">Settings</button
+        ><button
+          id="migrate"
+          title="Usually automatic. Use only after a Blynger upgrade or to repair the archive."
+        >
+          Rebuild Blyg archive</button
+        ><button id="help">Blynger Help</button><button id="about">About Blynger</button>
+      </div>
     </div>
-    <div class="workspace" id="workspace">
-      <aside id="libraryPane">
-        <div class="aside-head" id="libraryTitle">POSTS</div>
-        <label class="search"><span>⌕</span><input id="search" placeholder="Search posts…" aria-label="Search posts"></label>
-        <div class="post-sort" id="postSort" aria-label="Sort posts"><button data-sort="updated" class="active">Updated</button><button data-sort="created">Created</button><button data-sort="alpha">Alphabetical</button><button data-sort="deleted">Deleted</button></div>
-        <div id="pages"></div>
-      </aside>
-      <section class="document" id="documentView">
-        <div class="document-heading"><div><div class="eyebrow" id="kind">PAGE EDITOR</div><h1 id="heading">Your publishing desk</h1><div class="filename" id="filename">Choose a page to get started.</div><div class="response-marker" id="responseMarker" hidden></div></div><div><span id="draftBadge" class="badge">LOCAL</span><button id="editHeadline" hidden>Edit headline</button><button id="deletePost" hidden>Delete post…</button></div></div>
-        <div class="tabs"><button class="active" id="visualTab">Write</button><button id="sourceTab">HTML source</button><span id="wordcount">0 words</span></div>
-        <div class="formatbar"><button data-format="bold"><b>B</b></button><button data-format="italic"><i>I</i></button><button id="link">Link</button><i></i><button data-block="h2">H2</button><button data-block="p">¶</button><button id="blockquote">❞ Blockquote</button><button data-format="insertUnorderedList">• List</button><button id="fragment" title="Add fragment · Control+Shift+F">Fragment</button><button id="removeFragment">Remove fragment</button></div>
-        <div id="editor" contenteditable="true" spellcheck="true" aria-label="Page content"></div>
-        <div id="sourceFind" class="source-find" hidden><input id="sourceFindText" aria-label="Find in HTML" placeholder="Find"><button id="sourceFindPrev">Previous</button><button id="sourceFindNext">Next</button><button id="sourceFindClose">Close</button></div><textarea id="source" spellcheck="false" aria-label="Full HTML source" hidden></textarea>
-        <div class="document-foot"><span>✎ Drafts stay on this Mac until you publish.</span><label id="pinPlan" class="pin-plan" hidden><input id="pinOnPublish" type="checkbox"> Pin this version when published</label><button id="revert">Revert to file</button><span id="saveState">Ready</span></div>
-      </section>
-      <section id="imagesView" class="library-view" hidden><div class="document-heading"><div><div class="eyebrow">SITE FILES</div><h1>Images</h1><div class="filename">Browse image files and see where they are used.</div></div><div><button id="imageUpload">Upload image…</button><button id="imageAddToDraft">Insert in current draft…</button><input id="imageUploadFile" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden></div></div><p id="imageStatus" class="hint"></p><div id="imageLibrary" class="asset-grid"></div></section>
-      <section id="readerView" class="reader-view" hidden><div class="document-heading"><div><div class="eyebrow" id="readerEyebrow">LOCAL READING DESK</div><h1 id="readerHeading">Reader</h1></div><button id="readerBack" hidden>Back to writing</button></div><div class="reader-controls" id="readerActions"><button id="readerOpen">Open URL…</button><button id="readerAdd">Add subscription…</button><button id="readerManage">Manage subscriptions…</button><button id="readerSync">Refresh / Sync</button><button id="readerBlogroll" hidden>Show on blogroll</button></div><div id="savedViews" class="saved-views" hidden><button data-saved-view="saved" class="active">Saved posts</button><button data-saved-view="activity">Private activity</button></div><div class="reader-controls"><select id="readerSource" aria-label="Subscribed Blyg"><option value="">All subscriptions</option></select><select id="readerViewFilter" aria-label="Reader view"><option value="all">All posts</option><option value="saved">Saved posts</option><option value="liked">Liked posts</option></select><input id="readerSearch" placeholder="Search text or author" aria-label="Search imported items"></div><p id="readerStatus" class="hint" role="status"></p><div id="readerItems"></div><div class="reader-foot">Reader responses and activity stay in private support data on this Mac. They are never added to the website, feeds, or public source export.</div></section>
-    </div>
-    <footer class="statusbar"><span id="status" role="status">Opening your site…</span><span class="local-dot">● LOCAL WORKSPACE</span><span class="resize">◢</span></footer>
-  </main>
-  <div id="menuHooks" hidden><button id="settings">Settings</button><button id="migrate" title="Usually automatic. Use only after a Blynger upgrade or to repair the archive.">Rebuild Blyg archive</button><button id="help">Blynger Help</button><button id="about">About Blynger</button></div>
-</div>
-<dialog id="dialog"><div class="titlebar"><span id="dialogTitle"></span><button id="closeDialog" aria-label="Close dialog">×</button></div><div id="dialogBody"></div></dialog>
-<script src="/static/fragments.js"></script><script src="/static/editor-safety.js"></script><script src="/static/app.js"></script>
-</body>
+    <dialog id="dialog">
+      <div class="titlebar">
+        <span id="dialogTitle"></span
+        ><button id="closeDialog" aria-label="Close dialog">×</button>
+      </div>
+      <div id="dialogBody"></div>
+    </dialog>
+    <script src="/static/fragments.js"></script>
+    <script src="/static/editor-safety.js"></script>
+    <script src="/static/reader-frame.js"></script>
+    <script src="/static/reader-ui.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
 </html>

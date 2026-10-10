@@ -1,6 +1,21 @@
-# Reader — current behavior in Blynger 0.9.29
+# Reader — current behavior in Blynger 0.9.34
 
-The protocol source of truth for this release was the live [Blyg 0.3 specification](https://blygger.org/spec/0.3/), checked against official specification source commit `ac932cfeeaa2872f8429c248c39307226bbc6d8a`. Human Blyg pages advertise their origin base with `rel="blyg"`; readers resolve that link and probe the fixed `blyg.json` manifest. Older implementation reports below are retained as history, not as the current feature boundary.
+The protocol source of truth for this release was the live [Blyg 0.3 specification](https://blygger.org/spec/0.3/), checked against official specification source commit `fde93b694a401d3c458b34dfac84fc833ba861dd`. Human Blyg pages advertise their origin base with `rel="blyg"`; readers resolve that link and probe the fixed `blyg.json` manifest. Older implementation reports below are retained as history, not as the current feature boundary.
+
+## Imported-content security boundary
+
+Imported Blyg, RSS/Atom, and ordinary-web HTML never enters Blynger's privileged document. It is sanitized with `nh3` and rendered in an opaque sandboxed frame. The frame cannot read Blynger's DOM or API token, submit forms, call local routes, navigate the parent, open nested frames, or run source-provided scripts. Its own deny-by-default Content Security Policy permits only locally cached Reader media and one exact local Blynger bridge script.
+
+That bridge has a deliberately small vocabulary: selected text, selected genuine-fragment index, and a clicked safe link travel out; a requested fragment selection travels in. Every message is bound to both the exact frame window and a random per-opening channel. Quote, Stub, Fork, Open original, Saved, Like, and private-response controls remain in the trusted outer application.
+
+The Reader sanitizer removes arbitrary source IDs and classes in addition to active HTML, event handlers, styles, forms, and dangerous URL schemes. It preserves only safe structural/media attributes and the specific shared `blyg-tk-gen`, `blyg-transclusion`, and `blyg-partial` conventions Blynger understands. The main application document separately uses a deny-by-default Content Security Policy.
+
+Every remote request resolves its hostname once, rejects the request if any
+result is local or private, and connects to the exact validated address rather
+than allowing the networking layer to resolve it again. Redirect destinations
+receive the same check. HTTPS certificate verification continues to use the
+requested public hostname. Untrusted RSS, Atom, and discovery XML is parsed
+with `defusedxml`, so declarations and entity expansion are rejected.
 
 Blyg item documents are titleless. The Reader preserves unknown imported
 fields verbatim but does not treat another client's `title` member as protocol
@@ -12,7 +27,14 @@ retain their real source titles.
 
 Each subscription keeps conditional-response state (`ETag` and `Last-Modified`). An unchanged Blyg feed returning 304 ends the normal sync immediately. Blynger also recognizes an identical response body from servers without those cache headers. A changed feed conditionally checks the archive index, compares index versions with local watermarks, and downloads only changed/new canonical documents with at most four concurrent requests. Up to six independent subscriptions are checked concurrently, so one slow origin does not make every other origin wait behind it. Once daily, Blynger forces an archive-index and recent-item reconciliation so missed notifications and improper same-version edits are still detected. Ordinary RSS/Atom feeds retain only a response hash rather than a complete duplicate feed body. When channel metadata changes, per-entry hashes skip unchanged entries before sanitization and media inspection; a normalized-content comparison catches XML-only reformatting.
 
-The Reader rejects overlapping syncs, retains good cached content on failure, continues after an individual subscription fails, labels network versus invalid-data errors, and records duration, checked-item, and downloaded-item diagnostics. Reader network work uses a dedicated lock rather than Blynger's general authoring lock, so opening pages and saving drafts remain available during a refresh. Reader-dependent actions wait for a consistent cache snapshot. Opening Reader starts a sync; a 90-minute in-app timer repeats it while Reader remains open. Nothing survives Blynger's process as a background daemon.
+The Reader rejects overlapping syncs, retains good cached content on failure, continues after an individual subscription fails, labels network versus invalid-data errors, and records duration, checked-item, and downloaded-item diagnostics. A Blyg item whose declared origin or content hash fails verification, or whose bytes change without a version change, is rejected before storage; a previous good cached version remains readable and the Reader status names the rejection. Reader network work uses a dedicated lock rather than Blynger's general authoring lock, so opening pages and saving drafts remain available during a refresh. Reader-dependent actions wait for a consistent cache snapshot. Opening Reader starts a sync; a 90-minute in-app timer repeats it while Reader remains open. Nothing survives Blynger's process as a background daemon.
+
+Remote work is intentionally bounded: 500 entries from one ordinary feed,
+2,000 rows in one Blyg archive, and 100 changed canonical Blyg documents per
+refresh. Remaining changed documents are queued for the next refresh. An item
+may request at most 16 media files; each response is limited to 8 MB and one
+subscription refresh may download at most 64 MB of media. Limit and integrity
+messages use the same visible Reader diagnostics as network failures.
 
 The reading desk shows one local **Last sync** date and time rather than per-subscription performance timings. Actual feed errors remain visible; detailed timing stays in private diagnostics for troubleshooting. The Saved shelf has its own local loading and item-count status rather than subscription-sync messages. Switching between Reader and Saved clears the prior list immediately, and delayed responses are discarded when they belong to a workspace the user has already left.
 
@@ -65,7 +87,7 @@ An opened genuine Blyg item presents **Quote** and **Stub** as peer actions.
 Quote imports material but does not declare a response. Stub creates a thread
 whose immutable `stub_of` records the exact origin, ID, and version seen, plus
 a nonnormative local citation aid allowed by the protocol. For both a full post
-and a quick Opener, Blynger places a linked **Stub of:** line and the complete
+and a quick Opener, Blynger places a linked **Stubbing:** line and the complete
 source item directly into the editor before the response. This copy is normal
 editable material rather than a transclusion: it can be shortened or deleted,
 but doing so does not remove or change the response identity.
@@ -76,17 +98,41 @@ Unsaved Reader items expire three years after immutable `first_downloaded_at`. U
 
 Fork is offered only for a pinned genuine Blyg version. It copies authored content into an editable local draft and stores immutable `{origin, id, version}` `forked_from` lineage. Before the copy leaves Reader, its sanitized relative links and media addresses are resolved against the source Blyg origin, and declared media absent from the markup is retained. Historical forks use only the exact selected pinned document, never current-version content or media. It is not a transclusion and does not add a reference merely because it was forked. An unavailable older remote pin cannot be copied safely; the action fails clearly. Blynger did not add a Webmention system.
 
+Current Blyg 0.3 requires a fork of a composed thread to flatten inherited
+transclusions rather than reasserting another publisher's verification. Blynger
+therefore converts inherited baked transclusions into ordinary editable
+blockquotes with visible source links, removes their protocol verification
+classes and attributes, and carries inherited generated-text disclosure with
+empty local sources. The fork itself retains only its one-hop `forked_from`
+custody claim.
+
+When an imported thread is a Stub, its card shows **Stub of:** and its opened
+reading view places a left-aligned **← Backward** control above the writing.
+The label prefers the Stub's frozen `cited.excerpt`, then its cited source or
+cached target text. Cached targets stay inside Reader; uncached Blyg or
+plain-web targets open at their public address. Direct responses already known
+to the local Reader appear below the writing as right-aligned **Forward →**
+controls. More than one response remains visible as branches. This is an
+explicitly incomplete local conversation lens, not a claim that Blynger has
+discovered every response and not a new protocol field.
+
+Links clicked inside imported writing open in the normal browser. Blynger's
+own Backward and Forward conversation controls keep cached targets inside the
+Reader, so following the known response path does not unnecessarily leave the
+application.
+
 Subscriptions are private by default and separately opt into **Show on blogroll**. When at least one is selected, Blynger emits standard OPML 2.0 at `blyg/blogroll.opml` and advertises it from the manifest. No custom OPML attributes are used. Each newly published normal post freezes that day's selected entries into static HTML in a responsive side rail. Revisions preserve the original snapshot; older posts are not backfilled. The heading is the single `blogroll_heading` setting.
 
 Use **Manage subscriptions…** in the Reader to see every feed in one place, choose **Show on blogroll**, or remove a subscription. Removal stops future syncs and clears its ordinary cached entries; Saved and Liked entries remain available locally. Saved and Liked apply to individual Reader posts and do not add a subscription to the blogroll. Blogroll names link to the root website rather than the machine feed URL.
 
-When a thread contains protocol transclusions, its reading window lists those fragments explicitly. Selecting one highlights it in the article and makes Quote preserve that fragment's real origin, ID, version, kind, and content rather than quoting the entire thread.
+When a thread contains protocol transclusions, its reading window lists those fragments explicitly. Selecting one highlights it in the article and makes Quote insert that fragment's words as an ordinary editable blockquote with a backlink rather than quoting the entire thread.
 
-Whole Blyg items and genuine source fragments become normative transclusions.
-Publishing resolves them again from the latest local cache and bakes a bare
-`blyg-transclusion` blockquote plus direct origin/version provenance. Selected
-passages are ordinary frozen citations until partial transclusion becomes
-normative. See [QUOTING.md](QUOTING.md).
+Reader **Quote** never becomes a protocol transclusion: whole items, source
+fragments, and selected passages are all ordinary editable citations headed
+**From:** with a linked page title. **Stub** is the strict path. For a genuine
+Blyg target its protected opening source block is resolved from the local cache
+and published as a bare `blyg-transclusion` with direct origin/version
+provenance. See [QUOTING.md](QUOTING.md).
 
 # Earlier reader additions
 
@@ -120,7 +166,7 @@ Quote selection includes published local fragments and threads, and cached remot
 
 Publication uses the latest locally cached version, with no remote request. Already-published unchanged parents keep their baked quotation when another page is published. A new revision resolves the then-current cached source. Media used by a new quotation is copied into immutable publication media, so later reader-cache eviction cannot break published writing. Imported documents never receive their own item endpoint, archive row, or feed entry in the author's Blyg. Remote source attribution links use the shared `/f/{id}/` or `/t/{id}/` permalink forms.
 
-At 0.6.0, response stubs, Webmentions, forks, L0 imports, and automatic sync were deferred. Later sections at the top of this document supersede those limits. The durable request limits remain 10,000 archive entries, 4 MB per normal response, 64 media URLs per item, and 32 MB per media response; SVG is not cached.
+At 0.6.0, response stubs, Webmentions, forks, L0 imports, and automatic sync were deferred. Later sections at the top of this document supersede those limits. Current request limits are documented in **Sync and diagnostics** above; SVG is not cached.
 
 ## Retention
 

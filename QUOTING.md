@@ -1,8 +1,10 @@
-# Reader quoting and response stubs — current behavior in Blynger 0.9.21
+# Reader quoting and response stubs — current behavior in Blynger 0.9.32
 
 The October 3, 2026 revision of the living Blyg 0.3 specification promoted partial transclusion into the normative protocol. Blynger still publishes a highlighted passage as an ordinary frozen citation: the private draft remembers the enclosing source and exact selection, but public item JSON carries no selector or transclusion reference, public Markdown carries no `![[id]]` directive, and the HTML does not claim `blyg-transclusion`. No selected passage receives a synthetic item ID. This remains an explicit interoperability limitation; it is separate from the whole-item Stub repair described below.
 
-Ordinary RSS/Atom and plain-web selections remain semantic blockquotes/citations with their actual URL and no Blyg ID, version, kind, or selector. **Quote** alone never creates `stub_of`. **Stub** is the explicit response action and records exactly one immutable target: `{origin, id, version}` for a genuine Blyg item, or the normative `{url}` form when a plain-web response is supported. A Blyg target may also carry the specification's optional `cited` context. Repeated selections from that same source can be added to the current response; each quotation keeps its own frozen snapshot/selector while the response keeps one target.
+**Quote** is deliberately the lighter reference. Whether the Reader source is Blyg-native, RSS/Atom, or an ordinary page, it inserts an editable semantic blockquote headed **From:** followed by the linked page title. It keeps a private record of the source as initially inserted, but does not create `stub_of`, a `![[id]]` directive, or `transclusions[]`, and it never locks or silently restores the quoted prose in Write mode. Nested Blyg wrappers are flattened so the citation cannot accidentally claim protocol transclusion.
+
+**Stub** is the explicit strict response action and records exactly one immutable target: `{origin, id, version}` for a genuine Blyg item, or the normative `{url}` form when a plain-web response is supported. A Blyg target may also carry the specification's optional `cited` context. Repeated editable quotations can be added around the response while the response keeps one target.
 
 A Stub can create a normal response post or a quick Opener. Both begin with a
 genuine whole-item transclusion when the target is a Blyg item. Write mode treats

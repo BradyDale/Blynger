@@ -9,7 +9,7 @@ choice is stored with the draft, appears in publication review, and produces
 the normal irrevocable Blyg pin only when that prepared publication succeeds.
 It can be unchecked before adding the Opener. A quick Reader Stub to Opener
 uses the same default and publishes as a `thread` with immutable `stub_of`.
-Its editor begins with a linked **Stub of:** line and the complete source item,
+Its editor begins with a linked **Stubbing:** line and the complete source item,
 followed by the new response. For a genuine Blyg source, the complete source is
 a protected whole-item transclusion backed by the exact Reader snapshot. Its
 words cannot be edited while retaining that claim, but the author may delete

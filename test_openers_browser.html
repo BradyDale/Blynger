@@ -15,10 +15,10 @@ f.newOpener('Second opener.');f.newOpener('Third opener.');f.newOpener('Fourth o
 check(f.meta.ranges.slice(0,4).map(r=>r.date_label).join('|')==='January 2, 2030, IV|January 2, 2030, III|January 2, 2030, II|January 2, 2030, I','Same-day numbering I–IV and newest first');
 check(f.roman(9)==='IX'&&f.roman(14)==='XIV','Roman subtractive numbering');
 check(f.meta.ranges[3].key===firstKey&&JSON.stringify(f.meta.ranges.slice(4).map(r=>r.key))===JSON.stringify(oldKeys),'Adding entries and numbering preserve existing identities and order');
-const stubTarget={origin:'https://remote.example/',id:'00000000000000000000000001',version:3},stubHTML='<p class="blynger-stub-label"><strong>Stub of:</strong> <a href="https://remote.example/t/source/">Source title</a></p><blockquote class="blynger-stub-context"><h1>Source title</h1><p>Complete source text.</p></blockquote>';
+const stubTarget={origin:'https://remote.example/',id:'00000000000000000000000001',version:3},stubHTML='<p class="blynger-stub-label"><strong>Stubbing:</strong> <a href="https://remote.example/t/source/">Source title</a></p><blockquote class="blynger-stub-context"><h1>Source title</h1><p>Complete source text.</p></blockquote>';
 check(f.newOpener('Brief response.',{stub_of:stubTarget,stub_html:stubHTML,pin_on_publish:true}),'Quick response Opener created with source');
 check(JSON.stringify(f.meta.ranges[0].stub_of)===JSON.stringify(stubTarget)&&f.meta.ranges[0].pin_on_publish===true,'Quick response carries its target and pin plan on first save');
-check(f.html().includes('Stub of:')&&f.html().includes('Complete source text.'),'Quick response source is editable in the Opener body');
+check(f.html().includes('Stubbing:')&&f.html().includes('Complete source text.'),'Quick response source is editable in the Opener body');
 check(!/data-fragment|fragment-dot/.test(f.html())&&f.html().includes('&lt;literal&gt;'),'No private controls or unsafe text in saved body');
 d.raw=d.prefix+f.html()+d.suffix;d.fragments=f.snapshot();await api('save',d);d=await api('page?name=openers.html');editor.innerHTML=d.body;f.load(d.fragments);
 check(d.fragments.ranges.length===initial+5&&d.fragments.ranges[4].key===firstKey&&JSON.stringify(d.fragments.ranges[0].stub_of)===JSON.stringify(stubTarget),'Save and reload preserve new entries, identities, and Stub target');

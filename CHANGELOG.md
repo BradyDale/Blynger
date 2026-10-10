@@ -1,3 +1,65 @@
+## 0.10.4 — Reader presentation module
+
+- Move Reader cards, Saved timestamps, private-activity rows, generated-text disclosure, conversation controls, and opened-item markup into the focused `static/reader-ui.js` module.
+- Keep Reader network requests, private state, quotation and Stub authoring, and workspace transitions in their existing owners so the extraction does not change behavior or trust boundaries.
+- Add a direct JavaScript regression for opened Reader presentation, pins, fragments, disclosures, and conversation navigation.
+- Make the optional native build script's default installation path portable instead of embedding one developer's home-directory path.
+- Keep this refactor behavior-neutral. It does not alter subscriptions, private activity, drafts, protocol objects, or website files.
+
+## 0.10.3 — Readable browser source
+
+- Expand the browser interface, editor helpers, fragment editor, styles, markup, and browser regressions into consistently formatted source suitable for human review.
+- Add a pinned Prettier configuration for future browser-source changes and exclude unrelated native and schema files from formatting.
+- Make source-presence regressions insensitive to harmless whitespace so tests protect behavior and safety hooks without requiring compressed code.
+- Keep this pass behavior-neutral. It does not alter drafts, website files, publication formats, or private Reader data.
+
+## 0.10.2 — Reviewable source boundaries
+
+- Move Reader network validation, DNS pinning, redirects, and bounded HTTP transport into the focused `reader_network.py` module.
+- Move generated-page templates and forward-only presentation styles into `page_templates.py`, while retaining the established imports used by tests and integrations.
+- Add `DEVELOPMENT.md` with a reviewer-oriented code map and an explicit rule against adding new compressed, semicolon-packed code.
+- Keep this refactor behavior-neutral. Publication formats, private state, Reader data, and website files are unchanged.
+
+## 0.10.1 — Known conversation paths
+
+- Add a small local conversation lens to opened Reader items. A known `stub_of` parent appears above the item as a left-aligned **← Backward** button; locally cached direct responses appear below it as right-aligned **Forward →** buttons.
+- Treat forward navigation honestly as the Reader's known neighborhood. Multiple cached responses remain visible as branches, and Blynger does not imply that an incomplete subscription graph is the whole conversation.
+- Stop repeating a derived Reader headline at the beginning of its card preview. If removing the repeated text leaves no useful excerpt, the empty preview line is omitted.
+- Open links clicked inside imported Reader writing in the normal web browser. Blynger's own conversation controls still navigate cached items inside Reader.
+
+## 0.9.34 — Visible Stub context and durable Mac permissions
+
+- Show a **Stub of:** target on Stub cards and at the top of opened Reader items. Use the frozen `cited` caption when available, open a cached Blyg target inside Reader, and otherwise open its safe public address.
+- Add **Center** to the editor toolbar. Centering is saved as authored HTML and receives a small forward-only public style only on pages that use it.
+- Give locally built Mac applications a stable designated signing requirement so macOS can retain the user's Documents-folder permission across later Blynger rebuilds. An existing installation may ask once more when it adopts the stable identity.
+- Update fork handling for the current Blyg 0.3 rules: inherited transclusions become ordinary editable quotations with visible attribution, verification classes and attributes do not survive, and inherited generated spans keep a truthful generation disclosure.
+- Recheck the live Blyg 0.3 specification and its official source at revision `fde93b694a401d3c458b34dfac84fc833ba861dd`, including the 2026-10-06 revisions covering generated changelog notes, plain-web `cited`, fork presentation, and flattened fork provenance.
+
+## 0.9.33 — Bounded and authenticated Reader imports
+
+- Close the Reader's DNS-rebinding window by resolving each requested or redirected hostname once, rejecting any local/private result, and connecting TLS or HTTP to that exact validated address. HTTPS still verifies the certificate against the original hostname.
+- Parse untrusted RSS, Atom, and Blyg discovery XML with `defusedxml`, rejecting entity expansion, external entities, and other unsafe XML constructs.
+- Bound each ordinary feed to 500 entries, each Blyg archive to 2,000 rows, each refresh to 100 changed canonical items, each item to 16 media files, each media response to 8 MB, and all media for one subscription refresh to 64 MB. Deferred changed items remain queued for later refreshes.
+- Reject content-hash mismatches, origin mismatches, and same-version content changes before they can replace or enter the Reader cache. Preserve the last known-good item and display an explicit rejection warning in Reader.
+- Add adversarial regressions for connection pinning, hostile XML, bounded feed/media work, and integrity-failure quarantine.
+
+## 0.9.32 — Editable Reader quotes and reliable links
+
+- Restore the intended distinction between Reader actions: **Quote** inserts a lighter editable citation headed **From:** with the linked page title, while **Stub** alone requests the protected genuine Blyg transclusion used for strict response provenance.
+- Keep ordinary Quote publications out of `transclusions[]` and free of `![[id]]` directives without weakening Stub version agreement or its publication-time snapshot verification.
+- Apply editor links only after closing the modal and restoring the saved selection, so the browser is no longer asked to edit an inert background document. Fall back to inserting a visible linked address if the browser declines the formatting command.
+- Preserve the newly normative optional `cited` label on plain-web Stub targets as well as Blyg targets.
+- Label new response-source links **Stubbing:** instead of **Stub of:** in both post and quick-Opener drafts.
+
+## 0.9.31 — Reader trust boundary
+
+- Render every imported Blyg, RSS/Atom, and ordinary-web document in an opaque sandbox rather than sharing Blynger's privileged document origin. A narrow, randomized message bridge preserves excerpt selection, genuine-fragment selection, and safe link opening without exposing the application DOM or private API token.
+- Give the Reader frame its own deny-by-default policy: no network connections, forms, nested frames, objects, base-URL changes, parent navigation, or arbitrary scripts. The only script admitted is Blynger's exact local selection-bridge file; cached media remain local.
+- Give the main application UI its own deny-by-default Content Security Policy, no-referrer policy, and restricted browser-feature headers. Keep preview pages separately sandboxed.
+- Replace Bleach with maintained `nh3` sanitization. Imported HTML loses scripts, styles, forms, fake controls, event handlers, dangerous URLs, arbitrary IDs, and arbitrary classes; only deliberately interoperable Blyg generated-text and transclusion markers survive.
+- Retain Reader formatting, local cached images/media, source badges, Saved/Liked state, generated-text disclosure, Quote, Stub, Fork, and exact source-fragment identity across the isolation boundary.
+- Add hostile-content regressions for UI-name collisions, CSS/control spoofing, local-route attempts, parent navigation, malformed HTML, permitted Blyg markers, the opaque sandbox, and the privileged UI policy.
+
 ## 0.9.30 — Public generated-text disclosures
 
 - Turn the existing robot on newly generated or legitimately republished pages into an accessible hover, focus, and tap control.
