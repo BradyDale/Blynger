@@ -16,6 +16,7 @@ DEFAULT_SETTINGS = {
     "feed_description": "Writing by Example Author",
     "blogroll_heading": "Blogroll",
     "twitter_creator": "",
+    "tk_model": "gpt-6.1-sol",
     "favicon": "",
     "default_images": [],
     "main_pages": ["index.html", "portfolio.html", "openers.html", "privacypolicy.html"],
@@ -81,15 +82,16 @@ def save(values,path=None):
 
 def public_view(cfg):
     pub=cfg["publishing"]
-    return {k:cfg[k] for k in ("site_root","data_root","site_url","site_label","author_name","author_signature","blyg_title","feed_description","blogroll_heading","twitter_creator")}|{
+    return {k:cfg[k] for k in ("site_root","data_root","site_url","site_label","author_name","author_signature","blyg_title","feed_description","blogroll_heading","twitter_creator","tk_model")}|{
         "remote":pub["remote"],"branch":pub["branch"],"ssh_key":pub["ssh_key"],"ssh_user":pub["ssh_user"],
         "hostname":pub["hostname"],"remote_path":pub["remote_path"]
     }
 
 def update_from_public(cfg, values):
     result=copy.deepcopy(cfg)
-    for key in ("site_root","data_root","site_url","site_label","author_name","author_signature","blyg_title","feed_description","blogroll_heading","twitter_creator"):
+    for key in ("site_root","data_root","site_url","site_label","author_name","author_signature","blyg_title","feed_description","blogroll_heading","twitter_creator","tk_model"):
         if key in values: result[key]=str(values[key]).strip()
+    if not result["tk_model"]: raise ValueError("Choose the Codex model used by TK.")
     pub=result["publishing"]
     for key in ("remote","branch","ssh_key","ssh_user","hostname","remote_path"):
         if key in values: pub[key]=str(values[key]).strip()

@@ -36,7 +36,9 @@
           <button id="save">▣ Save draft</button><button id="preview">◉ Preview</button
           ><button id="images">▧ Insert image</button
           ><button id="versions">◷ Versions</button
-          ><button id="mainFragment" title="Add fragment · Control+Shift+F">Fragment</button
+          ><button id="mainFragment" title="Publish this section as a reusable fragment · Control+Shift+F">Reusable fragment</button
+          ><button id="transclude">Transclude</button
+          ><button id="respondStub">Respond / Stub</button
           ><button id="quote">❞ Quote post</button
           ><button id="tk">
             <span class="tk-robot" aria-hidden="true"></span>TK assistant
@@ -67,10 +69,26 @@
                 <h1 id="heading">Your publishing desk</h1>
                 <div class="filename" id="filename">Choose a page to get started.</div>
                 <div class="response-marker" id="responseMarker" hidden></div>
+                <div class="series-controls" id="seriesControls" hidden>
+                  <label
+                    >Series
+                    <select id="postSeries">
+                      <option value="">None</option>
+                    </select></label
+                  >
+                  <label id="seriesAttributeLabel"
+                    >Detail <input id="seriesAttribute" placeholder="Chapters 1.12–1.15"
+                  /></label>
+                  <small
+                    >Saved with the draft; Series pages and navigation are prepared when you
+                    review publication.</small
+                  >
+                </div>
               </div>
               <div>
                 <span id="draftBadge" class="badge">LOCAL</span
                 ><button id="editHeadline" hidden>Edit headline</button
+                ><button id="renumberPost" hidden>Change number…</button
                 ><button id="deletePost" hidden>Delete post…</button>
               </div>
             </div>
@@ -86,8 +104,8 @@
               ><button id="center" aria-pressed="false">Center</button
               ><button id="blockquote">❞ Blockquote</button
               ><button data-format="insertUnorderedList">• List</button
-              ><button id="fragment" title="Add fragment · Control+Shift+F">Fragment</button
-              ><button id="removeFragment">Remove fragment</button>
+              ><button id="fragment" title="Publish this section as a reusable fragment · Control+Shift+F">Reusable fragment</button
+              ><button id="removeFragment">Make ordinary prose</button>
             </div>
             <div
               id="editor"
@@ -165,6 +183,9 @@
                 <option value="all">All posts</option>
                 <option value="saved">Saved posts</option>
                 <option value="liked">Liked posts</option></select
+              ><select id="readerOrder" aria-label="Reader order">
+                <option value="newest">Newest</option>
+                <option value="pace">Pace-layered</option></select
               ><input
                 id="readerSearch"
                 placeholder="Search text or author"
@@ -191,7 +212,9 @@
           title="Usually automatic. Use only after a Blynger upgrade or to repair the archive."
         >
           Rebuild Blyg archive</button
-        ><button id="help">Blynger Help</button><button id="about">About Blynger</button>
+        ><button id="createSeries">Create Series</button
+        ><button id="recovery">Recovery</button><button id="help">Blynger Help</button
+        ><button id="about">About Blynger</button>
       </div>
     </div>
     <dialog id="dialog">

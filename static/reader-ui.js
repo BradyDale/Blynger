@@ -69,7 +69,35 @@
           '</p>'
         : '';
       const excerpt = item.excerpt ? '<p>' + esc(item.excerpt) + '</p>' : '';
-      row.className = 'reader-row ' + (native ? 'reader-native' : 'reader-web');
+      const warning = item.pace_warning
+        ? '<p class="reader-item-warning">' +
+          esc(item.pace_warning) +
+          ' <button class="isolate-item">Skip this item</button></p>'
+        : '';
+      const revisionDepth = native ? Math.min(5, Number(item.revision_count || 0)) : 0;
+      const pace =
+        native && (item.revision_count || item.pin_count || item.pace_rise)
+          ? '<p class="reader-pace-note"><b>' +
+            (item.revision_count ? 'REVISED · v' + esc(item.version) : 'PACE-LAYERED') +
+            '</b>' +
+            (item.updated && item.updated !== item.date
+              ? ' · revised ' + esc(item.updated.slice(0, 10))
+              : '') +
+            (item.pin_count
+              ? ' · ' +
+                item.pin_count +
+                (item.pin_count === 1 ? ' pinned version' : ' pinned versions')
+              : '') +
+            (item.pace_rise
+              ? ' · moved up ' +
+                item.pace_rise +
+                (item.pace_rise === 1 ? ' place' : ' places')
+              : '') +
+            '</p>'
+          : '';
+      row.className =
+        'reader-row ' +
+        (native ? 'reader-native reader-revisions-' + revisionDepth : 'reader-web');
       row.innerHTML =
         '<small><b class="reader-source-badge">' +
         (native ? 'BLYG' : 'WEB / RSS') +
@@ -83,20 +111,37 @@
         '</small><h2>' +
         esc(item.title) +
         '</h2>' +
+        pace +
+        warning +
         stub +
         excerpt +
-        '<button class="read-item">Read</button><button class="quote-item">Quote post</button><button class="save-item">' +
-        (item.saved ? 'Saved' : 'Save post') +
-        '</button><button class="like-item" title="Like" aria-pressed="' +
+        '<div class="reader-actions"><span class="reader-actions-left"><button class="quote-item">Quote</button><button class="stub-opener-item">Opener Stub</button><button class="stub-post-item">Post Stub</button></span><span class="reader-actions-center"><button class="save-item">' +
+        (item.saved ? 'Saved' : 'Save') +
+        '</button><button class="like-item" title="Like" aria-label="Like" aria-pressed="' +
         item.liked +
-        '">👍</button><span class="private-responses" aria-label="Private responses"></span>' +
+        '">👍</button></span><span class="private-responses reader-actions-right" aria-label="Private responses"></span></div>' +
         (item.saved
           ? '<small class="saved-at">' + esc(savedTime(item.saved_at)) + '</small>'
           : '');
-      row.querySelector('.read-item').onclick = () => actions.read(item);
+      row.tabIndex = 0;
+      row.title = 'Open ' + item.title;
+      row.onclick = (event) => {
+        if (event.target.closest?.('button,a,input,select,textarea')) return;
+        if (global.getSelection?.().toString().trim()) return;
+        actions.read(item);
+      };
+      row.onkeydown = (event) => {
+        if (event.target !== row || !['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        actions.read(item);
+      };
       row.querySelector('.quote-item').onclick = () => actions.quote(item);
+      row.querySelector('.stub-opener-item').onclick = () => actions.stub(item, 'opener');
+      row.querySelector('.stub-post-item').onclick = () => actions.stub(item, 'post');
       row.querySelector('.save-item').onclick = () => actions.save(item);
       row.querySelector('.like-item').onclick = () => actions.like(item);
+      const isolate = row.querySelector('.isolate-item');
+      if (isolate) isolate.onclick = () => actions.isolate(item);
       const responses = row.querySelector('.private-responses');
       for (const emoji of ['🤯', '🙄', '👎', '😂', '❓']) {
         const button = document.createElement('button');
@@ -169,7 +214,9 @@
         ? '<div class="reader-fragment-picker"><b>Fragments in this thread</b><div id="readerFragmentChoices" class="reader-fragment-choices"></div></div>'
         : '') +
       '<div class="dialog-actions"><button id="openOriginal">Open original</button>' +
-      (pins.length ? '<button id="forkReading">Fork pinned version…</button>' : '') +
+      (pins.length
+        ? '<button id="forkReading">Fork pinned version…</button>'
+        : '<button id="forkReading" class="unavailable" aria-disabled="true" title="Requires a pinned post">Fork</button>') +
       '<button id="quoteReading">Quote</button><button id="stubReading">Stub</button></div>';
     return { html, native, pins };
   }

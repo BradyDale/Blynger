@@ -26,7 +26,7 @@ The code distinguishes between two kinds of updates:
 
 ## Current status
 
-Blynger is pre-1.0 software. It was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
+Blynger 0.12.0 is pre-1.0 software. It was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
 
 ## Requirements
 
@@ -68,8 +68,9 @@ Blynger targets the living Blyg 0.3 Level 2 specification. See
 
 ## Acknowledgments
 
-Blynger was conceived and directed by Brady Dale, and its code was written by
-ChatGPT/Codex.
+Blynger was conceived and directed by Brady Dale, and its code was written with
+AI coding systems, primarily ChatGPT/Codex, with additional review and fixes
+from Grok.
 
 The open-source [Blygger Studio](https://github.com/blygger/blygger-studio)
 project is an important reference client and source of implementation ideas.

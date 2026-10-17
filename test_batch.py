@@ -155,14 +155,26 @@ class StudioBatchTests(unittest.TestCase):
         compact=re.sub(r'\s+','',app);compact_fragments=re.sub(r'\s+','',fragments)
         def assert_compact(*values):
             for value in values:self.assertIn(re.sub(r'\s+','',value),compact)
-        assert_compact('reader-open','Open original','90*60*1000','Posting',"b.textContent='Close'",'sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft')
+        assert_compact('reader-open','Open original','90*60*1000','Publishing… You can keep writing.','Published successfully.','sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft','run(updatePublicationState)')
         for identifier in ('readerViewFilter','readerBlogroll','readerManage','removeFragment','blockquote','sourceFindText','queue','pinOnPublish','responseMarker'):self.assertIn('id="'+identifier+'"',html)
         assert_compact("modal('Manage subscriptions'","api('reader-blogroll'",'Saved and Liked posts are kept','saved for the next publication')
         assert_compact("modal('Add link'",'year-2018.html',"$('dialog').close();$('editor').focus();restoreSelection();if(!document.execCommand('createLink'",'reader-source-badge','reader-generated','What the author disclosed','fingerprint:d.fingerprint,transclude:true')
-        self.assertNotIn("$('source').readOnly=!!fragmentEditor.meta",app);self.assertIn('addDivider()',fragments);self.assertIn('removeDivider()',fragments);self.assertIn('replace(html)',fragments)
+        self.assertNotIn("$('source').readOnly=!!fragmentEditor.meta",app);self.assertIn('designate()',fragments);self.assertIn('removeDesignation()',fragments);self.assertIn('replace(html)',fragments)
         self.assertIn('this.lockTransclusions();letrepaired=false;if(this.meta)',compact_fragments)
-        self.assertIn('editor-safety.js',html);assert_compact('saveQueue.enqueue(()=>saveOnce(clearFragments))','clear_fragments:clearFragments','pageRequests.accepts(ticket,editRevision)','if(requireClean&&dirty)',"const p=await api('new'",'await openPage(p.name)')
+        self.assertIn('serialize(){if(this.meta)',compact_fragments)
+        self.assertIn("event.key!=='Backspace'",compact_fragments)
+        self.assertIn("quote?.matches('blockquote.blynger-citation.blyg-transclusion')",compact_fragments)
+        self.assertIn('selection.addRange(caret)',compact_fragments)
+        self.assertIn('editor-safety.js',html);assert_compact('saveQueue.enqueue(()=>saveOnce(clearFragments,repairFragmentMarkers),)','const serialized = fragmentEditor.serialize()','raw: page.prefix + serialized.html + page.suffix','fragments: serialized.fragments','clear_fragments:clearFragments','repair_fragment_markers:repairFragmentMarkers','pageRequests.accepts(ticket,editRevision)','if(requireClean&&dirty)',"const p=await api('new'",'await openPage(p.name)','pasteRequests.begin(editRevision)','pasteRequests.accepts(ticket,editRevision)','page?.name!==pastePage','selection=pasteSelection','markdownPasteRecovery','pasteRequests.invalidate()',"await api('publish'","$('dialog').close()",'watchPublication()','publicationInFlight')
         self.assertLess(compact.index('pageRequests.accepts(ticket,editRevision)'),compact.index('currentWorkspace=workspaceForPage(page)'))
+
+    def test_native_launcher_retires_the_current_and_legacy_servers(self):
+        source=(Path(__file__).parent/'native/Main.swift').read_text()
+        compact=re.sub(r'\s+','',source)
+        self.assertIn('retireOwnedServers()',compact)
+        self.assertIn('foroldPortin[port,8765]',compact)
+        self.assertIn('"-tiTCP:\\(oldPort)"',source)
+        self.assertIn('Recovery…',source)
 
 
 if __name__=='__main__':unittest.main()

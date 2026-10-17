@@ -1,5 +1,5 @@
 """Local authoring and static Blyg publication. No network on save."""
-import base64, copy, hashlib, html, io, json, mimetypes, os, re, secrets, shlex, subprocess, tempfile
+import base64, copy, hashlib, html, io, json, mimetypes, os, re, secrets, shlex, shutil, subprocess, tarfile, tempfile, time
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -13,6 +13,7 @@ from metadata import enrich, sitemap, discovery_markup, favicon_markup
 from configuration import DEFAULT_SETTINGS
 from version import APP_VERSION, BLYG_VERSION
 import fragments as fragment_model
+import series as series_model
 from conformance import validate_surface
 from generation_disclosure import decorate as decorate_generation
 from page_templates import (
@@ -97,14 +98,28 @@ class FragmentStateError(ValueError):
 class Studio:
     def __init__(self,root,data,config=None):
         self.root=Path(root).resolve(); self.data=Path(data).resolve(); self.data.mkdir(parents=True,exist_ok=True)
+        self._tree_cache={}
         self.apply_config(config or DEFAULT_SETTINGS)
         self.file=self.data/'state.json'
+        self.backup=self.data/'state.backup.json'
+        self.state_recovery_notice=''
+        self.damaged_state_file=None
+        self.invalid_public_items=[]
         pub=self.config['publishing']
-        self.state=json.loads(self.file.read_text()) if self.file.exists() else {'drafts':{},'ids':{},'published':{},'pending':[], 'uploaded':[], 'remote':pub['remote'],'branch':pub['branch']}
+        self.state=self._load_initial_state(pub)
+        for field,default in (('drafts',{}),('ids',{}),('published',{}),('pending',[]),('uploaded',[])):
+            self.state.setdefault(field,default)
         # Recover permanent identities from generated public files if local studio state is lost.
         for item in (self.root/'blyg/items').glob('*.json'):
             if item.name=='index.json': continue
-            doc=json.loads(item.read_text()); name=urlsplit(doc.get('url','')).path.lstrip('/')
+            try:
+                doc=json.loads(item.read_text())
+                if not isinstance(doc,dict) or not isinstance(doc.get('id'),str):
+                    raise ValueError('Invalid generated item.')
+            except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+                self.invalid_public_items.append(item.name)
+                continue
+            name=urlsplit(doc.get('url','')).path.lstrip('/')
             if name and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name): self.state['ids'].setdefault(name,doc['id'])
         self.state.setdefault('history',{})
         self.state.setdefault('pins',{})
@@ -115,6 +130,9 @@ class Studio:
         self.state.setdefault('standalone_pages',[])
         self.state.setdefault('item_titles',{})
         self.state.setdefault('site_feed_titles',{})
+        self.state.setdefault('series',{})
+        self.state.setdefault('series_pending',[])
+        self.forget_legacy_unpublished_deletions()
         # Pages are not fragment-bearing authoring objects. Older builds could
         # leave a block map on a main or standalone Page; remove only that
         # impossible metadata while preserving the page, drafts, and published
@@ -149,6 +167,81 @@ class Studio:
         self.reader.backfill_publications(self.state['history'])
         self.configure_remote()
 
+    def forget_legacy_unpublished_deletions(self):
+        """Release numbers retained by the older recoverable-draft behavior."""
+        permanent=set(self.state.get('published',{}))|set(self.state.get('history',{}))
+        for name,record in list(self.state.get('deleted_posts',{}).items()):
+            draft=record.get('draft') if isinstance(record,dict) else None
+            iid=self.state.get('ids',{}).get(name)
+            owned=({iid} if iid else set())|set(self.state.get('fragment_ids',{}).get(name,{}).values())
+            if not record.get('active') or not isinstance(draft,dict) or not draft.get('new'):
+                continue
+            if owned.intersection(permanent) or self.path(name).exists():
+                continue
+            self.state['deleted_posts'].pop(name,None)
+            self.state.get('drafts',{}).pop(name,None)
+            self.state.get('ids',{}).pop(name,None)
+            self.state.get('fragment_ids',{}).pop(name,None)
+            self.state.get('fragment_posts',{}).pop(name,None)
+            for owned_id in owned:
+                self.state.get('item_titles',{}).pop(owned_id,None)
+                self.state.get('site_feed_titles',{}).pop(owned_id,None)
+                self.state.get('fragment_history',{}).pop(owned_id,None)
+                self.state.get('pins',{}).pop(owned_id,None)
+
+    @staticmethod
+    def _empty_state(pub):
+        return {'drafts':{},'ids':{},'published':{},'pending':[],'uploaded':[],'remote':pub['remote'],'branch':pub['branch']}
+
+    @staticmethod
+    def _load_state(path):
+        state=json.loads(path.read_text())
+        if not isinstance(state,dict):
+            raise ValueError('Studio state is not an object.')
+        fields={'drafts':dict,'ids':dict,'published':dict,'pending':list,'uploaded':list}
+        for field,expected in fields.items():
+            if field in state and not isinstance(state[field],expected):
+                raise ValueError(f'Studio {field} has an invalid shape.')
+        map_fields=('history','pins','fragment_posts','fragment_ids','fragment_history','deleted_posts','item_titles','site_feed_titles','series')
+        for field in map_fields:
+            if field in state and not isinstance(state[field],dict):
+                raise ValueError(f'Studio {field} has an invalid shape.')
+        for field in ('standalone_pages','series_pending'):
+            if field in state and not isinstance(state[field],list):
+                raise ValueError(f'Studio {field} has an invalid shape.')
+        if any(not isinstance(name,str) or not isinstance(draft,dict) for name,draft in state.get('drafts',{}).items()):
+            raise ValueError('Studio drafts contain an invalid record.')
+        if any(not isinstance(name,str) or not isinstance(iid,str) for name,iid in state.get('ids',{}).items()):
+            raise ValueError('Studio identities contain an invalid record.')
+        if any(not isinstance(doc,dict) for doc in state.get('published',{}).values()):
+            raise ValueError('Studio publications contain an invalid record.')
+        # `pending` is the list of website paths a prepare wrote and publication
+        # has not yet committed. Path names are the real record; requiring a
+        # dict here made every finished prepare look like damaged state.
+        if any(not isinstance(entry,str) or not entry or '\x00' in entry for entry in state.get('pending',[])):
+            raise ValueError('Studio pending publications contain an invalid record.')
+        return state
+
+    def _load_initial_state(self,pub):
+        if not self.file.exists():
+            return self._empty_state(pub)
+        try:
+            return self._load_state(self.file)
+        except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+            damaged=self.data/f'state.damaged-{time.time_ns()}.json'
+            try:
+                shutil.copy2(self.file,damaged)
+                self.damaged_state_file=damaged
+            except OSError:
+                pass
+            try:
+                state=self._load_state(self.backup)
+                self.state_recovery_notice='Blynger recovered its private Studio state from the last verified backup. The damaged file was preserved.'
+                return state
+            except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+                self.state_recovery_notice='Blynger started in Studio recovery mode. The damaged private state was preserved; no draft was deliberately deleted.'
+                return self._empty_state(pub)
+
     def apply_config(self,config):
         self.config=copy.deepcopy(config); self.site=self.config['site_url'].rstrip('/')+'/'; self.origin=self.site+'blyg/'
         self.author=self.config['author_name']; self.signature=self.config['author_signature']
@@ -179,7 +272,43 @@ class Studio:
         # A one-time private boundary keeps the imported archive out of RSS.
         if meta and meta.get('purpose')=='openers' and 'opener_rss_legacy_keys' not in self.state:
             self.state['opener_rss_legacy_keys']=[r['key'] for r in meta['ranges']]
-    def save_state(self): atomic(self.file,json.dumps(self.state,ensure_ascii=False,indent=2))
+    def save_state(self):
+        rendered=json.dumps(self.state,ensure_ascii=False,indent=2)
+        json.loads(rendered)
+        if self.file.exists():
+            try:
+                self._load_state(self.file)
+                atomic(self.backup,self.file.read_text())
+            except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+                if not self.state_recovery_notice:
+                    damaged=self.data/f'state.damaged-save-{time.time_ns()}.json'
+                    try:
+                        shutil.copy2(self.file,damaged)
+                        self.damaged_state_file=damaged
+                        self.state_recovery_notice='Blynger preserved an invalid private Studio state file before saving the current state.'
+                    except OSError:
+                        pass
+        atomic(self.file,rendered)
+    def studio_recovery_status(self):
+        if not self.state_recovery_notice and not self.invalid_public_items:
+            return None
+        messages=[]
+        if self.state_recovery_notice:
+            messages.append(self.state_recovery_notice)
+        if self.invalid_public_items:
+            messages.append(f'{len(self.invalid_public_items)} malformed generated Blyg item file(s) were skipped without being changed.')
+        return {'message':' '.join(messages),'damaged_file':self.damaged_state_file.name if self.damaged_state_file else None,'backup_available':self.backup.exists(),'invalid_public_items':len(self.invalid_public_items)}
+    def restore_state_backup(self):
+        restored=self._load_state(self.backup)
+        preserved=self.data/f'state.before-restore-{time.time_ns()}.json'
+        atomic(preserved,json.dumps(self.state,ensure_ascii=False,indent=2))
+        # Restore the verified bytes directly. The ordinary save path would
+        # first copy the state being abandoned over the only verified backup.
+        atomic(self.file,json.dumps(restored,ensure_ascii=False,indent=2))
+        self.state=restored
+        self.state_recovery_notice='Studio state was restored from a verified backup. The replaced state was preserved.'
+        self.damaged_state_file=preserved
+        return {'message':'Studio state restored from its verified backup. Reopen Blynger before continuing work.'}
     def path(self,name):
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name): raise ValueError('Choose an HTML page from this site.')
         p=(self.root/name).resolve()
@@ -257,7 +386,18 @@ class Studio:
         for quote in soup.select('blockquote.blyg-transclusion[data-blyg-id]'):
             if 'blynger-citation' in quote.get('class',[]) or quote.find_parent('blockquote',class_='blynger-citation'): continue
             node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'; quote.replace_with(node)
-        ignored={'data-blynger-quote','data-source-origin','data-source-id','data-source-version','data-blyg-id','data-blyg-origin','data-blyg-version'}
+        ignored={
+            'data-blynger-quote',
+            'data-blynger-block',
+            'data-blynger-fragment',
+            'data-blynger-break',
+            'data-source-origin',
+            'data-source-id',
+            'data-source-version',
+            'data-blyg-id',
+            'data-blyg-origin',
+            'data-blyg-version',
+        }
         def signature(node):
             if isinstance(node,Comment): return None
             if isinstance(node,NavigableString):
@@ -316,7 +456,11 @@ class Studio:
         soup=BeautifulSoup(raw,'html.parser')
         for quote in soup.select('blockquote.blyg-transclusion[data-blyg-id]'):
             if 'blynger-citation' in quote.get('class',[]) or quote.find_parent('blockquote',class_='blynger-citation'):continue
-            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'; quote.replace_with(node)
+            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'
+            for attribute in fragment_model.MARKER_ATTRS:
+                if quote.has_attr(attribute):
+                    node[attribute]=quote.get(attribute)
+            quote.replace_with(node)
         if 'blyg-transclusion' in raw: raw=str(soup)
         a,b=region(raw)
         kind='page' if name in self.state['standalone_pages'] else 'main' if name in self.non_blyg_pages else 'post'
@@ -325,7 +469,135 @@ class Studio:
         # one. Keep the control available whenever a Post is editable so a
         # later revision can be made permanent too.
         pin_available=bool(name!='openers.html' and kind=='post')
-        return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':self.validate_fragments(name,(draft or saved or {}).get('fragments'),clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False))}
+        stored_fragments=(draft or saved or {}).get('fragments')
+        marked_fragments=fragment_model.extract(raw[a:b],stored_fragments) if self.fragment_capable(name) else None
+        fragments=marked_fragments or stored_fragments
+        return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':self.validate_fragments(name,fragments,clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False)), 'series':self.series_assignment(name)}
+
+    def series_assignment(self,name):
+        for key,record in self.state.get('series',{}).items():
+            for member in record.get('members',[]):
+                if member.get('name')==name:
+                    return {'id':key,'attribute':member.get('attribute','')}
+        return None
+
+    def series_list(self):
+        return [copy.deepcopy({'id':key,**record}) for key,record in sorted(self.state.get('series',{}).items(),key=lambda item:item[1]['title'].casefold())]
+
+    def create_series(self,title,plug,description):
+        title=title.strip() if isinstance(title,str) else ''
+        plug=plug.strip() if isinstance(plug,str) else ''
+        description=description.strip() if isinstance(description,str) else ''
+        if not title or not plug or not description:raise ValueError('A series needs a title, plug, and description.')
+        key=series_model.slug(title)
+        if key in self.state['series']:raise ValueError('That series already exists.')
+        page='series-'+key+'.html'
+        reserved={p.name for p in self.root.glob('*.html')}|set(self.state['drafts'])
+        if page in reserved:raise ValueError(page+' already exists. Choose a different series title.')
+        members=[]
+        self.state['series'][key]={'title':title,'plug':plug,'description':'<p>'+html.escape(description)+'</p>','page':page,'members':members}
+        self.state['standalone_pages'].append(page)
+        self.save_series_page(self.state['series'][key],[])
+        self.state['series_pending']=sorted(set(self.state.get('series_pending',[]))|{key})
+        self.save_state()
+        return {'message':'Created '+title+'. Choose it explicitly on each Post that belongs, then Review & publish to prepare the coordinated pages.','series':self.series_list()}
+
+    def assign_series(self,name,series_id,attribute=''):
+        """Compatibility path for older clients that applied a Series immediately."""
+        self.path(name)
+        previous=self.series_assignment(name)
+        if previous and previous['id']!=series_id:
+            page=self.page(name)
+            old=self.state['series'][previous['id']]
+            page['raw']=series_model.undecorate_post(page['raw'],old['plug'],old['title'])
+            a,b=region(page['raw'])
+            page['fragments']=fragment_model.rebase_managed(page.get('fragments'),clean(page['raw'][a:b]),self.site)
+            self.save_draft(page)
+        self.save_series_choice(name,series_id,attribute)
+        pending=list(self.state.get('series_pending',[]))
+        for key in pending:
+            if key in self.state['series']:
+                self.reconcile_series(key)
+        self.state['series_pending']=[key for key in self.state.get('series_pending',[]) if key not in pending]
+        self.save_state()
+        return {'message':'Series assignment saved locally. Review & publish will show every affected page.','series':self.series_list()}
+
+    def save_series_choice(self,name,series_id,attribute=''):
+        """Save post metadata now; generated Series pages wait for preparation."""
+        previous=self.series_assignment(name)
+        attribute=str(attribute).strip()
+        if series_id and series_id not in self.state['series']:
+            raise ValueError('Choose an existing series.')
+        if previous and previous['id']==series_id and previous.get('attribute','')==attribute:
+            return
+        if previous is None and not series_id:
+            return
+        affected={previous['id']} if previous else set()
+        if series_id:
+            affected.add(series_id)
+        for key,record in self.state['series'].items():
+            record['members']=[member for member in record.get('members',[]) if member.get('name')!=name]
+        if series_id:
+            self.state['series'][series_id]['members'].append({'name':name,'attribute':attribute})
+        pending=set(self.state.get('series_pending',[]))
+        pending.update(affected)
+        self.state['series_pending']=sorted(pending)
+
+    def reconcile_series(self,key):
+        record=self.state['series'][key]
+        known={p['name']:p for p in self.pages()}
+        members=[]
+        for member in record.get('members',[]):
+            info=known.get(member.get('name'))
+            if not info or info.get('kind')!='post' or info.get('deleted'):continue
+            members.append({**member,'title':series_model.canonical_title(info['title'],record['title']),'created':info.get('created','')})
+        members.sort(key=lambda item:(item['created'],item['name']))
+        record['members']=[{'name':member['name'],'attribute':member.get('attribute','')} for member in members]
+        for index,member in enumerate(members):
+            try:
+                page=self.page(member['name'])
+            except FragmentStateError:
+                # Series furniture is outside reusable content.  Let the
+                # managed rebase below repair older fragment boundaries rather
+                # than making one stale boundary prevent Series recovery.
+                name=member['name']
+                draft=self.state['drafts'].get(name)
+                saved=self.state.get('fragment_posts',{}).get(name,{})
+                raw=draft['raw'] if draft else self.read(name)
+                page={
+                    'name':name,
+                    'raw':raw,
+                    'base':draft['base'] if draft else digest(self.path(name).read_bytes()),
+                    'fragments':copy.deepcopy((draft or saved).get('fragments')),
+                    'generated':copy.deepcopy((draft or saved).get('generated',[])),
+                    'quotes':copy.deepcopy((draft or saved).get('quotes',{})),
+                }
+            decorated=series_model.decorate_post(page['raw'],record,members[index+1] if index+1<len(members) else None)
+            if decorated==page['raw']:
+                continue
+            page['raw']=decorated
+            a,b=region(page['raw'])
+            page['fragments']=fragment_model.rebase_managed(page.get('fragments'),clean(page['raw'][a:b]),self.site)
+            self.save_draft(page)
+        self.save_series_page(record,members)
+
+    def save_series_page(self,record,members):
+        """Update only Blynger's managed installment list on a Series Page."""
+        existing=self.state['drafts'].get(record['page'])
+        target=self.path(record['page'])
+        if existing or target.exists():
+            source=existing['raw'] if existing else target.read_text()
+            raw=series_model.update_series_page(source,members)
+        else:raw=new_page(record['title'],series_model.series_body(record,members),self.config)
+        raw=enrich(raw,record['page'],self.root,standalone=True,config=self.config)
+        base=existing.get('base') if existing else digest(target.read_bytes()) if target.exists() else None
+        draft=copy.deepcopy(existing) if existing else {'at':now(),'generated':[],'quotes':{}}
+        draft.update(raw=raw,base=base,new=existing.get('new',False) if existing else not target.exists(),kind='page',updated=now(),fragments=None)
+        if existing and existing.get('raw')==raw:
+            return
+        if not existing and target.exists() and target.read_text()==raw:
+            return
+        self.state['drafts'][record['page']]=draft
     def protect_quote_snapshots(self,raw,quotes):
         """Restore atomic source blocks from private records; whole-block deletion wins."""
         if not quotes:return raw
@@ -336,7 +608,14 @@ class Studio:
             replacement=BeautifulSoup(record['visible_html'],'html.parser').find('blockquote')
             # Only genuine Stub transclusions are atomic. Ordinary Reader
             # quotes are intentionally editable after insertion.
-            if replacement is not None and 'blyg-transclusion' in replacement.get('class',[]):block.replace_with(replacement);changed=True
+            if replacement is not None and 'blyg-transclusion' in replacement.get('class',[]):
+                # The source snapshot owns the quote, but the surrounding
+                # article owns its durable fragment position. Replacing the
+                # whole block must not discard that article-level identity.
+                for attribute in fragment_model.MARKER_ATTRS:
+                    if block.has_attr(attribute):
+                        replacement[attribute]=block.get(attribute)
+                block.replace_with(replacement);changed=True
         return str(soup) if changed else raw
     def upgrade_stub_context(self,raw,target,quotes):
         """Turn the obsolete editable context of a Blyg stub into its exact snapshot."""
@@ -349,7 +628,13 @@ class Studio:
         if item['doc'].get('version')!=target['version']:
             raise ValueError('This Blyg Stub still has editable copied context, but Reader no longer has the exact source version. Reopen that version before saving.')
         quoted=self.reader.snapshot(key,{'mode':'whole','transclude':True},self);record=quoted['snapshot']
-        legacy.replace_with(BeautifulSoup(quoted['html'],'html.parser'))
+        replacement=BeautifulSoup(quoted['html'],'html.parser').find('blockquote')
+        if replacement is None:
+            raise ValueError('Reader returned an invalid Stub source snapshot.')
+        for attribute in fragment_model.MARKER_ATTRS:
+            if legacy.has_attr(attribute):
+                replacement[attribute]=legacy.get(attribute)
+        legacy.replace_with(replacement)
         quotes[record['token']]=record
         return str(soup)
     def upgrade_opener_stub_contexts(self,raw,meta,previous,quotes):
@@ -395,7 +680,23 @@ class Studio:
         # Do not allow an older fragment-aware source to fill them back in when
         # handling a recovery save.
         clear_fragments=d.get('clear_fragments') is True
-        meta=None if clear_fragments or not self.fragment_capable(name) else copy.deepcopy(d.get('fragments',previous.get('fragments')))
+        submitted_meta=copy.deepcopy(d.get('fragments',previous.get('fragments')))
+        fragments_explicitly_removed='fragments' in d and d.get('fragments') is None
+        marked_meta=None
+        repair_markers=d.get('repair_fragment_markers') is True
+        if not clear_fragments and not fragments_explicitly_removed and self.fragment_capable(name) and not repair_markers and name!='openers.html':
+            try:
+                marked_meta=fragment_model.extract(d['raw'][a:b],submitted_meta)
+            except ValueError as problem:
+                raise FragmentStateError(name,problem) from problem
+        meta=None if clear_fragments or fragments_explicitly_removed or not self.fragment_capable(name) else marked_meta or submitted_meta
+        if 'series_id' in d:
+            old_series=self.series_assignment(name)
+            requested=d.get('series_id') or None
+            if old_series and old_series['id']!=requested:
+                d['raw']=series_model.undecorate_post(d['raw'],old_series['plug'],old_series['title'])
+                a,b=region(d['raw'])
+                meta=fragment_model.rebase_managed(meta,clean(d['raw'][a:b]),self.site)
         if isinstance(meta,dict) and isinstance(meta.get('blocks'),list):
             for block in meta['blocks']:
                 if isinstance(block,dict) and isinstance(block.get('html'),str):
@@ -408,14 +709,27 @@ class Studio:
             # Older UI code inserted copied editable context even for genuine
             # Blyg targets. Upgrade each such Opener from its exact Reader
             # snapshot before rebuilding the block map.
-            submitted=copy.deepcopy(meta);submitted_stubs=[]
+            submitted=copy.deepcopy(meta);submitted_stubs={};submitted_stub_labels={}
             if isinstance(submitted,dict):
-                submitted_stubs=[copy.deepcopy(row.get('stub_of')) for row in submitted.get('ranges',[])]
+                labels={}
+                for row in submitted.get('ranges',[]):
+                    if not isinstance(row,dict):continue
+                    label=(row.get('legacy_anchor'),row.get('date_label'))
+                    if all(isinstance(value,str) for value in label):labels[label]=labels.get(label,0)+1
+                for row in submitted.get('ranges',[]):
+                    heading=row.get('heading') if isinstance(row,dict) else None
+                    target=row.get('stub_of') if isinstance(row,dict) else None
+                    if isinstance(heading,str) and target is not None:
+                        submitted_stubs[heading]=copy.deepcopy(target)
+                        label=(row.get('legacy_anchor'),row.get('date_label'))
+                        if labels.get(label)==1:submitted_stub_labels[label]=copy.deepcopy(target)
                 d['raw']=self.upgrade_opener_stub_contexts(d['raw'],submitted,previous.get('fragments'),quotes)
                 a,b=region(d['raw'])
             meta=fragment_model.openers_metadata(clean(d['raw'][a:b]),previous.get('fragments'),meta)
-            for index,target in enumerate(submitted_stubs):
-                if target is not None and index<len(meta.get('ranges',[])):meta['ranges'][index]['stub_of']=target
+            for opener in meta.get('ranges',[]):
+                target=submitted_stubs.get(opener.get('heading'))
+                if target is None:target=submitted_stub_labels.get((opener.get('legacy_anchor'),opener.get('date_label')))
+                if target is not None:opener['stub_of']=target
             prior={r['key']:r for r in (previous.get('fragments') or {}).get('ranges',[]) if isinstance(r,dict) and isinstance(r.get('key'),str)}
             for opener in meta.get('ranges',[]):
                 old_stub=prior.get(opener['key'],{}).get('stub_of');new_stub=opener.get('stub_of')
@@ -427,6 +741,9 @@ class Studio:
                     elif not {'origin','id','version'}<=set(new_stub) or set(new_stub)-{'origin','id','version','cited'}:
                         raise ValueError('An Opener response lost its Blyg source identity.')
         meta=self.validate_fragments(name,meta,clean(d['raw'][a:b]))
+        marked_body=fragment_model.embed(meta,d['raw'][a:b])
+        d['raw']=d['raw'][:a]+marked_body+d['raw'][b:]
+        a,b=region(d['raw'])
         lineage={}
         for field in ('stub_of','forked_from'):
             prior=(existing or previous).get(field);supplied=d.get(field,prior)
@@ -438,12 +755,36 @@ class Studio:
         if name!='openers.html' and self.fragment_capable(name):
             self.state['drafts'][name]['pin_on_publish']=bool(d.get('pin_on_publish',existing.get('pin_on_publish',False) if existing else False))
         self.state['drafts'][name].update(lineage)
+        if 'series_id' in d:
+            self.save_series_choice(name,d.get('series_id') or None,d.get('series_attribute',''))
         if (existing or previous).get('blogroll_snapshot') is not None:self.state['drafts'][name]['blogroll_snapshot']=copy.deepcopy((existing or previous)['blogroll_snapshot'])
         self.save_state(); return {'message':'Draft saved on this Mac. The website has not changed.'}
     def discard(self,name):
         self.path(name)
         if self.state['deleted_posts'].get(name,{}).get('active'):raise ValueError('Use Restore post to undo a deletion.')
         draft=self.state['drafts'].pop(name,None)
+        if draft and draft.get('new') and not self.path(name).exists():
+            affected=set()
+            for key,record in self.state.get('series',{}).items():
+                before=len(record.get('members',[]))
+                record['members']=[member for member in record.get('members',[]) if member.get('name')!=name]
+                if len(record['members'])!=before:affected.add(key)
+            self.state['series_pending']=sorted(set(self.state.get('series_pending',[]))|affected)
+            thread=self.state.get('ids',{}).get(name)
+            owned={thread} if thread else set()
+            owned.update(self.state.get('fragment_ids',{}).get(name,{}).values())
+            permanent=set(self.state.get('published',{}))|set(self.state.get('history',{}))
+            if not owned.intersection(permanent):
+                self.state.get('ids',{}).pop(name,None)
+                self.state.get('fragment_ids',{}).pop(name,None)
+                for iid in owned:
+                    self.state.get('item_titles',{}).pop(iid,None)
+                    self.state.get('site_feed_titles',{}).pop(iid,None)
+                    self.state.get('fragment_history',{}).pop(iid,None)
+                    self.state.get('pins',{}).pop(iid,None)
+                deleted=self.state.get('deleted_posts',{}).get(name)
+                if deleted and not deleted.get('active') and not deleted.get('published'):
+                    self.state['deleted_posts'].pop(name,None)
         if draft and draft.get('new') and name in self.state['standalone_pages'] and not self.path(name).exists():self.state['standalone_pages'].remove(name)
         self.save_state()
         return {'message':'Draft discarded. The site file is unchanged.'}
@@ -452,18 +793,52 @@ class Studio:
         self.path(name)
         if self.state['deleted_posts'].get(name,{}).get('active'):return {'message':'Post is already deleted locally.'}
         page=self.page(name);iid=self.state['ids'].get(name);published=self.state['published'].get(iid)
-        backup={'active':True,'page':copy.deepcopy(page),'published':copy.deepcopy(published),'draft':copy.deepcopy(self.state['drafts'].get(name)),'source':copy.deepcopy(self.state['fragment_posts'].get(name)),'at':now()}
+        draft=self.state['drafts'].get(name)
+        permanent=set(self.state.get('published',{}))|set(self.state.get('history',{}))
+        owned=({iid} if iid else set())|set(self.state.get('fragment_ids',{}).get(name,{}).values())
+        # A never-published draft is disposable, not a withdrawn publication.
+        # Release its number and every provisional identity immediately.
+        if draft and draft.get('new') and not owned.intersection(permanent) and not self.path(name).exists():
+            affected=set()
+            for key,record in self.state.get('series',{}).items():
+                before=len(record.get('members',[]))
+                record['members']=[member for member in record.get('members',[]) if member.get('name')!=name]
+                if len(record['members'])!=before:affected.add(key)
+            self.state['series_pending']=sorted(set(self.state.get('series_pending',[]))|affected)
+            self.state['drafts'].pop(name,None)
+            self.state.get('ids',{}).pop(name,None)
+            self.state.get('fragment_ids',{}).pop(name,None)
+            self.state.get('fragment_posts',{}).pop(name,None)
+            self.state.get('deleted_posts',{}).pop(name,None)
+            for owned_id in owned:
+                self.state.get('item_titles',{}).pop(owned_id,None)
+                self.state.get('site_feed_titles',{}).pop(owned_id,None)
+                self.state.get('fragment_history',{}).pop(owned_id,None)
+                self.state.get('pins',{}).pop(owned_id,None)
+            for key in affected:
+                if key in self.state.get('series',{}):self.reconcile_series(key)
+            self.save_state()
+            return {'message':'Unpublished draft deleted. Its Post number is available again.'}
+        memberships=[{'id':key,'attribute':member.get('attribute','')} for key,record in self.state['series'].items() for member in record.get('members',[]) if member.get('name')==name]
+        backup={'active':True,'page':copy.deepcopy(page),'published':copy.deepcopy(published),'draft':copy.deepcopy(self.state['drafts'].get(name)),'source':copy.deepcopy(self.state['fragment_posts'].get(name)),'series':memberships,'at':now()}
         self.state['deleted_posts'][name]=backup
         self.state['fragment_posts'].pop(name,None)
         if published or self.path(name).exists():
             self.state['drafts'][name]={'raw':new_page('Post removed','<p>This post has been removed by its author.</p>',self.config),'base':digest(self.path(name).read_bytes()) if self.path(name).exists() else None,'new':False,'at':now(),'generated':[],'fragments':None,'note':'Post withdrawn by author','revision':True}
         else:self.state['drafts'].pop(name,None)
+        for membership in memberships:self.reconcile_series(membership['id'])
         self.save_state();return {'message':'Post moved to Deleted posts. Publish to withdraw it from the website; Restore post recovers your writing.'}
     def restore_post(self,name):
         self.path(name);backup=self.state['deleted_posts'].get(name)
         if not backup or not backup.get('active'):raise ValueError('This post is not deleted.')
         backup['active']=False;p=self.path(name);page=copy.deepcopy(backup['page']);page['base']=digest(p.read_bytes()) if p.exists() else None
         self.save_draft(page);self.state['drafts'][name].update(new=not bool(self.state['published'].get(self.state['ids'].get(name))),note='Restore deleted post',revision=True,restore_home=True)
+        for membership in backup.get('series',[]):
+            record=self.state['series'].get(membership['id'])
+            if record is not None and not any(member.get('name')==name for member in record.get('members',[])):
+                record.setdefault('members',[]).append({'name':name,'attribute':membership.get('attribute','')})
+        for membership in backup.get('series',[]):
+            if membership['id'] in self.state['series']:self.reconcile_series(membership['id'])
         self.save_state();return {'message':'Post restored as a local draft. Publish to return it to the website.'}
     def create(self,title,body=None,stub_of=None,forked_from=None,generated=None):
         title=title.strip()
@@ -481,6 +856,32 @@ class Studio:
         if forked_from is not None:self.state['drafts'][name]['forked_from']=copy.deepcopy(forked_from)
         if generated is not None:self.state['drafts'][name]['generated']=copy.deepcopy(generated)
         self.save_state(); return self.page(name)
+    def renumber_post(self,name,number):
+        """Move a never-published Post draft to an unused numeric filename."""
+        self.path(name);draft=self.state['drafts'].get(name)
+        if not draft or not draft.get('new') or self.path(name).exists():raise ValueError('Only a new, unpublished Post can change its number.')
+        if name in self.state['standalone_pages'] or name in self.non_blyg_pages:raise ValueError('Only a numbered Post can change its number.')
+        if self.state.get('pending_publication') or self.state.get('pending'):raise ValueError('Finish or discard the prepared publication before changing this number.')
+        try:number=int(number)
+        except (TypeError,ValueError):raise ValueError('Enter a positive whole-number Post number.')
+        if number<1:raise ValueError('Enter a positive whole-number Post number.')
+        target=f'{number}.html'
+        if target==name:return self.page(name)
+        reserved={p.name for p in self.root.glob('*.html')}|set(self.state['drafts'])|set(self.state['ids'])|set(self.state['deleted_posts'])|set(self.state['standalone_pages'])
+        if target in reserved:raise ValueError(target+' is already used or reserved. Nothing was changed.')
+        iid=self.state.get('ids',{}).get(name)
+        if iid and (iid in self.state.get('published',{}) or iid in self.state.get('history',{})):raise ValueError('A published Post number cannot be changed.')
+        draft=copy.deepcopy(draft)
+        draft['raw']=enrich(draft['raw'],target,self.root,config=self.config,blyg_item=True,blyg_discovery=True,rss_discovery=True)
+        self.state['drafts'][target]=draft;del self.state['drafts'][name]
+        for field in ('ids','fragment_ids','fragment_posts'):
+            if name in self.state.get(field,{}):self.state[field][target]=self.state[field].pop(name)
+        affected=set()
+        for key,record in self.state.get('series',{}).items():
+            for member in record.get('members',[]):
+                if member.get('name')==name:member['name']=target;affected.add(key)
+        self.state['series_pending']=sorted(set(self.state.get('series_pending',[]))|affected)
+        self.save_state();return self.page(target)
     def create_page(self,title,name):
         title=title.strip() if isinstance(title,str) else ''
         name=name.strip() if isinstance(name,str) else ''
@@ -734,13 +1135,26 @@ class Studio:
                 except OSError:pass
                 out.append({'url':'/'+rel,'name':Path(rel).name,'path':rel,'dimensions':dimensions,'used_in':sorted(set(usage.get(rel,[])))})
         return out
-    def git(self,*args,env=None,timeout=30):
+    def git(self,*args,env=None,timeout=120):
         e=os.environ.copy(); e['GIT_TERMINAL_PROMPT']='0'; key=self.config['publishing'].get('ssh_key','')
         e['GIT_SSH_COMMAND']='ssh'+((' -i '+shlex.quote(str(key))) if key else '')+' -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes'
         if env: e.update(env)
         p=subprocess.run(['git',*args],cwd=self.root,env=e,capture_output=True,text=True,timeout=timeout)
         if p.returncode: raise ValueError(p.stderr.strip() or p.stdout.strip() or 'Git operation failed.')
         return p.stdout.strip()
+    def tree_paths(self,ref):
+        """Read an immutable commit tree once, allowing synced folders to wake up."""
+        commit=self.git('rev-parse',ref)
+        if commit not in self._tree_cache:
+            head=self.git('rev-parse','HEAD')
+            staged=self.git('diff','--cached','--name-only') if commit==head else 'not-head'
+            # The index is refreshed to HEAD after Blynger commits. On a
+            # cloud-synced repository this avoids waking a very large packed
+            # history merely to rediscover the current path names.
+            names=(self.git('ls-files') if commit==head and not staged
+                   else self.git('ls-tree','-r','--name-only',commit,timeout=120))
+            self._tree_cache[commit]=frozenset(names.splitlines())
+        return self._tree_cache[commit]
     def settings(self):
         remote=self.state['remote']
         try: url=self.git('remote','get-url',remote)
@@ -968,7 +1382,12 @@ class Studio:
                 self.state['item_titles'][item_id]=title_of(raw,name)
                 if version==1:self.state['site_feed_titles'].setdefault(item_id,self.state['item_titles'][item_id])
                 stub=draft.get('stub_of',(old or {}).get('stub_of'))
-                kind='thread' if (old or {}).get('kind')=='thread' or len(md)>2000 or transclusions or stub is not None else 'fragment'
+                # Blynger's two writing surfaces have an explicit protocol
+                # meaning: entries on Openers are short-form fragments (unless
+                # a response makes one a protocol thread), while numbered Posts
+                # are always threads.  Do not make a Post's identity depend on
+                # an invisible character-count threshold.
+                kind='thread'
                 page=(old or local or {}).get('page') or kind[0]+'/'+item_id+'/'
                 doc={'blyg':BLYG_VERSION,'id':item_id,'kind':kind,'origin':self.origin,'page':page,'author':{'name':self.author,'url':self.site},'created':created,'updated':at,'version':version,'content_md':md,'content_html':content_html,'content_hash':'sha256:'+digest(md),'media':media,'changelog':(copy.deepcopy(old['changelog']) if old else [])+[{'version':version,'at':at,'note':draft.get('note') or ('Updated in Blynger' if old else 'Imported from '+name)}]}
                 if draft.get('pin_on_publish'):doc['changelog'][-1]['pinned']=True
@@ -1091,7 +1510,30 @@ class Studio:
         self.state['pending']=sorted(set(self.state['pending'])|set(files)); self.save_state()
         return {'message':f'Prepared {len(docs)} Blyg copies locally. Original pages preserved. Nothing published.','count':len(docs)}
     def prepare(self,review=True):
+        if self.state.get('pending_publication'):
+            raise ValueError('A publication is already being sent. Wait for it to finish before reviewing again.')
         self.require_current_fragment_files()
+        pending=set(self.state.get('series_pending',[]))
+        # Older workflows could retain membership while losing the pending
+        # marker. Detect the unmistakable missing-furniture state without
+        # parsing or validating unrelated Series members.
+        for key,record in self.state.get('series',{}).items():
+            for member in record.get('members',[]):
+                name=member.get('name')
+                if not name:
+                    continue
+                draft=self.state['drafts'].get(name)
+                raw=draft.get('raw','') if draft else self.read(name)
+                if 'class="blynger-series-title"' not in raw:
+                    pending.add(key)
+                    break
+        pending=sorted(pending)
+        for key in pending:
+            if key in self.state['series']:
+                self.reconcile_series(key)
+        if pending:
+            self.state['series_pending']=[key for key in self.state.get('series_pending',[]) if key not in pending]
+            self.save_state()
         pages=self.effective_pages(); changes={}
         for name,draft in self.state['drafts'].items():
             if draft.get('new') and name not in self.non_blyg_pages and name not in self.state['standalone_pages'] and 'blogroll_snapshot' not in draft:
@@ -1159,6 +1601,9 @@ class Studio:
                         blocks[start]='<!-- blynger-fragment-link-start --><span class="blynger-fragment-marker"><a href="'+permalink+'" title="'+('Response' if route=='t' else 'Fragment')+'" aria-label="Read this '+('response' if route=='t' else 'fragment')+'"></a></span><!-- blynger-fragment-link-end -->'+blocks[start]
                     rendered=rendered[:a]+''.join(blocks)+rendered[b:]
                     rendered=rendered.replace('</head>',FRAGMENT_DOT_STYLE+'</head>',1)
+                    a,b=region(rendered)
+                    marked=fragment_model.embed(meta,rendered[a:b])
+                    rendered=rendered[:a]+marked+rendered[b:]
                 rendered=enrich(rendered,name,self.root,config=self.config,blyg_item=False,blyg_discovery=name=='index.html',rss_discovery=True)
                 changes[name]=rendered
                 continue
@@ -1182,6 +1627,10 @@ class Studio:
                 rendered=str(soup)
                 if soup.select('.blynger-fragment-marker'):
                     rendered=rendered.replace('</head>',FRAGMENT_DOT_STYLE+'</head>',1)
+                a,b=region(rendered)
+                durable=fragment_model.rebase_managed(source['fragments'],clean(rendered[a:b]),self.site)
+                marked=fragment_model.embed(durable,rendered[a:b])
+                rendered=rendered[:a]+marked+rendered[b:]
             if 'blyg-transclusion' in rendered or 'blynger-citation' in rendered:
                 rendered=re.sub(r'<style id="blynger-quote-style">.*?</style>','',rendered,flags=re.S)
                 rendered=rendered.replace('</head>',QUOTE_STYLE+'</head>',1)
@@ -1207,12 +1656,18 @@ class Studio:
             d['raw']=pages[name]; d['base']=digest(self.path(name).read_bytes()); d['new']=False
         for name,saved in self.state.get('fragment_posts',{}).items():
             if name in changes: saved['file_hash']=digest(self.path(name).read_bytes())
-        self.state['pending']=sorted(set(self.state['pending'])|set(written)); self.save_state()
+        self.state['pending']=sorted(set(self.state['pending'])|set(written))
+        # Approval must refer to these exact private inputs, not to whatever
+        # drafts and pins happen to exist when the review dialog is confirmed.
+        self.state['prepared_publication']=self.publication_inputs()
+        self.save_state()
         if review:return self.review()
         return {'message':'Prepared local publication files. Nothing published.','changed':len(written)}
     def allowed(self,name):
-        return bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name) and name!='template.html') or name in ('feed.xml','sitemap.xml','robots.txt') or name.startswith('blyg/') or name in self.state['uploaded']
+        return bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name) and name!='template.html') or name in ('.htaccess','feed.xml','sitemap.xml','robots.txt') or name.startswith('blyg/') or name in self.state['uploaded']
     def refresh_review(self):
+        if self.state.get('pending_publication'):
+            raise ValueError('A publication is already being sent. Wait for it to finish before reviewing again.')
         self.git('fetch','--no-tags',self.state['remote'],'refs/heads/'+self.state['branch'],timeout=60)
         hosted=self.git('rev-parse','FETCH_HEAD');head=self.git('rev-parse','HEAD')
         self.state['review_base']=hosted;self.save_state();review=self.review()
@@ -1242,19 +1697,30 @@ class Studio:
         return {'message':'Publication note saved locally.'}
     def publication_status(self):
         """Fast local signal for whether Review & publish has work to do."""
-        if self.state.get('pending_publication'):return {'ready':True}
-        if self.state['drafts'] or any(self.state.get('pins',{}).values()): return {'ready':True}
+        if self.state.get('pending_publication'):return {'ready':True,'state':'uncertain','retryable':True,'message':'Publication status uncertain. The exact approved publication is preserved and safe to retry.'}
+        if self.state['drafts'] or any(self.state.get('pins',{}).values()): return {'ready':True,'state':'saved_locally','retryable':False,'message':'Writing is saved locally and has not been published.'}
         base=self.state.get('review_base') or self.git('rev-parse','HEAD')
         tracked={name for name in self.git('diff','--name-only',base).splitlines() if self.allowed(name)}
-        if tracked:return {'ready':True}
-        base_paths=set(self.git('ls-tree','-r','--name-only',base).splitlines())
+        if tracked:return {'ready':True,'state':'prepared_locally','retryable':False,'message':'Website changes are local and have not been published.'}
+        base_paths=self.tree_paths(base)
         pending=any(name not in base_paths and self.allowed(name) and (self.root/name).is_file() for name in self.state['pending'])
-        return {'ready':pending}
+        if pending:return {'ready':True,'state':'prepared_locally','retryable':False,'message':'Website changes are local and have not been published.'}
+        return {'ready':False,'state':'up_to_date','retryable':False,'message':'No local publication is waiting. The last completed push was finalized locally.'}
+    def publication_inputs(self):
+        """Compact identity of the private work used by the latest prepare."""
+        def fingerprint(value):
+            return digest(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':')))
+        return {
+            'drafts':{name:fingerprint(draft) for name,draft in sorted(self.state['drafts'].items())},
+            'pins':{iid:list(versions) for iid,versions in sorted(self.state.get('pins',{}).items()) if versions},
+        }
     def review(self):
         base=self.state.get('review_base') or self.git('rev-parse','HEAD')
         tracked={n for n in self.git('diff','--name-only',base).splitlines() if self.allowed(n)}
-        base_paths=set(self.git('ls-tree','-r','--name-only',base).splitlines())
-        head_paths=set(self.git('ls-tree','-r','--name-only','HEAD').splitlines())
+        base_commit=self.git('rev-parse',base)
+        base_paths=self.tree_paths(base_commit)
+        head_commit=self.git('rev-parse','HEAD')
+        head_paths=base_paths if head_commit==base_commit else self.tree_paths(head_commit)
         # Git identifies tracked changes in one pass. Pending is needed only
         # for newly generated files that are not yet present in the baseline.
         names=tracked|{n for n in self.state['pending'] if n not in base_paths and self.allowed(n)}
@@ -1273,21 +1739,29 @@ class Studio:
             if c['path'].endswith('.html') and not c['path'].startswith('blyg/') and not c['new']:
                 diff=self.git('diff','--no-ext-diff','--no-color','--ignore-space-at-eol',base,'--',c['path'])
                 if diff: comparisons.append({'path':c['path'],'diff':diff})
-        signature=digest(base+json.dumps([(c['path'],'deleted' if c.get('deleted') else digest((self.root/c['path']).read_bytes())) for c in changes])+self.git('rev-parse','HEAD')+json.dumps(self.settings(),sort_keys=True))
+        signature=digest(base+json.dumps([(c['path'],'deleted' if c.get('deleted') else digest((self.root/c['path']).read_bytes())) for c in changes])+head_commit+json.dumps(self.settings(),sort_keys=True))
         planned_pins=sum(1 for c in changes if re.fullmatch(r'blyg/items/[0-7][0-9a-hjkmnp-tv-z]{25}/v[0-9]+\.json',c['path']))
         report=(validate_surface(self.root,self.origin,strict_existing=False).public()
                 if (self.root/'blyg/blyg.json').is_file() else None)
         return {'commit_message':self.state.get('publication_note') or self.publication_message(changes),'changes':changes,'comparisons':comparisons,'base':base,'signature':signature,'settings':self.settings(),'planned_pins':planned_pins,'conformance':report,'message':'Review these local files before publishing. Includes existing site edits.'}
-    def publish(self,signature,note=None):
-        pending=self.state.get('pending_publication')
-        if pending:
-            if self.git('branch','--show-current')!=pending['branch']:raise ValueError('The checkout is on a different branch. Publication retry stopped.')
-            refs=self.connection()['refs'];remote_head=refs.split()[0] if refs else None
-            if remote_head not in (None,pending['base'],pending['commit']):raise ValueError('The hosted site changed after the failed publication. Review it before trying again.')
-            if remote_head!=pending['commit']:self.git('push',self.state['remote'],pending['commit']+':refs/heads/'+pending['branch'],timeout=90)
-            return self.finish_publication(pending.get('inherited',[]))
+    def begin_publication(self,signature,note=None):
+        """Durably preserve an approved publication before any slow push.
+
+        The returned snapshot is immutable publication input. Later drafts and
+        pins may safely be created while it is being sent to the host.
+        """
+        if self.state.get('pending_publication'):
+            raise ValueError('An approved publication is already waiting. Use Recovery to retry it.')
         review=self.review()
         if signature!=review['signature']: raise ValueError('Files changed since review. Review again before publishing.')
+        prepared=self.state.get('prepared_publication')
+        current_inputs=self.publication_inputs()
+        if prepared is None:
+            if current_inputs['drafts'] or current_inputs['pins']:
+                raise ValueError('Saved writing or pins were not included in this review. Review publication again.')
+            prepared=current_inputs
+        if prepared!=current_inputs:
+            raise ValueError('Saved writing or pins changed after this review. Review publication again before publishing.')
         if self.git('diff','--cached','--name-only'): raise ValueError('Git already has staged changes. Please finish that Git operation before publishing from Blynger.')
         branch=self.git('branch','--show-current')
         if branch!=self.state['branch']: raise ValueError('The checkout is on a different branch. Publishing stopped.')
@@ -1310,31 +1784,84 @@ class Studio:
                 self.git('update-ref','refs/heads/'+branch,commit,old)
                 self.git('read-tree','HEAD') # Staging was checked empty; leave working files untouched.
         commit=self.git('rev-parse','HEAD')
-        self.state['pending_publication']={'commit':commit,'base':review['base'],'branch':branch,'inherited':inherited};self.save_state()
-        # Never force or merge automatically. A rejected push leaves this exact approved commit available to retry.
-        self.git('push',self.state['remote'],commit+':refs/heads/'+branch,timeout=90)
-        return self.finish_publication(inherited)
-    def finish_publication(self,inherited):
+        self.state['pending_publication']={
+            'commit':commit,'base':review['base'],'branch':branch,'inherited':inherited,
+            'paths':paths,'drafts':copy.deepcopy(self.state['drafts']),
+            'pins':copy.deepcopy(current_inputs['pins']),'prepared':copy.deepcopy(prepared),
+            'publication_note':self.state.get('publication_note'),
+        };self.save_state()
+        return copy.deepcopy(self.state['pending_publication'])
+    def pending_publication(self):
+        pending=self.state.get('pending_publication')
+        if not pending:raise ValueError('No approved publication is waiting to be retried.')
+        return copy.deepcopy(pending)
+    def push_publication_network(self,pending):
+        """Send exactly one preserved snapshot without finalizing local state."""
+        current=self.state.get('pending_publication')
+        if not current or current.get('commit')!=pending.get('commit'):
+            raise ValueError('The approved publication changed before it could be sent.')
+        if self.git('branch','--show-current')!=pending['branch']:
+            raise ValueError('The checkout is on a different branch. Publication stopped.')
+        refs=self.connection()['refs'];remote_head=refs.split()[0] if refs else None
+        if remote_head not in (None,pending['base'],pending['commit']):
+            raise ValueError('The hosted site changed after approval. Review it before trying again.')
+        # Never force or merge automatically. Any interruption leaves this
+        # exact approved commit available to inspect and safely retry.
+        if remote_head!=pending['commit']:
+            self.git('push',self.state['remote'],pending['commit']+':refs/heads/'+pending['branch'],timeout=90)
+        return {'message':'The exact approved commit reached the host.'}
+    def push_publication(self,pending):
+        """Send and finalize exactly one previously preserved snapshot."""
+        self.push_publication_network(pending)
+        return self.finish_publication(pending)
+    def publish(self,signature,note=None):
+        """Synchronous compatibility path used by scripts and core tests."""
+        pending=(self.pending_publication() if self.state.get('pending_publication')
+                 else self.begin_publication(signature,note))
+        return self.push_publication(pending)
+    def commit_bytes(self,commit,name):
+        result=subprocess.run(['git','show',commit+':'+name],cwd=self.root,capture_output=True,timeout=120)
+        if result.returncode:raise ValueError(result.stderr.decode(errors='replace').strip() or 'Could not read the approved publication commit.')
+        return result.stdout
+    def commit_files(self,commit,names):
+        names=sorted(set(names))
+        if not names:return {}
+        result=subprocess.run(['git','archive','--format=tar',commit,'--',*names],cwd=self.root,capture_output=True,timeout=120)
+        if result.returncode:raise ValueError(result.stderr.decode(errors='replace').strip() or 'Could not read the approved publication commit.')
+        with tarfile.open(fileobj=io.BytesIO(result.stdout),mode='r:') as archive:
+            return {name:archive.extractfile(name).read() for name in names}
+    def finish_publication(self,pending):
+        commit=pending['commit'];inherited=pending.get('inherited',[]);commit_paths=self.tree_paths(commit)
+        approved_drafts=pending.get('drafts',{})
+        stored_paths=pending.get('paths')
+        approved_paths=set(stored_paths if stored_paths is not None else self.git('diff','--name-only',pending['base'],commit).splitlines())
+        realized_drafts={name:draft for name,draft in approved_drafts.items() if name in approved_paths}
+        doc_paths={name for name in commit_paths if re.fullmatch(r'blyg/items/[0-7][0-9a-hjkmnp-tv-z]{25}\.json',name)}
+        needed=(doc_paths
+                | {name for name in inherited if name in commit_paths}
+                | {name for name in approved_paths if name in commit_paths}
+                | {name for name in realized_drafts if name in commit_paths}
+                | {name for name in self.state['fragment_posts'] if name in approved_paths and name in commit_paths})
+        blobs=self.commit_files(commit,needed)
         for name in inherited:
             target=(self.root/name).resolve()
             if target.is_relative_to(self.root) and not target.exists() and not any(part.startswith('.') for part in Path(name).parts):
-                data=subprocess.run(['git','show','HEAD:'+name],cwd=self.root,capture_output=True,check=True).stdout
-                atomic(target,data)
+                atomic(target,blobs[name])
         docs={}
         excluded_ids={self.state['ids'][name] for name in self.non_blyg_pages|set(self.state['standalone_pages']) if name in self.state['ids']}
-        for p in (self.root/'blyg/items').glob('*.json'):
-            if p.name!='index.json':
-                d=json.loads(p.read_text())
-                if d['id'] not in excluded_ids:docs[d['id']]=d
+        for name in doc_paths:
+            d=json.loads(blobs[name])
+            if d['id'] not in excluded_ids:docs[d['id']]=d
         # Record only interactions made real by this successful publication.
         # The log is private Reader state and never enters generated site files.
         self.reader.record_publications(self.state['published'],docs)
         self.remember(docs)
-        for name,draft in self.state['drafts'].items():
+        for name,draft in realized_drafts.items():
             if draft.get('fragments') is None and not draft.get('quotes'):
                 self.state['fragment_posts'].pop(name,None)
             if draft.get('fragments') is not None or draft.get('quotes'):
-                saved={'raw':draft['raw'],'fragments':copy.deepcopy(draft.get('fragments')),'quotes':copy.deepcopy(draft.get('quotes',{})),'generated':copy.deepcopy(draft.get('generated',[])),'file_hash':digest(self.path(name).read_bytes())}
+                file_hash=digest(blobs[name]) if name in commit_paths else None
+                saved={'raw':draft['raw'],'fragments':copy.deepcopy(draft.get('fragments')),'quotes':copy.deepcopy(draft.get('quotes',{})),'generated':copy.deepcopy(draft.get('generated',[])),'file_hash':file_hash}
                 if saved.get('fragments'):
                     for row in saved['fragments'].get('ranges',[]):row.pop('pin_on_publish',None)
                 for field in ('stub_of','forked_from','blogroll_snapshot'):
@@ -1342,14 +1869,32 @@ class Studio:
                 self.state['fragment_posts'][name]=saved
                 if name not in self.non_blyg_pages:
                     iid=self.state['ids'][name]
-                    self.state['fragment_history'].setdefault(iid,{})[str(docs[iid]['version'])]=copy.deepcopy(saved)
+                    if iid in docs:
+                        self.state['fragment_history'].setdefault(iid,{})[str(docs[iid]['version'])]=copy.deepcopy(saved)
         # Presentation-only prepares can update the file without changing the private source.
         for name,saved in self.state['fragment_posts'].items():
-            saved['file_hash']=digest(self.path(name).read_bytes())
+            if name in approved_paths and name in commit_paths:saved['file_hash']=digest(blobs[name])
             iid=self.state['ids'].get(name)
             if iid in docs: self.state['fragment_history'].setdefault(iid,{})[str(docs[iid]['version'])]=copy.deepcopy(saved)
-        self.state['pins']={}
+        for iid,versions in pending.get('pins',{}).items():
+            committed={str(version) for version in versions
+                       if f'blyg/items/{iid}/v{version}.json' in approved_paths
+                       and f'blyg/items/{iid}/v{version}.json' in commit_paths}
+            if committed and iid in self.state['pins']:
+                self.state['pins'][iid]=[version for version in self.state['pins'][iid] if str(version) not in committed]
+                if not self.state['pins'][iid]:self.state['pins'].pop(iid,None)
+        self.state['drafts']={name:draft for name,draft in self.state['drafts'].items()
+                              if name not in realized_drafts or draft!=realized_drafts[name]}
+        remaining=[]
+        for name in self.state['pending']:
+            if name not in approved_paths:remaining.append(name);continue
+            target=(self.root/name).resolve();approved=blobs.get(name) if name in commit_paths else None
+            current=target.read_bytes() if target.is_file() else None
+            if current!=approved:remaining.append(name)
+        self.state['pending']=remaining
         self.state.pop('pending_publication',None)
-        self.state.pop('publication_note',None)
-        self.state['published']=docs; self.state['review_base']=self.git('rev-parse','HEAD'); self.state['drafts']={}; self.state['pending']=[]; self.save_state()
+        if self.state.get('prepared_publication')==pending.get('prepared'):
+            self.state.pop('prepared_publication',None)
+        if self.state.get('publication_note')==pending.get('publication_note'):self.state.pop('publication_note',None)
+        self.state['published']=docs; self.state['review_base']=commit; self.save_state()
         return {'message':'Git push completed. The host’s deployment hook determines when the public site updates.'}

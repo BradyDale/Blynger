@@ -1,3 +1,162 @@
+## 0.12.0 — Safer publishing and recovery
+
+- Prepare publication reviews in the background so large sites no longer leave the native window waiting on one long request or produce a misleading **Load failed** message.
+- Keep the interface responsive while preparation and hosted-version checks run, and retain the existing guided recovery messages when preparation finds a fragment problem.
+- Tolerate a window or browser disconnecting after background work has begun without turning it into another server error.
+- Correct private-state validation: pending publication paths are filenames, not object records. Valid prepared work is no longer mistaken for damaged state after reopening Blynger.
+- Bind confirmation to the exact drafts and pins rendered for review. If either changes, Blynger asks for a fresh review before creating a commit, and successful publication clears only work actually represented in that commit.
+- Refuse another Review, Prepare, or hosted-version refresh while an approved publication is being sent, so another window cannot rewrite files beneath the exact commit in flight.
+- Restore Studio and Reader recovery snapshots without replacing the verified backup with the state being abandoned, and repair Reader's main state after startup recovery while retaining that backup.
+- Preserve a timestamped copy whenever a later save encounters an invalid Studio or Reader state file instead of silently replacing the rejected bytes.
+- Keep an Opener Stub's source attached to its durable heading identity rather than its submitted list position, so reordered metadata cannot move or duplicate provenance.
+- Treat a Reader media-write failure as an isolated warning and save synchronized items and watermarks in a final durability step even when later sync work fails.
+- Add separate **Transclude** and **Respond / Stub** actions to the Post editor. Each accepts one Blyg item permalink, imports only that verified item without subscribing to or crawling its source, and inserts its protected snapshot; only **Respond / Stub** records a permanent response target.
+- Add regression coverage for long-running review preparation and for reopening state that contains pending filenames.
+
+Recovery note: diagnosis preserved the pre-finish snapshot as `state.preserved-backup-c43c718-20261017-132006.json`. It is for recovery inspection only and must not be restored wholesale because it contains an already-completed publication marker. All visible writing in its sixteen draft records has been confirmed present in the published pages.
+
+## 0.11.3 — One fragment snapshot per save
+
+- Move a new, never-published Post draft to an unused number so gaps can be filled without overwriting or renumbering anything already published.
+- Release a discarded draft's number after confirming it never had a public file or published Blyg history; genuine withdrawals remain permanently reserved.
+- Capture durable fragment markers and their private fragment map atomically. A final browser-side boundary reconciliation can no longer leave a new or edited Post with HTML from one layout and fragment metadata from another.
+- Preserve a fragment boundary that begins on a Blynger-managed image when publication copies that exact immutable image from its private authoring address to its public Blyg media address.
+- Keep the strict server check: malformed or genuinely damaged fragment layouts are still rejected rather than silently publishing the wrong ranges.
+
+## 0.11.2 — Publish, then keep writing
+
+- Close the publication review as soon as the exact approved commit, included drafts, and queued pins have been durably preserved. The slower network push now continues in the background while the editor remains available.
+- Report success quietly in the status bar. Show an attention dialog only when the background publication fails or its remote result is uncertain.
+- Preserve every draft, edit, and queued pin created after publication starts, and build published history from the approved commit rather than whatever files happen to exist when the push finishes.
+- Refuse a second overlapping publication, retain interrupted work for exact-commit Recovery, and make Recovery retries use the same non-blocking flow.
+- Add delayed-push regressions covering intervening drafts, intervening edits, concurrent publication refusal, exact artifact history, and restart recovery.
+
+## 0.11.1 — New Openers complete durable migration
+
+- Reconcile newly inserted Opener blocks against the exact editor block map submitted in the same save, then write their durable identities automatically. A partially migrated Openers page no longer mistakes a normal new entry for damaged fragment state.
+- Report durable-marker failures as fragment-state errors tied to the affected page.
+- Offer **Rebuild fragment markers and save draft** for both Posts and Openers. This non-destructive repair keeps the current writing and fragment identities; Posts retain the separate last-resort option to remove all fragment designations.
+- Rebuild a malformed unsaved Opener identity from its durable heading while keeping every persisted published identity authoritative, so the recovery action completes instead of returning a second error.
+- Reconcile the browser's temporary Opener identity map before strict validation, reserving every persisted identity first. A genuine Reader Stub can no longer fail before the Opener repair path runs.
+- Preserve durable fragment placement when an exact Stub transclusion is refreshed from Reader or converted back to its private authoring directive. Fragmented Posts containing genuine transclusions can now be revised normally instead of losing the transclusion block's identity during save.
+- Describe marker rebuilding accurately in the recovery dialog; it does not remove Opener fragments.
+- When Backspace removes a protected Stub transclusion, keep the following paragraph and place the cursor beneath **Stubbing:** instead of collapsing it into the Stub label.
+- Open Reader items by clicking their cards, remove the redundant **Read** button, expose separate **Opener Stub** and **Post Stub** actions, and group quotation, saving, liking, and private reactions across the card width.
+- Keep **Fork** visible but disabled when an item has no pinned version, with **Requires a pinned post** on hover, instead of silently hiding the protocol requirement.
+
+## 0.11.0 — Durable fragment identities
+
+- Store stable block, fragment, and boundary identities directly on the top-level blocks of fragment-aware article HTML. Whole-block moves and ordinary text edits now carry their identities with them instead of depending solely on a separate positional map.
+- Recover the fragment map from those durable HTML markers when its private cache is absent, while retaining existing private metadata for compatibility and extra Opener/Stub state.
+- Migrate older fragment-aware drafts lazily on their next save. Existing pages are not rewritten merely by opening Blynger.
+- Keep durable authoring markers on the human article only. Canonical Blyg `content_html`, `content_md`, transclusions, and hashes remain free of Blynger-private attributes.
+- Make **Remove all fragments** clear both the cached map and the durable HTML markers without deleting previously published fragment identities or history.
+
+## 0.10.23 — Reader links reach the browser
+
+- Route Reader links through a native navigation handoff that WebKit cannot silently drop, while retaining strict scheme validation before opening the default browser.
+
+## 0.10.22 — One headline while writing
+
+- Hide the page's internal headline in Write mode because the document header already displays it. The real `<h1>` remains intact in HTML source, Preview, fragment bookkeeping, and the published page.
+- Detect saved Series memberships whose generated furniture is missing during publication review, so a lost pending marker cannot leave a published member without its Series subtitle, canonical headline, index entry, or navigation. Unrelated Series are left alone.
+- Preserve adjacent fragment identities when an older HTML normalization removed their shared boundary block, allowing generated Series navigation to be added without deleting reusable fragments.
+
+## 0.10.21 — Reliable Reader links
+
+- Hand ordinary Reader links directly from Blynger's trusted main window to macOS, so they reliably open in the configured default browser. Blyg item links continue to open inside Reader.
+- Keep the native handoff restricted to the main application frame and to HTTP, HTTPS, email, and telephone links; imported writing remains isolated in its unprivileged frame.
+- Create every new Series empty instead of guessing membership from matching headlines. Only Posts explicitly assigned by the author can join; member decoration and fragment validation wait for Review & publish.
+
+## 0.10.20 — Series choices follow the draft workflow
+
+- Remove the separate **Update series** action. A Post's Series and detail are now saved with its ordinary draft, while the generated Series index, subtitle, canonical headline, and next-installment navigation are created during **Review & publish**.
+- Preserve reusable fragment identities when Blynger adds or removes its own Series furniture. Generated Series subtitles and navigation remain outside reusable fragment content.
+- Avoid rewriting Series drafts when an ordinary save leaves the membership and detail unchanged.
+
+## 0.10.19 — Whole-app state recovery
+
+- Preserve a damaged private Studio state file and recover from the last verified backup instead of preventing Blynger from opening. If no verified backup exists, open in an explicit recovery state while retaining the damaged original.
+- Skip malformed generated Blyg item files during startup without changing them, and report the skipped files through Recovery.
+- Keep malformed or orphaned Reader records locally but isolate them from normal listings so one broken relationship cannot disable Reader.
+- Extend **Help → Recovery…** with Studio status and verified Studio-backup restoration. Restoring preserves the state it replaces and asks for a restart before further work.
+
+## 0.10.18 — Guided recovery
+
+- Add **Help → Recovery…** as a local, non-destructive control center with explicit publication states: saved locally, prepared locally, status uncertain, or locally finalized.
+- Retry only the exact approved commit after a failed or uncertain publication, using the existing snapshot-bound publication safety path.
+- Pause and resume troublesome subscriptions without deleting their cache, Saved items, or private activity. Manage isolated malformed items and restore them to Reader when desired.
+- Restore the last verified Reader backup while preserving the state it replaces, and copy redacted diagnostics containing counts and status only—never writing, addresses, credentials, keys, or local paths.
+
+## 0.10.17 — Reader recovery and durable private activity
+
+- Serialize all Reader state changes, including publication activity, through one shared re-entrant lock so overlapping actions cannot overwrite one another.
+- Reject newly fetched Blyg items with malformed changelogs. If an older malformed cache entry already exists, Pace-layered view remains usable and offers a reversible **Skip this item** isolation action; Newest ordering remains available.
+- Start safely when the private Reader state file is damaged: preserve the unreadable file, recover from the last verified backup when possible, and clearly report recovery instead of preventing Blynger from opening.
+- Require the tested Pillow 12.3 security baseline for new installations and record the complete tested dependency set in `requirements.lock.txt` for reproducible installs.
+
+## 0.10.16 — Pace-layered Reader
+
+- Add an optional **Newest / Pace-layered** Reader order adapted from Blygger Studio's MIT-licensed reference algorithm at revision `e5ffc32`. New items enter at the top, revisions climb one place, and each pinned version halves an item's sinking speed.
+- Explain resurfaced writing directly on its card with version, revision date, pin count, and upward movement. Revised Blyg cards deepen through a restrained green scale while ordinary Web/RSS cards remain unchanged.
+- Keep ordinary links inside imported writing out of Blynger: they open in the Mac's default browser. Only recognizable Blyg item permalinks are resolved and opened within Reader.
+
+## 0.10.15 — Truthful long-publication completion
+
+- Use the already refreshed Git index for current-commit path discovery, avoiding needless traversal of a large cloud-synced packed history during review and finalization.
+- If WebKit drops a long-running local publication response, check Blynger's durable publication state before reporting failure. A publication that committed, pushed, finalized, and cleared its included draft is now reported as completed rather than **Load failed**.
+
+## 0.10.14 — Reliable Mac restart
+
+- Retire an orphaned launcher-owned Blynger server on the current local port before starting a replacement, while retaining cleanup for the historical port. An older background server can no longer mask a failed new launch, serve a stale interface, or leave the app stuck on **Load failed** after restart.
+
+## 0.10.13 — Publication and series lifecycle safety
+
+- Bind a failed-publication retry to the exact approved commit and its draft and pin snapshots. A successful retry now records history from the bytes actually pushed, clears only the drafts and pins included unchanged in that publication, and preserves all writing or queued work created afterward.
+- Preserve authored introductions and other edits on Series pages by replacing only Blynger's managed installment list when membership changes.
+- Reconcile affected Series after deleting or restoring an installment so indexes and previous-post navigation cannot retain stale links.
+- Bind asynchronous Markdown conversion to its originating document, revision, mode, and selection. If any changes while conversion is pending, Blynger keeps the Markdown in a recovery dialog instead of inserting it into the wrong page.
+- Strip Finder and cloud-provider metadata from the installed Mac bundle before its final signature so synced Desktop or Applications folders cannot leave Launch Services reporting a missing executable.
+
+## 0.10.12 — Responsive startup during Git scans
+
+- Load Posts, Openers, Pages, and editing without waiting for the publication-status Git scan. Slow cloud-synced Git metadata can now delay only the Review & publish indicator, while local Git operations receive the same tolerant timeout as commit-tree reads.
+
+## 0.10.11 — Reliable publication review on synced folders
+
+- Give cold Git tree reads enough time for a cloud-synced website folder to wake up, cache immutable commit trees during the session, and avoid reading the same tree twice while building a publication review.
+
+## 0.10.10 — Markdown paste
+
+- Recognize Markdown pasted into Write mode and safely convert its headings, emphasis, links, lists, quotations, fenced code, tables, and rules into normal editable Blynger markup. Ordinary prose and specialized quotation/transclusion paste retain their existing behavior.
+
+## 0.10.9 — TK model disclosure
+
+- Select TK's Codex model explicitly in private Settings and record that exact model with each new generated passage, so its robot disclosure can name the model used. Historical passages without model metadata remain honestly labeled **not stated**.
+
+## 0.10.8 — Series subtitle refinement
+
+- Render series subtitles as right-aligned level-three headings on newly generated or otherwise republished series Posts. Existing published pages remain unchanged until Blynger legitimately touches them again.
+- Normalize every assigned Post headline to **POST TITLE: SERIES TITLE**, removing duplicate managed suffixes and removing the suffix again when a Post leaves the Series.
+
+## 0.10.7 — Static series
+
+- Add **File → Create Series…** with a title, short navigation plug, and description. Blynger detects existing Posts whose headlines contain the series title and creates a normal static series Page using the site's current page template.
+- Let each Post opt into a Series and record a free-form detail such as a chapter or passage range. Series pages list their installments chronologically with those details and enter the sitemap as ordinary Pages.
+- Add a linked italic series title beneath each member Post headline. When a later installment is assigned, queue an idempotent **Next PLUG: TITLE** link on the preceding Post while leaving ordinary RSS eligibility unchanged.
+- Keep Series records in private Blynger state while publishing only ordinary static HTML. Series pages remain site furniture rather than Blyg items.
+
+## 0.10.6 — Reader images inside the security boundary
+
+- Restore cached images and other media in opened Reader items after the opaque-frame security hardening prevented WebKit from loading local media routes.
+- Embed only Blynger's already validated, content-addressed cache files into the isolated Reader document. Imported writing remains in its opaque sandbox and receives no access to Blynger's interface, API token, private state, or network.
+- Add a regression that verifies cached media becomes an inert data resource for isolated display while normal quotation and publication paths retain their established managed-media URLs.
+
+## 0.10.5 — Reliable local app replacement
+
+- Keep the installed Mac application at its stable path when rebuilding, avoiding a Finder-managed rename that could leave a stale question-mark launcher behind.
+- Verify the installed bundle after replacement and retain Blynger's stable signing identity and remembered Documents-folder permission.
+
 ## 0.10.4 — Reader presentation module
 
 - Move Reader cards, Saved timestamps, private-activity rows, generated-text disclosure, conversation controls, and opened-item markup into the focused `static/reader-ui.js` module.

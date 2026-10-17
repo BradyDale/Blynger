@@ -22,8 +22,12 @@ class PermalinkTests(StudioTests):
         before=self.studio.content(raw,'43.html',{})
         after=self.studio.content(rendered,'43.html',{})
         self.assertEqual(before,after)
-    def test_fragment_permalink_survives_becoming_a_thread(self):
-        self.studio.migrate();iid=self.studio.state['ids']['1.html'];first=json.loads((self.root/f'blyg/items/{iid}.json').read_text());self.assertEqual(first['page'],'f/'+iid+'/')
+    def test_legacy_fragment_permalink_survives_post_becoming_a_thread(self):
+        self.studio.migrate();iid=self.studio.state['ids']['1.html'];first=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        # Publications made before Posts were explicitly threads retain their
+        # established human permalink when a later version becomes a thread.
+        first['kind']='fragment';first['page']='f/'+iid+'/';first.pop('transclusions',None)
+        (self.root/f'blyg/items/{iid}.json').write_text(json.dumps(first))
         self.studio.state['published'][iid]=first;self.studio.remember({iid:first});draft=self.studio.page('1.html');draft['raw']=new_page('Expanded','<p>'+'Longer writing. '*220+'</p>');self.studio.save_draft(draft);self.studio.prepare();current=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         self.assertEqual(current['kind'],'thread');self.assertEqual(current['page'],'f/'+iid+'/');self.assertIn('RewriteRule ^f/'+iid,(self.root/'blyg/.htaccess').read_text())
         item=next(e for e in ET.parse(self.root/'feed.xml').findall('./channel/item') if e.find('guid').text.endswith('/'+iid+'/'));self.assertEqual(item.find('guid').text,'https://example.com/blyg/f/'+iid+'/')
@@ -87,9 +91,9 @@ Options FollowSymLinks
             self.assertNotIn('blynger-fragment-marker',opener['content_html'])
             self.assertIn(b'blynger-fragment-marker',fetch('/openers.html')[1])
             self.assertEqual(fetch(f'/blyg/t/{iid}/'),fetch('/thread.html'))
-            status,body=fetch(f'/blyg/f/{fid}/');self.assertEqual(status,200)
+            status,body=fetch(f'/blyg/t/{fid}/');self.assertEqual(status,200)
             self.assertIn(b'Original <a href="/openers.html">words</a>',body)
-            for path in [f'/blyg/f/{iid}/',f'/blyg/t/{fid}/','/blyg/t/00000000000000000000000000/','/blyg/f/00000000000000000000000000/']:
+            for path in [f'/blyg/f/{iid}/',f'/blyg/f/{fid}/','/blyg/t/00000000000000000000000000/','/blyg/f/00000000000000000000000000/']:
                 self.assertEqual(fetch(path)[0],404,path)
             self.assertEqual(fetch(f'/blyg/items/{iid}.json')[1],expected[iid+'.json'])
             self.assertEqual(fetch(f'/blyg/t/{iid}/v1/')[0],200)
@@ -106,4 +110,4 @@ Options FollowSymLinks
             p.terminate();p.wait(timeout=5);p.stderr.close()
 
 def load_tests(loader,tests,pattern):
-    return unittest.TestSuite([PermalinkTests('test_apache_published_permalinks'),PermalinkTests('test_versions_below_post_date_but_not_home'),PermalinkTests('test_fragment_permalink_survives_becoming_a_thread')])
+    return unittest.TestSuite([PermalinkTests('test_apache_published_permalinks'),PermalinkTests('test_versions_below_post_date_but_not_home'),PermalinkTests('test_legacy_fragment_permalink_survives_post_becoming_a_thread')])

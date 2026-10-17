@@ -2,7 +2,7 @@ import Cocoa
 import WebKit
 import Darwin
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var web: WKWebView!
     var server: Process?
@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     @objc func showSettings(){ click("settings") }
     @objc func newPost(){ click("new") }
     @objc func newPage(){ click("newPage") }
+    @objc func createSeries(){ click("createSeries") }
     @objc func saveDraft(){ click("save") }
     @objc func queueDraft(){ click("queue") }
     @objc func previewPage(){ click("preview") }
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     @objc func showReader(){ click("readerNav") }
     @objc func showSaved(){ click("savedNav") }
     @objc func rebuildArchive(){ click("migrate") }
+    @objc func showRecovery(){ click("recovery") }
     @objc func showHelp(){ click("help") }
     func loadSettings() throws {
         let fallback=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Blynger/settings.json").path
@@ -55,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         let fileItem=NSMenuItem();menu.addItem(fileItem);let file=NSMenu(title:"File");fileItem.submenu=file
         file.addItem(withTitle:"New Post",action:#selector(newPost),keyEquivalent:"n")
         file.addItem(withTitle:"New Page…",action:#selector(newPage),keyEquivalent:"")
+        file.addItem(withTitle:"Create Series…",action:#selector(createSeries),keyEquivalent:"")
         file.addItem(.separator())
         file.addItem(withTitle:"Save Draft",action:#selector(saveDraft),keyEquivalent:"s")
         file.addItem(withTitle:"Queue for Publication",action:#selector(queueDraft),keyEquivalent:"")
@@ -67,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         for (title,action) in [("Posts",#selector(showPosts)),("Openers",#selector(showOpeners)),("Pages",#selector(showPages)),("Images",#selector(showImages)),("Reader",#selector(showReader)),("Saved",#selector(showSaved))] { view.addItem(withTitle:title,action:action,keyEquivalent:"") }
         let helpItem=NSMenuItem();menu.addItem(helpItem);let help=NSMenu(title:"Help");helpItem.submenu=help
         help.addItem(withTitle:"Blynger Help",action:#selector(showHelp),keyEquivalent:"?")
+        help.addItem(withTitle:"Recovery…",action:#selector(showRecovery),keyEquivalent:"")
         help.addItem(.separator())
         help.addItem(withTitle:"Rebuild Blyg archive…",action:#selector(rebuildArchive),keyEquivalent:"")
         for item in appMenu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target=self }
@@ -74,11 +78,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         NSApp.mainMenu = menu
         window = NSWindow(contentRect: NSRect(x:0,y:0,width:1180,height:820), styleMask:[.titled,.closable,.miniaturizable,.resizable], backing:.buffered, defer:false)
         window.title = "Blynger"; window.delegate = self; window.center(); window.minSize = NSSize(width:720,height:500)
-        web = WKWebView(frame: window.contentView!.bounds); web.autoresizingMask = [.width,.height]; web.uiDelegate = self; web.navigationDelegate = self
+        let webConfiguration = WKWebViewConfiguration()
+        webConfiguration.userContentController.add(self, name: "openExternal")
+        web = WKWebView(frame: window.contentView!.bounds, configuration: webConfiguration); web.autoresizingMask = [.width,.height]; web.uiDelegate = self; web.navigationDelegate = self
         window.contentView = web; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         web.loadHTMLString("<html><body style='background:#416b67;color:white;font:24px Georgia;padding:40px'>Starting Blynger…</body></html>", baseURL:nil)
         // Only retire an old launcher-owned Python server from this exact site.
-        retireLegacyServer()
+        // Check the current port as well as Blynger's historical one: a server
+        // orphaned by a prior launcher must never mask failure of the new one.
+        retireOwnedServers()
         let process = Process(); process.executableURL = URL(fileURLWithPath:python)
         process.arguments = ["-c", "import os,sys; os.getpgrp() == os.getpid() or os.setsid(); os.execv(sys.argv[1],sys.argv[1:])", python, source+"/app.py", "--no-browser", "--port", String(port)]
         process.currentDirectoryURL = URL(fileURLWithPath:source)
@@ -90,13 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         let p=Process(); p.executableURL=URL(fileURLWithPath:executable);p.arguments=args;let pipe=Pipe();p.standardOutput=pipe;p.standardError=FileHandle.nullDevice
         do { try p.run();let data=pipe.fileHandleForReading.readDataToEndOfFile();p.waitUntilExit();return String(data:data,encoding:.utf8) ?? "" } catch { return "" }
     }
-    func retireLegacyServer() {
-        let ids=output("/usr/sbin/lsof",["-tiTCP:8765","-sTCP:LISTEN"]).split(separator:"\n")
-        for id in ids {
-            let command=output("/bin/ps",["-p",String(id),"-o","command="])
-            let cwd=output("/usr/sbin/lsof",["-a","-p",String(id),"-d","cwd","-Fn"]).split(separator:"\n").first(where:{$0.hasPrefix("n")}).map{String($0.dropFirst())} ?? ""
-            let ours=command.contains(source+"/app.py") || (command.contains("app.py") && cwd==source)
-            if ours, let pid=Int32(id) { kill(pid,SIGINT) }
+    func retireOwnedServers() {
+        var seen=Set<String>()
+        for oldPort in [port,8765] {
+            let ids=output("/usr/sbin/lsof",["-tiTCP:\(oldPort)","-sTCP:LISTEN"]).split(separator:"\n")
+            for idPart in ids {
+                let id=String(idPart)
+                if seen.contains(id) {continue}
+                seen.insert(id)
+                let command=output("/bin/ps",["-p",id,"-o","command="])
+                let cwd=output("/usr/sbin/lsof",["-a","-p",id,"-d","cwd","-Fn"]).split(separator:"\n").first(where:{$0.hasPrefix("n")}).map{String($0.dropFirst())} ?? ""
+                let ours=command.contains(source+"/app.py") || (command.contains("app.py") && cwd==source)
+                if ours, let pid=Int32(id) { kill(pid,SIGINT) }
+            }
         }
     }
     func waitForServer(_ attempts:Int) {
@@ -123,7 +137,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         return .terminateLater
     }
     func applicationWillTerminate(_ notification:Notification){if let p=server,p.isRunning {kill(-p.processIdentifier,SIGTERM);p.terminate()}}
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "openExternal",
+              message.frameInfo.isMainFrame,
+              let value = message.body as? String,
+              let url = URL(string: value),
+              ["https", "http", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") else { return }
+        NSWorkspace.shared.open(url)
+    }
     func webView(_ webView:WKWebView,decidePolicyFor action:WKNavigationAction,decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
+        if let requestURL=action.request.url, requestURL.scheme == "blynger-external" {
+            let components=URLComponents(url:requestURL,resolvingAgainstBaseURL:false)
+            let value=components?.queryItems?.first(where:{$0.name=="url"})?.value
+            if let value=value,let destination=URL(string:value),["https","http","mailto","tel"].contains(destination.scheme?.lowercased() ?? "") {NSWorkspace.shared.open(destination)}
+            decisionHandler(.cancel);return
+        }
         if let url=action.request.url, url.scheme != "about", !(url.host=="127.0.0.1" && url.port==port) {if action.navigationType == .linkActivated {if ["https","http","mailto"].contains(url.scheme ?? "") {NSWorkspace.shared.open(url)}};decisionHandler(.cancel);return};decisionHandler(.allow)
     }
     func webView(_ webView:WKWebView,runOpenPanelWith parameters:WKOpenPanelParameters,initiatedByFrame frame:WKFrameInfo,completionHandler:@escaping([URL]?)->Void){let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=parameters.allowsMultipleSelection;panel.beginSheetModal(for:window){result in completionHandler(result == .OK ? panel.urls:nil)}}

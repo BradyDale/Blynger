@@ -65,10 +65,19 @@ class ReaderSecurityTests(unittest.TestCase):
         self.assertIn('/static/reader-frame.js',index)
         self.assertIn('sandbox="allow-scripts"',app);self.assertNotIn('allow-same-origin',app);self.assertNotIn('contentDocument',app)
         self.assertIn("connect-src 'none'",frame);self.assertIn("form-action 'none'",frame);self.assertIn("frame-src 'none'",frame);self.assertIn("base-uri 'none'",frame)
+        self.assertIn("media-src ${origin} data:",frame)
         self.assertIn('/static/reader-frame-bridge.js',frame);self.assertIn("event.source!==frame.contentWindow",compact_frame);self.assertIn("event.source!==parent",compact_bridge);self.assertIn("channel",bridge)
         self.assertNotIn("X-Blynger-Token",frame+bridge)
-        self.assertIn("api('open-external',{url:data.href})",compact_app)
+        self.assertIn('openExternal(data.href)',app)
+        self.assertIn('window.webkit?.messageHandlers?.openExternal',app)
         self.assertNotIn("link:data=>{if(/^https?:/i.test(data.href))readerOperation('reader-open'",compact_app)
+
+    def test_native_external_link_bridge_is_main_frame_only_and_scheme_bounded(self):
+        source=(ROOT/'native/Main.swift').read_text()
+        self.assertIn('WKScriptMessageHandler',source)
+        self.assertIn('message.frameInfo.isMainFrame',source)
+        self.assertIn('["https", "http", "mailto", "tel"]',source)
+        self.assertIn('NSWorkspace.shared.open(url)',source)
 
     def test_privileged_ui_has_strong_csp(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.token='test-token';server.studio=SimpleNamespace(config={'site_label':'Test','author_name':'Tester'})

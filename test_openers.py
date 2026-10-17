@@ -2,7 +2,7 @@
 import copy, json, subprocess, unittest
 from bs4 import BeautifulSoup
 from core import Studio, new_page, clean, region
-from fragments import openers_metadata, ranges
+from fragments import canonical, openers_metadata, ranges, remove_markers
 from reader import Reader
 from test_core import StudioTests
 from test_reader import Net, ORIGIN, IID, doc as remote_doc
@@ -46,7 +46,79 @@ class OpenerTests(unittest.TestCase):
         saved=self.studio.page('openers.html')['fragments']
         self.assertEqual(len(saved['blocks']),len(original['blocks']))
         self.assertEqual([r['key'] for r in saved['ranges']],[r['key'] for r in original['ranges']])
-        self.assertEqual(raw,self.studio.state['drafts']['openers.html']['raw'])
+        marked=self.studio.state['drafts']['openers.html']['raw']
+        self.assertIn('data-blynger-block=',marked)
+        self.assertEqual(canonical(raw),canonical(remove_markers(marked)))
+    def test_new_opener_reconciles_mixed_durable_and_new_blocks(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
+        d=self.studio.page('openers.html')
+        a,b=region(d['raw']);body=BeautifulSoup(d['raw'][a:b],'html.parser');first=body.find('h3')
+        first.insert_before(BeautifulSoup('<h3 id="new">October 15, 2026</h3><p>New morning thought.</p>','html.parser'))
+        d['raw']=d['raw'][:a]+str(body)+d['raw'][b:]
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments'])
+        self.assertGreater(d['raw'][a:b].count('data-blynger-block='),0)
+        self.assertNotIn('data-blynger-block="'+d['fragments']['ranges'][0]['start']+'"',d['raw'][a:b])
+        self.studio.save_draft(d)
+        saved=self.studio.page('openers.html')
+        self.assertEqual(saved['fragments']['ranges'][0]['date_label'],'October 15, 2026')
+        self.assertIn('New morning thought.',saved['body'])
+        saved_start,saved_end=region(saved['raw'])
+        self.assertEqual(saved['raw'][saved_start:saved_end].count('data-blynger-block='),len(saved['fragments']['blocks']))
+    def test_opener_marker_repair_keeps_writing_and_identities(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
+        d=self.studio.page('openers.html');original=[r['key'] for r in d['fragments']['ranges']]
+        d['raw']=d['raw'].replace(' data-blynger-block="'+d['fragments']['blocks'][2]['id']+'"','',1).replace('First opener.','Edited opener.')
+        d['fragments']['blocks'][2]['html']=d['fragments']['blocks'][2]['html'].replace('First opener.','Edited opener.')
+        d['repair_fragment_markers']=True
+        self.studio.save_draft(d);saved=self.studio.page('openers.html')
+        self.assertIn('Edited opener.',saved['body'])
+        self.assertEqual([r['key'] for r in saved['fragments']['ranges']],original)
+        self.assertEqual(saved['raw'].count('data-blynger-block='),len(saved['fragments']['blocks']))
+    def test_opener_marker_repair_rebuilds_only_invalid_unsaved_identity(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
+        d=self.studio.page('openers.html');known=[r['key'] for r in d['fragments']['ranges']]
+        a,b=region(d['raw']);body=BeautifulSoup(d['raw'][a:b],'html.parser');first=body.find('h3')
+        first.insert_before(BeautifulSoup('<h3 id="new">October 15, 2026</h3><p>New thought.</p>','html.parser'))
+        d['raw']=d['raw'][:a]+str(body)+d['raw'][b:]
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments'])
+        d['fragments']['ranges'][0]['key']='not a valid identity'
+        d['repair_fragment_markers']=True
+        self.studio.save_draft(d);saved=self.studio.page('openers.html')['fragments']
+        self.assertRegex(saved['ranges'][0]['key'],r'^[a-zA-Z0-9_-]{1,80}$')
+        self.assertEqual([r['key'] for r in saved['ranges'][1:]],known)
+        repaired_key=saved['ranges'][0]['key'];self.connect();self.publish()
+        item=self.studio.fragment_objects('openers.html')[0]
+        self.assertEqual(item['reference']['key'],repaired_key)
+        self.assertTrue(item['published']);self.assertTrue((self.root/f"blyg/items/{item['id']}.json").exists())
+    def test_real_stub_save_reconciles_temporary_duplicate_identity_before_validation(self):
+        self.seed();self.studio.migrate_openers();net=Net();net.add(items=[remote_doc(kind='thread')]);self.studio.reader=Reader(self.studio.data,net,lambda:'2026-01-02T00:00:00Z');self.studio.reader.subscribe(ORIGIN)
+        quoted=self.studio.reader.snapshot(self.studio.reader.key(ORIGIN,IID),{'mode':'whole','transclude':True},self.studio);d=self.studio.page('openers.html');self.studio.save_draft(d)
+        d=self.studio.page('openers.html');known=[r['key'] for r in d['fragments']['ranges']]
+        a,b=region(d['raw']);body=BeautifulSoup(d['raw'][a:b],'html.parser');first=body.find('h3')
+        inserted=BeautifulSoup('<h3 id="new">October 15, 2026</h3>'+quoted['stub_label_html']+quoted['html']+'<p>Authored response.</p>','html.parser')
+        first.insert_before(*list(inserted.contents));d['raw']=d['raw'][:a]+str(body)+d['raw'][b:]
+        d['quotes']={quoted['snapshot']['token']:quoted['snapshot']}
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments'])
+        d['fragments']['ranges'][0]['key']=known[0];d['fragments']['ranges'][0]['stub_of']=quoted['stub_of']
+        self.studio.save_draft(d);saved=self.studio.page('openers.html')['fragments']
+        self.assertNotEqual(saved['ranges'][0]['key'],known[0]);self.assertEqual(saved['ranges'][0]['stub_of'],quoted['stub_of'])
+        self.assertEqual([r['key'] for r in saved['ranges'][1:]],known)
+        self.connect();self.publish();item=self.studio.fragment_objects('openers.html')[0]
+        doc=json.loads((self.root/f"blyg/items/{item['id']}.json").read_text())
+        self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['stub_of'],quoted['stub_of'])
+        self.assertEqual(doc['transclusions'],[{'id':IID,'version':1,'origin':ORIGIN}])
+
+    def test_stub_target_follows_its_heading_when_submitted_ranges_are_reordered(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html')
+        target={'origin':ORIGIN,'id':IID,'version':1}
+        intended=d['fragments']['ranges'][1]
+        intended['stub_of']=target
+        d['fragments']['ranges'].reverse()
+        self.studio.save_draft(d)
+        saved=self.studio.page('openers.html')['fragments']['ranges']
+        by_heading={row['heading']:row for row in saved}
+        self.assertEqual(by_heading[intended['heading']]['stub_of'],target)
+        self.assertTrue(all('stub_of' not in row for row in saved if row['heading']!=intended['heading']))
     def test_new_opener_is_internal_until_published_and_reuses_services(self):
         self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');oldkeys=[r['key'] for r in d['fragments']['ranges']]
         d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="new">September 26, 2026</h3><p>New thought.</p><h3 id="same">',1)

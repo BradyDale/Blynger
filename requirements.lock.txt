@@ -1,0 +1,13 @@
+# Tested dependency set for reproducible installs of Blynger 0.10.17.
+# Regenerate deliberately after testing; runtime compatibility ranges remain in requirements.txt.
+beautifulsoup4==4.15.0
+bleach==6.4.0
+defusedxml==0.7.1
+markdownify==1.2.3
+Markdown==3.11
+nh3==0.3.7
+Pillow==12.3.0
+six==1.17.0
+soupsieve==2.10
+typing_extensions==4.16.0
+webencodings==0.6.1

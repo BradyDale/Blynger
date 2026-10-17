@@ -17,6 +17,7 @@ class ConfigurationTests(unittest.TestCase):
             cfg=copy.deepcopy(DEFAULT_SETTINGS);cfg.update(site_root=str(site),data_root=str(data),site_url='https://writer.example/',site_label='writer.example',author_name='A Writer',author_signature='—A Writer',blyg_title="A Writer's blyg")
             path=root/'settings.json';save(cfg,path);reloaded=load(path)
             self.assertEqual(reloaded['author_name'],'A Writer')
+            self.assertEqual(reloaded['tk_model'],'gpt-6.1-sol')
             self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o600)
             self.assertNotIn('private key contents',path.read_text())
 
@@ -39,5 +40,6 @@ class ConfigurationTests(unittest.TestCase):
         cfg['publishing']['ssh_key']='/keys/id_example'
         view=public_view(update_from_public(cfg,{'author_name':'Someone'}))
         self.assertEqual(view['ssh_key'],'/keys/id_example');self.assertNotIn('private_key',view)
+        self.assertEqual(view['tk_model'],'gpt-6.1-sol')
 
 if __name__=='__main__':unittest.main()

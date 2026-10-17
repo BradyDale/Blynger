@@ -1,5 +1,5 @@
 """Private, origin-scoped Blyg reader. Never writes to a publication directory."""
-import copy, hashlib, html, json, re, threading, time
+import base64, copy, functools, hashlib, html, json, re, shutil, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -44,19 +44,140 @@ def selection_text(markup):
         node.insert_after('\n')
     return soup.get_text()
 
+def state_locked(method):
+    """Serialize access to Reader's single private state document."""
+    @functools.wraps(method)
+    def wrapped(self,*args,**kwargs):
+        with self._state_lock:return method(self,*args,**kwargs)
+    return wrapped
+
 class Reader:
     def __init__(self,data,fetcher=None,clock=now,own_origin=None):
+        self._state_lock=threading.RLock()
         self.root=Path(data)/'remote-reader';self.root.mkdir(parents=True,exist_ok=True)
         self.assets=self.root/'assets';self.assets.mkdir(exist_ok=True)
-        self.file=self.root/'reader.json';self.clock=clock;self.fetch=fetcher or fetch;self.own_origin=own_origin
-        self.state=json.loads(self.file.read_text()) if self.file.exists() else {'subscriptions':{},'items':{},'watermarks':{}}
+        self.file=self.root/'reader.json';self.backup=self.root/'reader.backup.json'
+        self.clock=clock;self.fetch=fetcher or fetch;self.own_origin=own_origin
+        self.recovery_notice='';self.damaged_file=None
+        self.state=self._load_initial_state()
         self.state.setdefault('subscriptions',{});self.state.setdefault('items',{});self.state.setdefault('watermarks',{})
         self.state.setdefault('interactions',[]);self.state.setdefault('interaction_seq',0)
+        self.state.setdefault('invalid_items',{})
+        self._isolate_invalid_items()
         self._sync_lock=threading.Lock()
         self.cleanup_legacy_comment_feeds()
         self.backfill_markers()
         self.cleanup()
-    def save(self):atomic(self.file,json.dumps(self.state,ensure_ascii=False,indent=2))
+        # Persist normalized Reader state on startup. After recovery this
+        # repairs the damaged main file while leaving the verified backup intact.
+        self.save()
+    @staticmethod
+    def _empty_state():return {'subscriptions':{},'items':{},'watermarks':{}}
+    @staticmethod
+    def _load_state(path):
+        state=json.loads(path.read_text())
+        if not isinstance(state,dict):raise ValueError('Reader state is not an object.')
+        for field in ('subscriptions','items','watermarks'):
+            if field in state and not isinstance(state[field],dict):raise ValueError(f'Reader {field} is not an object.')
+        return state
+    def _load_initial_state(self):
+        if not self.file.exists():return self._empty_state()
+        try:return self._load_state(self.file)
+        except (OSError,ValueError,json.JSONDecodeError):
+            damaged=self.root/f'reader.damaged-{time.time_ns()}.json'
+            try:shutil.copy2(self.file,damaged);self.damaged_file=damaged
+            except OSError:pass
+            try:
+                state=self._load_state(self.backup)
+                self.recovery_notice='Reader recovered from its last verified backup. The damaged data was preserved.'
+                return state
+            except (OSError,ValueError,json.JSONDecodeError):
+                self.recovery_notice='Reader started in recovery mode. The damaged data was preserved; no subscriptions or saved items were deliberately erased.'
+                return self._empty_state()
+    @state_locked
+    def save(self):
+        rendered=json.dumps(self.state,ensure_ascii=False,indent=2)
+        json.loads(rendered)
+        if self.file.exists():
+            try:
+                self._load_state(self.file)
+                atomic(self.backup,self.file.read_text())
+            except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+                if not self.recovery_notice:
+                    damaged=self.root/f'reader.damaged-save-{time.time_ns()}.json'
+                    try:
+                        shutil.copy2(self.file,damaged);self.damaged_file=damaged
+                        self.recovery_notice='Reader preserved an invalid private data file before saving the current state.'
+                    except OSError:pass
+        atomic(self.file,rendered)
+    def recovery_status(self):
+        if not self.recovery_notice:return None
+        return {'message':self.recovery_notice,'damaged_file':self.damaged_file.name if self.damaged_file else None,'backup_available':self.backup.exists()}
+    def _isolate_invalid_items(self):
+        changed=False
+        for sid,sub in list(self.state['subscriptions'].items()):
+            if isinstance(sub,dict):
+                continue
+            self.state.setdefault('invalid_subscriptions',{})[sid]=sub
+            del self.state['subscriptions'][sid]
+            changed=True
+        for key,item in list(self.state['items'].items()):
+            if not isinstance(item,dict):
+                self.state['invalid_items'][key]=item
+                del self.state['items'][key]
+                changed=True
+                continue
+            sid=item.get('subscription')
+            doc=item.get('doc')
+            problem=''
+            if not isinstance(sid,str) or sid not in self.state['subscriptions']:
+                problem='Its subscription record is missing.'
+            elif not isinstance(doc,dict) or not isinstance(doc.get('content_html'),str):
+                problem='Its cached content record is malformed.'
+            elif not isinstance(item.get('first_downloaded_at'),str):
+                problem='Its cached timestamp is malformed.'
+            if problem:
+                if not item.get('isolated') or item.get('isolation_reason')!=problem:
+                    changed=True
+                item['isolated']=True;item['isolation_reason']=problem
+        if changed:
+            self.save()
+    @state_locked
+    def recovery_overview(self):
+        subscriptions=[{'id':sub['id'],'title':sub.get('title') or sub.get('origin') or 'Subscription','active':sub.get('active',True),'error':sub.get('error','')} for sub in self.state['subscriptions'].values()]
+        paused=[sub for sub in subscriptions if not sub['active']]
+        isolated=[]
+        for key,item in self.state['items'].items():
+            if not item.get('isolated'):continue
+            sub=self.state['subscriptions'].get(item.get('subscription'),{})
+            restorable=item.get('subscription') in self.state['subscriptions']
+            title=self.display_title(item) if isinstance(item.get('doc'),dict) else 'Unreadable cached item'
+            isolated.append({'key':key,'title':title,'site':sub.get('title','Unknown source'),'reason':item.get('isolation_reason',''),'restorable':restorable and not item.get('isolation_reason')})
+        return {'reader':self.recovery_status(),'backup_available':self.backup.exists(),'subscriptions':subscriptions,'paused':paused,'isolated':isolated,'invalid_item_count':len(self.state.get('invalid_items',{})),'invalid_subscription_count':len(self.state.get('invalid_subscriptions',{}))}
+    @state_locked
+    def diagnostics(self):
+        return {
+            'subscriptions':len(self.state['subscriptions']),
+            'active_subscriptions':sum(sub.get('active',True) for sub in self.state['subscriptions'].values()),
+            'cached_items':len(self.state['items']),
+            'saved_items':sum(bool(item.get('saved')) for item in self.state['items'].values()),
+            'isolated_items':sum(bool(item.get('isolated')) for item in self.state['items'].values()),
+            'interaction_entries':len(self.state.get('interactions',[])),
+            'backup_available':self.backup.exists(),
+            'recovery_active':bool(self.recovery_notice),
+            'subscription_error_kinds':sorted({sub.get('error_kind') for sub in self.state['subscriptions'].values() if sub.get('error_kind')}),
+        }
+    @state_locked
+    def restore_backup(self):
+        restored=self._load_state(self.backup)
+        preserved=self.root/f'reader.before-restore-{time.time_ns()}.json'
+        if self.file.exists():shutil.copy2(self.file,preserved)
+        # Write the verified state without routing through save(), which would
+        # replace the good backup with the state this operation is abandoning.
+        atomic(self.file,json.dumps(restored,ensure_ascii=False,indent=2))
+        self.state=restored;self.recovery_notice='Reader state was restored from a verified backup. The replaced state was preserved.';self.damaged_file=preserved
+        return {'message':'Reader state restored from its verified backup. Reopen Reader to review it.'}
+    @state_locked
     def cleanup_legacy_comment_feeds(self):
         """Undo subscriptions made by the old Reader-link navigation path.
 
@@ -82,9 +203,12 @@ class Reader:
         p=self.assets/name
         if p.is_symlink() or self.assets.is_symlink() or p.resolve().parent!=self.assets.resolve():raise ValueError('Unsafe managed media path.')
         return p
+    @state_locked
     def cleanup(self):
         now_at=timestamp(self.clock());item_cutoff=now_at-timedelta(days=365*3);media_cutoff=now_at-timedelta(days=365);removed=[];changed=False
         for key,item in list(self.state['items'].items()):
+            if item.get('isolated'):
+                continue
             if item.get('saved'):continue
             age=timestamp(item.get('first_downloaded_at',self.clock()))
             if age<item_cutoff:
@@ -169,6 +293,7 @@ class Reader:
                         if tree.tag in ('rss','{http://www.w3.org/2005/Atom}feed'):return feed[0],{'type':'l0'},None
                     except (ET.ParseError,DefusedXmlException):pass
         raise ValueError('No usable feed found. Enter a Blyg, RSS/Atom feed, or a page linking to a feed. Tried: '+', '.join(tried))
+    @state_locked
     def subscribe(self,url,added_via='manual'):
         origin,m,target=self.resolve(url);sid=digest(origin)
         if self.own_origin and urlsplit(origin).netloc==urlsplit(self.own_origin).netloc:raise ValueError('Your own Blyg is already available in the writing archive and Quote post.')
@@ -179,6 +304,51 @@ class Reader:
         if self.state['subscriptions'][sid].get('error') and not old:
             message=self.state['subscriptions'][sid]['error'];del self.state['subscriptions'][sid];self.save();raise ValueError(message)
         result['selected']=self.key(origin,target) if target else None;return result
+
+    @state_locked
+    def import_item(self,url):
+        """Cache one Blyg item for authoring without subscribing to its origin."""
+        origin,manifest,target=self.resolve(url)
+        if manifest.get('type')=='l0' or not target or not ID.fullmatch(target):
+            raise ValueError('Paste the permalink of a specific Blyg fragment or thread.')
+        if self.own_origin and origin==self.own_origin:
+            raise ValueError('Use Quote post for writing already published on your own Blyg.')
+        sid=digest(origin);existing=self.state['subscriptions'].get(sid)
+        if existing:
+            sub=existing
+        else:
+            sub={'id':sid,'origin':origin,'title':manifest.get('title') if isinstance(manifest.get('title'),str) else origin,
+                 'author':manifest.get('author'),'manifest':manifest,'type':'blyg','warning':'','added_at':self.clock(),
+                 'added_via':'one-off authoring import','blogroll':False,'active':False}
+            self.state['subscriptions'][sid]=sub
+        final,raw,_,_=self.fetch(origin+'items/'+target+'.json',limit=MAX_ITEM_BYTES)
+        if not final.startswith(origin+'items/'):raise ValueError('Item redirected outside its Blyg origin.')
+        doc=json.loads(raw)
+        if not isinstance(doc,dict) or doc.get('id')!=target:raise ValueError('Item identity does not match its permalink.')
+        if doc.get('kind') not in ('fragment','thread'):raise ValueError('That Blyg item is not currently available for transclusion.')
+        version=doc.get('version')
+        if type(version)!=int or version<1:raise ValueError('Invalid Blyg item version.')
+        timestamp(doc.get('created'));timestamp(doc.get('updated'))
+        if not all(isinstance(doc.get(k),str) for k in ('content_md','content_html')):raise ValueError('Blyg item content is missing.')
+        changes=doc.get('changelog',[])
+        if not isinstance(changes,list) or any(not isinstance(change,dict) or type(change.get('version'))!=int or change['version']<1 or not isinstance(change.get('at'),str) for change in changes):
+            raise ValueError('The Blyg item has a malformed changelog.')
+        for change in changes:timestamp(change['at'])
+        if doc.get('origin')!=origin:raise ValueError('Blyg item origin does not match the site that served it.')
+        actual='sha256:'+digest(doc['content_md'])
+        if doc.get('content_hash')!=actual:raise ValueError('Blyg item content hash does not match.')
+        key=self.key(origin,target);old=self.state['items'].get(key,{});water=self.state['watermarks'].get(key,{})
+        if version<water.get('version',0):raise ValueError('An older version cannot replace the cached item.')
+        if version==water.get('version') and water.get('hash') not in (None,actual):raise ValueError('The origin changed an already observed version.')
+        assets,visual,warnings=self.download_assets(doc,origin,old)
+        self.state['watermarks'][key]={'version':version,'hash':actual}
+        self.state['items'][key]={'key':key,'subscription':sid,'origin':origin,'doc':doc,
+            'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),
+            'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),
+            'liked':old.get('liked',False),'reaction':old.get('reaction')}
+        sub.update(last_sync=self.clock(),error='',warnings=warnings)
+        self.save()
+        return {'selected':key,'title':self.display_title(self.state['items'][key]),'message':'Blyg item imported for this draft without subscribing.'}
     def sync_plain(self,sub):
         sync_warnings=[]
         old=sub.get('feed_cache',{});headers={}
@@ -300,7 +470,7 @@ class Reader:
                             if im.width<=32 and im.height<=32:meaningful=False
                     except OSError:pass
                 used[url]=name;visual=visual or meaningful
-            except ValueError as e:warnings.append(str(e))
+            except (OSError,ValueError) as e:warnings.append(str(e))
         return used,visual,warnings
     def surface(self,sub,path,with_status=False,force=False):
         cache=sub.setdefault('surfaces',{});old=cache.get(path,{});headers={}
@@ -369,6 +539,9 @@ class Reader:
                     if type(v)!=int or v<1:raise ValueError('Invalid version.')
                     timestamp(doc.get('created'));timestamp(doc.get('updated'))
                     if not all(isinstance(doc.get(k),str) for k in ('content_md','content_html')):raise ValueError('Missing item content.')
+                    changes=doc.get('changelog',[])
+                    if not isinstance(changes,list) or any(not isinstance(change,dict) or type(change.get('version'))!=int or change['version']<1 or not isinstance(change.get('at'),str) for change in changes):raise ValueError('Rejected item with malformed changelog: '+iid)
+                    for change in changes:timestamp(change['at'])
                     key=self.key(origin,iid);old=self.state['items'].get(key,{});water=self.state['watermarks'].get(key,{})
                     if v<water.get('version',0):raise ValueError('Version rollback ignored for '+iid)
                     claimed=doc.get('content_hash');actual='sha256:'+digest(doc['content_md'])
@@ -387,6 +560,7 @@ class Reader:
             sub['error']=str(e);sub['error_kind']='network' if str(e).startswith(('Could not fetch','HTTP ')) else 'invalid data';sub['last_result']='failed';return 0
         finally:
             sub['last_duration_ms']=round((time.monotonic()-sub_started)*1000);sub['last_checked']=checked;sub['last_downloaded']=downloaded
+    @state_locked
     def sync(self,sid=None):
         if not self._sync_lock.acquire(blocking=False):return {'message':'A Reader sync is already running.','already_running':True,'subscriptions':list(self.state['subscriptions'].values())}
         started=time.monotonic()
@@ -398,12 +572,47 @@ class Reader:
                 # waiting in long serial batches without hammering any one site.
                 with ThreadPoolExecutor(max_workers=min(6,len(targets))) as pool:imported=sum(pool.map(self._sync_subscription,targets))
             else:imported=sum(self._sync_subscription(sub) for sub in targets)
-            self.save();self.cleanup()
+            self.cleanup()
             return {'message':f'Sync finished in {time.monotonic()-started:.1f}s: {imported} changed items.','subscriptions':list(subs.values())}
-        finally:self._sync_lock.release()
-    def listing(self,subscription=None,query='',view='all'):
+        finally:
+            try:self.save()
+            finally:self._sync_lock.release()
+    def _pace_layered(self,rows):
+        """Order cached writing by Studio's public, wire-derived pace model.
+
+        Reader caches current documents rather than every historical pin body, so
+        this uses each item's public changelog (versions and own pins).  Revisions
+        climb one place and pins halve sinking speed per layer.  Ordinary feeds
+        participate as single-version, unpinned items.
+        """
+        visible={row['key'] for row in rows};depth={};entered={};clock=0;layers={}
+        events=[]
+        for row in rows:
+            changes=row.pop('_changes',[]) or [{'version':1,'at':row['date']}]
+            for position,change in enumerate(changes):
+                events.append((change.get('at') or row['date'],position,row['key'],change))
+        events.sort(key=lambda event:(event[0],event[1],event[2]))
+        def ranked():return sorted(depth,key=lambda key:(depth[key],-entered[key]))
+        for _,_,key,change in events:
+            if change.get('pinned'):
+                layers[key]=min(5,layers.get(key,0)+1)
+            if key not in visible:continue
+            if key not in depth:
+                for other in depth:depth[other]+=2**-layers.get(other,0)
+                depth[key]=0;entered[key]=clock;clock+=1
+            else:
+                order=ranked();at=order.index(key)
+                if at>0:
+                    above=order[at-1];own=depth[key];depth[key]=depth[above];depth[above]=own
+                    if depth[key]==own:entered[key]=clock;clock+=1
+        by_key={row['key']:row for row in rows}
+        return [by_key[key] for key in ranked()]
+    @state_locked
+    def listing(self,subscription=None,query='',view='all',order='newest'):
         out=[]
         for key,item in self.state['items'].items():
+            if item.get('isolated'):
+                continue
             if subscription and item['subscription']!=subscription:continue
             if view=='saved' and not item.get('saved'):continue
             if view=='liked' and not item.get('liked'):continue
@@ -417,8 +626,41 @@ class Reader:
             published=d.get('created') or d.get('updated') or item['first_downloaded_at'];first_seen=item.get('first_downloaded_at',item.get('observed_at',published))
             title=self.display_title(item);excerpt=text
             if title and excerpt.startswith(title):excerpt=excerpt[len(title):].lstrip(' —–:;,.')
-            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'sort':min(published,first_seen),'title':title,'excerpt':excerpt[:280],'url':self.page_url(item),'stub_target':self.stub_target(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction')})
-        return sorted(out,key=lambda i:(i['sort'],i['key']),reverse=True)
+            raw_changes=d.get('changelog',[])
+            malformed=not isinstance(raw_changes,list) or any(not isinstance(change,dict) or type(change.get('version'))!=int or change['version']<1 or not isinstance(change.get('at'),str) for change in raw_changes)
+            changes=[] if malformed else raw_changes
+            if not malformed:
+                try:
+                    for change in changes:timestamp(change['at'])
+                except ValueError:malformed=True;changes=[]
+            pins=sum(bool(change.get('pinned')) for change in changes if isinstance(change,dict))
+            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'updated':d.get('updated') or published,'sort':min(published,first_seen),'title':title,'excerpt':excerpt[:280],'url':self.page_url(item),'stub_target':self.stub_target(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction'),'revision_count':max(0,len(changes)-1),'pin_count':pins,'pace_warning':'This cached item has a malformed changelog. Use Newest ordering or skip this item.' if malformed and order=='pace' else None,'_changes':changes})
+        newest=sorted(out,key=lambda i:(i['sort'],i['key']),reverse=True)
+        if order!='pace':
+            for row in newest:row.pop('_changes',None)
+            return newest
+        newest_position={row['key']:index for index,row in enumerate(newest)}
+        paced=self._pace_layered(out)
+        for index,row in enumerate(paced):row['pace_rise']=max(0,newest_position[row['key']]-index)
+        return paced
+    @state_locked
+    def isolate(self,key):
+        if key not in self.state['items']:raise ValueError('That Reader item is no longer available.')
+        self.state['items'][key]['isolated']=True;self.save()
+        return {'message':'The malformed item was isolated. Its cached data was preserved.'}
+    @state_locked
+    def restore_isolated(self,key):
+        if key not in self.state['items'] or not self.state['items'][key].get('isolated'):raise ValueError('That isolated item is no longer available.')
+        if self.state['items'][key].get('subscription') not in self.state['subscriptions']:raise ValueError('This item cannot be shown until its missing subscription record is recovered.')
+        if self.state['items'][key].get('isolation_reason'):raise ValueError('This malformed item must remain preserved and isolated.')
+        self.state['items'][key].pop('isolated',None);self.save()
+        return {'message':'The item is visible in Reader again.'}
+    @state_locked
+    def pause(self,sid,value=True):
+        if sid not in self.state['subscriptions']:raise ValueError('Unknown subscription.')
+        self.state['subscriptions'][sid]['active']=not bool(value);self.save()
+        return {'message':'Subscription paused. Its cached and saved items were preserved.' if value else 'Subscription resumed.'}
+    @state_locked
     def mark(self,key,field,value):
         if field not in ('saved','liked'):raise ValueError('Unknown Reader marker.')
         if key not in self.state['items']:raise ValueError('That Reader item is no longer available.')
@@ -428,6 +670,7 @@ class Reader:
             else:item.pop('saved_at',None)
         interaction_log.marker(self.state,item,field,value,self.clock(),self.display_title(item))
         self.save();return {'message':('Saved' if field=='saved' else 'Liked') if value else ('Removed from Saved' if field=='saved' else 'Removed from Liked')}
+    @state_locked
     def react(self,key,reaction):
         if key not in self.state['items']:raise ValueError('That Reader item is no longer available.')
         if reaction is not None and reaction not in REACTIONS:raise ValueError('Unknown private response.')
@@ -436,12 +679,14 @@ class Reader:
         item['reaction']=value
         interaction_log.reaction(self.state,item,value,self.clock(),self.display_title(item),previous)
         self.save();return {'message':'Private response saved.' if value else 'Private response cleared.','reaction':value}
+    @state_locked
     def interactions(self,query=''):
         return interaction_log.view(self.state.get('interactions',[]),query)
     def _interaction_label(self,origin,iid):
         item=self.state['items'].get(self.key(origin,iid))
         if not item:return {'label':iid,'target_url':origin,'source_type':'blyg'}
         return {'label':self.display_title(item),'target_url':self.page_url(item),'source_type':item.get('source_type','blyg')}
+    @state_locked
     def record_publications(self,previous,current,backfilled=False):
         changed=False
         for iid,doc in current.items():
@@ -451,9 +696,11 @@ class Reader:
                 changed=interaction_log.append(self.state,entry) or changed
         if changed:self.save()
         return changed
+    @state_locked
     def backfill_markers(self):
         if self.state.get('interaction_marker_backfill_v1'):return
         for item in self.state['items'].values():
+            if item.get('isolated'):continue
             label=self.display_title(item)
             if item.get('saved'):
                 interaction_log.marker(self.state,item,'saved',True,item.get('saved_at') or self.clock(),label,True)
@@ -463,6 +710,7 @@ class Reader:
             if reaction in REACTIONS:
                 interaction_log.reaction(self.state,item,reaction,self.clock(),label,None,True)
         self.state['interaction_marker_backfill_v1']=True;self.save()
+    @state_locked
     def backfill_publications(self,history):
         if self.state.get('interaction_publication_backfill_v1'):return
         for versions in history.values():
@@ -472,15 +720,18 @@ class Reader:
                 self.record_publications({doc.get('id'):before} if before else {},{doc.get('id'):doc},True)
                 before=doc
         self.state['interaction_publication_backfill_v1']=True;self.save()
+    @state_locked
     def set_blogroll(self,sid,value):
         if sid not in self.state['subscriptions']:raise ValueError('Unknown subscription.')
         self.state['subscriptions'][sid]['blogroll']=bool(value);self.save();return {'message':'Blogroll choice saved locally.'}
+    @state_locked
     def unsubscribe(self,sid):
         if sid not in self.state['subscriptions'] or not self.state['subscriptions'][sid].get('active',True):raise ValueError('Unknown subscription.')
         sub=self.state['subscriptions'][sid];sub['active']=False;sub['blogroll']=False
         for key,item in list(self.state['items'].items()):
             if item.get('subscription')==sid and not item.get('saved') and not item.get('reaction') and not item.get('liked'):del self.state['items'][key]
         self.save();self.cleanup();return {'message':'Subscription removed. Saved and Liked posts remain on this Mac.'}
+    @state_locked
     def open_url(self,url,allow_subscription=True):
         """Open a Blyg/feed URL normally, or retain a sanitized one-page web item."""
         url=normalized(url)
@@ -621,7 +872,7 @@ class Reader:
             if urlsplit(resolved).netloc==urlsplit(item['origin']).netloc:return resolved
         if isinstance(d.get('url'),str) and d['url']:return d['url']
         return item['origin']+('t/' if d.get('kind')=='thread' else 'f/')+d['id']+'/'
-    def rendered(self,key,asset_prefix='/reader-media/'):
+    def rendered(self,key,asset_prefix='/reader-media/',inline_assets=False):
         item=self.item(key);soup=BeautifulSoup(clean_reader(item['doc']['content_html']),'html.parser')
         base=item['doc'].get('url',item['origin']) if item.get('source_type') in ('l0','web') else item['origin']
         present={urljoin(base,n.get('src','')) for n in soup.find_all(src=True)}
@@ -639,7 +890,18 @@ class Reader:
             for attr in ('src','poster'):
                 if node.get(attr):
                     url=urljoin(base,node[attr]);name=item['assets'].get(url)
-                    if name:node[attr]=asset_prefix+name
+                    if name and inline_assets:
+                        path=self.asset_path(name)
+                        mime=next(
+                            (kind for kind,extension in MIMES.items() if name.endswith('.'+extension)),
+                            'application/octet-stream',
+                        )
+                        if path.is_file():
+                            encoded=base64.b64encode(path.read_bytes()).decode('ascii')
+                            node[attr]='data:'+mime+';base64,'+encoded
+                        else:
+                            del node[attr]
+                    elif name:node[attr]=asset_prefix+name
                     else:del node[attr]
             if node.name in ('video','audio'):node['controls']=''
         return str(soup)

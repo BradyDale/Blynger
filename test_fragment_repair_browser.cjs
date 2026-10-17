@@ -29,10 +29,10 @@ const path = require('path');
         getSelection().addRange(r);
       };
       at(editor.children[2]);
-      f.addDivider();
+      f.designate();
       const before = f.snapshot(),
-        lost = before.dividers[0],
-        oldKey = before.ranges.find((r) => r.start === lost).key;
+        lost = before.ranges[0].start,
+        oldKey = before.ranges[0].key;
       editor.querySelector('[data-fragment-block="' + lost + '"]').remove();
       editor.dispatchEvent(
         new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }),
@@ -44,11 +44,12 @@ const path = require('path');
         lost,
         oldKey,
         notices,
-        allDividersLive: after.dividers.every((id) => ids.has(id)),
+        allRangesLive: after.ranges.every(
+          (range) => ids.has(range.start) && (range.end === null || ids.has(range.end)),
+        ),
       };
     });
-    if (result.after.dividers.includes(result.lost) || !result.allDividersLive)
-      throw Error('Deleted divider was not repaired');
+    if (!result.allRangesLive) throw Error('Deleted fragment boundary was not repaired');
     if (!result.after.ranges.some((range) => range.key === result.oldKey))
       throw Error('Repair lost fragment identity');
     if (!result.notices.some((message) => message.includes('repaired')))
@@ -87,22 +88,65 @@ const path = require('path');
       );
       return { after, h2, dirty, notices, text: editor.innerText };
     });
-    if (
-      headings.h2.length !== 2 ||
-      !headings.h2.every((id) => headings.after.dividers.includes(id))
-    )
-      throw Error('Repaired H2 did not become fragment boundaries');
+    if (headings.h2.some((id) => headings.after.dividers.includes(id)))
+      throw Error('H2 headings silently became fragment boundaries');
     if (!headings.after.ranges.some((range) => range.key === 'legacy-key'))
       throw Error('Expanded legacy block lost fragment identity');
     if (
       headings.dirty !== 1 ||
-      !headings.notices.some((message) => message.includes('H2 headings'))
+      !headings.notices.some((message) => message.includes('repaired'))
     )
       throw Error('Automatic structural repair was not surfaced as an unsaved change');
     if (!headings.text.includes('List thought.') || !headings.text.includes('Body three.'))
       throw Error('Structural repair lost authored prose');
+    const tkSave = await page.evaluate(() => {
+      const editor = document.getElementById('editor');
+      editor.innerHTML =
+        '<h1>New post</h1><p>Before TK.</p><div class="blyg-tk-gen"><p>Generated thought.</p></div><p>After TK.</p><p>More prose.</p><p>—Example Author<br>October 16, 2026</p>';
+      const f = new FragmentEditor(editor, () => {}, () => {}),
+        at = (el) => {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          range.collapse(true);
+          getSelection().removeAllRanges();
+          getSelection().addRange(range);
+        };
+      at(editor.children[4]);
+      f.designate();
+      const beforeTK = f.snapshot().ranges.length;
+      f.tk();
+      // Reproduce a DOM edit which lands immediately before Save, after the
+      // last input event. serialize() must reconcile once and return matching
+      // HTML and metadata even with TK's automatic neighboring boundaries.
+      editor.children[3].remove();
+      const saved = f.serialize(),
+        holder = document.createElement('div');
+      holder.innerHTML = saved.html;
+      const elements = [...holder.children],
+        ids = elements.map((el) => el.dataset.blyngerBlock),
+        markerKeys = elements.map((el) => el.dataset.blyngerFragment || null);
+      return {
+        saved,
+        ids,
+        markerKeys,
+        blockIds: saved.fragments.blocks.map((block) => block.id),
+        beforeTK,
+      };
+    });
+    if (tkSave.ids.join() !== tkSave.blockIds.join())
+      throw Error('Atomic save returned different HTML and metadata blocks');
+    if (tkSave.saved.fragments.ranges.length !== tkSave.beforeTK)
+      throw Error('TK created additional reusable fragments');
+    for (const range of tkSave.saved.fragments.ranges) {
+      const start = tkSave.ids.indexOf(range.start),
+        end = range.end ? tkSave.ids.indexOf(range.end) : tkSave.ids.length;
+      if (start < 0 || end <= start)
+        throw Error('TK/manual fragment range was not repaired before save');
+      if (tkSave.markerKeys.slice(start, end).some((key) => key !== range.key))
+        throw Error('Durable HTML markers disagree with atomic fragment metadata');
+    }
     console.log(
-      'Browser checks passed: deleted boundaries self-repair, malformed blocks expand safely, and every H2 becomes a fragment boundary.',
+      'Browser checks passed: deleted boundaries self-repair, malformed blocks expand safely, H2 stays structural, and TK does not create feed items.',
     );
   } finally {
     await browser.close();

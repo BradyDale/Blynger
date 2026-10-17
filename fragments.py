@@ -1,14 +1,204 @@
 """Private block anchors for intentional fragment ranges; no protocol extensions."""
-import copy, re
-from bs4 import BeautifulSoup
+import copy
+import re
+import secrets
+from collections import defaultdict, deque
+from bs4 import BeautifulSoup, Comment
+from urllib.parse import urlsplit
+
+BLOCK_ATTR = 'data-blynger-block'
+FRAGMENT_ATTR = 'data-blynger-fragment'
+BREAK_ATTR = 'data-blynger-break'
+MARKER_ATTRS = (BLOCK_ATTR, FRAGMENT_ATTR, BREAK_ATTR)
+
+
+def _nodes(body):
+    return [
+        node
+        for node in BeautifulSoup(body, 'html.parser').contents
+        if getattr(node, 'name', None)
+        and 'blynger-fragment-marker' not in node.get('class', [])
+    ]
+
+
+def _without_presentation(body):
+    soup = BeautifulSoup(body, 'html.parser')
+    for node in soup.select('.blynger-fragment-marker'):
+        node.decompose()
+    for node in soup.find_all(string=lambda value: isinstance(value, Comment)):
+        if 'blynger-fragment-link-' in str(node):
+            node.extract()
+    return str(soup)
+
+
+def _unmarked(node):
+    clone = BeautifulSoup(str(node), 'html.parser').find()
+    for attribute in MARKER_ATTRS:
+        clone.attrs.pop(attribute, None)
+    return str(clone)
+
+
+def has_markers(body):
+    return any(node.get(BLOCK_ATTR) for node in _nodes(body))
+
+
+def remove_markers(body):
+    if not any(attribute in body for attribute in MARKER_ATTRS):
+        return body
+    soup = BeautifulSoup(body, 'html.parser')
+    for node in soup.find_all(True):
+        for attribute in MARKER_ATTRS:
+            node.attrs.pop(attribute, None)
+    return str(soup)
+
+
+def embed(meta, body):
+    """Write the authoritative fragment map onto top-level article blocks."""
+    if meta is None:
+        return remove_markers(body)
+    checked = validate(meta, clean_markers(_without_presentation(body)))
+    soup = BeautifulSoup(body, 'html.parser')
+    nodes = [
+        node
+        for node in soup.contents
+        if getattr(node, 'name', None)
+        and 'blynger-fragment-marker' not in node.get('class', [])
+    ]
+    if len(nodes) != len(checked['blocks']):
+        raise ValueError('Fragment markers no longer match the article blocks.')
+    membership = {}
+    ids = [block['id'] for block in checked['blocks']]
+    for item in checked.get('ranges', []):
+        start = ids.index(item['start'])
+        end = ids.index(item['end']) if item.get('end') else len(ids)
+        for index in range(start, end):
+            membership[index] = item['key']
+    dividers = set(checked.get('dividers', []))
+    for index, (node, block) in enumerate(zip(nodes, checked['blocks'])):
+        for attribute in MARKER_ATTRS:
+            node.attrs.pop(attribute, None)
+        node[BLOCK_ATTR] = block['id']
+        if index in membership:
+            node[FRAGMENT_ATTR] = membership[index]
+        if block['id'] in dividers:
+            node[BREAK_ATTR] = ''
+    return str(soup)
+
+
+def extract(body, previous=None):
+    """Rebuild private editor metadata from durable HTML block markers."""
+    nodes = _nodes(body)
+    if not nodes or not any(node.get(BLOCK_ATTR) for node in nodes):
+        return None
+    submitted_blocks = [
+        block
+        for block in (previous or {}).get('blocks', [])
+        if isinstance(block, dict)
+        and isinstance(block.get('id'), str)
+        and isinstance(block.get('html'), str)
+    ]
+    prior_blocks = {
+        block.get('id'): block.get('html')
+        for block in submitted_blocks
+    }
+    ids = []
+    blocks = []
+    for index, node in enumerate(nodes):
+        block_id = node.get(BLOCK_ATTR)
+        markup = _unmarked(node)
+        # A new editor block can exist for one save cycle between the private
+        # block map and its durable HTML copy. The submitted map is safe to use
+        # only when it identifies this exact block content. Prefer the same
+        # position; fall back only to a unique unchanged block.
+        if not block_id and index < len(submitted_blocks):
+            candidate = submitted_blocks[index]
+            if (
+                candidate['id'] not in ids
+                and canonical(candidate['html']) == canonical(markup)
+            ):
+                block_id = candidate['id']
+        if not block_id:
+            matches = [
+                block
+                for block in submitted_blocks
+                if block['id'] not in ids
+                and canonical(block['html']) == canonical(markup)
+            ]
+            if len(matches) == 1:
+                block_id = matches[0]['id']
+        if not block_id and excluded(str(node)):
+            block_id = 'b' + secrets.token_hex(16)
+        if not isinstance(block_id, str) or not re.fullmatch(
+            r'[a-zA-Z0-9_-]{1,80}', block_id
+        ):
+            raise ValueError('A durable fragment block marker is missing or invalid.')
+        if block_id in ids:
+            raise ValueError('A durable fragment block marker was duplicated.')
+        ids.append(block_id)
+        old_markup = prior_blocks.get(block_id)
+        if isinstance(old_markup, str) and canonical(old_markup) == canonical(markup):
+            markup = old_markup
+        blocks.append({'id': block_id, 'html': markup})
+    prior = {item.get('key'): item for item in (previous or {}).get('ranges', [])}
+    ranges = []
+    index = 0
+    while index < len(nodes):
+        key = nodes[index].get(FRAGMENT_ATTR)
+        if not key:
+            index += 1
+            continue
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', key):
+            raise ValueError('A durable fragment identity is invalid.')
+        end = index + 1
+        while end < len(nodes) and nodes[end].get(FRAGMENT_ATTR) == key:
+            end += 1
+        item = copy.deepcopy(prior.get(key, {}))
+        item.update(key=key, start=ids[index], end=ids[end] if end < len(ids) else None)
+        ranges.append(item)
+        index = end
+    result = {
+        'version': 1,
+        'blocks': blocks,
+        'dividers': [node[BLOCK_ATTR] for node in nodes if node.has_attr(BREAK_ATTR)],
+        'ranges': ranges,
+    }
+    if (previous or {}).get('purpose'):
+        result['purpose'] = previous['purpose']
+    return validate(result, remove_markers(body))
+
+
+def clean_markers(body):
+    return remove_markers(body)
+
 
 def canonical(body):
-    return ''.join(str(n) for n in BeautifulSoup(body,'html.parser').contents if str(n).strip())
+    soup = BeautifulSoup(body, 'html.parser')
+    for node in soup.find_all(string=lambda value: isinstance(value, Comment)):
+        node.extract()
+    return ''.join(str(node) for node in soup.contents if str(node).strip())
+
+def managed_signature(body, site=None):
+    """Recognize private/editor and public copies of Blynger-managed markup."""
+    soup=BeautifulSoup(body,'html.parser')
+    site_url=urlsplit(site) if site else None
+    if site_url and site_url.netloc:
+        for link in soup.select('[href]'):
+            target=urlsplit(link.get('href',''))
+            if target.scheme in ('http','https') and target.netloc==site_url.netloc:
+                link['href']=(target.path or '/')+('?' + target.query if target.query else '')+('#' + target.fragment if target.fragment else '')
+    root=next((node for node in soup.contents if getattr(node,'name',None)),None)
+    if root and 'blynger-image' in root.get('class',[]):
+        image=root.find('img',src=True)
+        if image:
+            filename=image['src'].split('?',1)[0].split('#',1)[0].rstrip('/').rsplit('/',1)[-1]
+            image['src']='blynger-media:'+filename
+    return canonical(str(soup))
 
 def excluded(body):
     s=BeautifulSoup(body,'html.parser')
     text=s.get_text(' ',strip=True)
-    return bool(s.find('h1',recursive=False) or re.match(r'^(?:[—–-]\s*|By\s+)\S+(?:\s+\S+){0,5}$',text,re.I) or re.fullmatch(r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}',text))
+    managed=s.select_one('.blynger-series-title, .blynger-series-next')
+    return bool(managed or s.find('h1',recursive=False) or re.match(r'^(?:[—–-]\s*|By\s+)\S+(?:\s+\S+){0,5}$',text,re.I) or re.fullmatch(r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}',text))
 
 def validate(meta,body):
     if meta is None: return None
@@ -42,6 +232,64 @@ def repair_editor_anchors(meta):
         if divider in ids and divider not in seen:clean.append(divider);seen.add(divider)
     m['dividers']=clean
     return m
+
+def rebase_managed(meta,body,site=None):
+    """Rebase anchors after Blynger changes only its own page furniture.
+
+    Exact authored blocks retain their ids and therefore their fragment
+    identities. Newly generated Series blocks receive fresh private anchors.
+    A missing range boundary is still an error; this helper never guesses that
+    authored text was moved or replaced.
+    """
+    if meta is None:
+        return None
+    m=copy.deepcopy(meta)
+    matches=defaultdict(deque)
+    old_managed=set()
+    for block in m.get('blocks',[]):
+        if not isinstance(block,dict) or not isinstance(block.get('html'),str):
+            continue
+        matches[managed_signature(block['html'],site)].append(block['id'])
+        if excluded(block['html']) and BeautifulSoup(block['html'],'html.parser').select_one('.blynger-series-title, .blynger-series-next'):
+            old_managed.add(block['id'])
+    for item in m.get('ranges',[]):
+        if item.get('end') in old_managed:
+            item['end']=None
+    nodes=[node for node in BeautifulSoup(_without_presentation(body),'html.parser').contents if str(node).strip()]
+    blocks=[]
+    used=set()
+    for node in nodes:
+        markup=str(node)
+        pool=matches[managed_signature(markup,site)]
+        block_id=pool.popleft() if pool else 'b'+secrets.token_hex(16)
+        while block_id in used:
+            block_id='b'+secrets.token_hex(16)
+        used.add(block_id)
+        blocks.append({'id':block_id,'html':markup})
+    m['blocks']=blocks
+    ids=[block['id'] for block in blocks]
+    ranges=m.get('ranges',[])
+    for index,item in enumerate(ranges):
+        if item.get('end') in ids:
+            continue
+        # Adjacent fragments commonly share a boundary: one range ends where
+        # the next begins. If an older HTML normalization changed that exact
+        # boundary block, the next surviving start is the only non-guessing
+        # replacement and preserves both fragment identities.
+        start=ids.index(item['start']) if item.get('start') in ids else -1
+        following=next((later.get('start') for later in ranges[index+1:] if later.get('start') in ids and ids.index(later['start'])>start),None)
+        if following:
+            item['end']=following
+    for item in m.get('ranges',[]):
+        if item.get('start') not in ids:
+            continue
+        start=ids.index(item['start'])
+        end=ids.index(item['end']) if item.get('end') in ids else len(ids)
+        managed=next((block['id'] for block in blocks[start:end] if excluded(block['html'])),None)
+        if managed:
+            item['end']=managed
+    m=repair_editor_anchors(m)
+    return validate(m,_without_presentation(body))
 
 def separate_quotes(meta):
     """Keep existing transclusions in the thread, splitting only designated ranges."""
@@ -105,7 +353,10 @@ def openers_metadata(body, previous=None, submitted=None):
     headings=[i for i,n in enumerate(nodes) if isinstance(n,Tag) and (n.name=='h3' or (n.name=='strong' and excluded(str(n))))]
     prior=(submitted or previous).get('ranges',[])
     by_heading={r.get('heading'):r for r in prior if r.get('heading')}
-    output=[]
+    known_by_heading={r.get('heading'):r for r in previous.get('ranges',[]) if r.get('heading')}
+    valid_identity=lambda value:isinstance(value,str) and bool(re.fullmatch(r'[a-zA-Z0-9_-]{1,80}',value))
+    persisted_keys={r.get('key') for r in previous.get('ranges',[]) if valid_identity(r.get('key'))}
+    output=[];used_keys=set()
     for pos,i in enumerate(headings):
         end=headings[pos+1] if pos+1<len(headings) else len(blocks)
         if i+1==end:
@@ -115,7 +366,18 @@ def openers_metadata(body, previous=None, submitted=None):
             continue
         heading=blocks[i]['id']; start=blocks[i+1]['id']; stop=blocks[end]['id'] if end<len(blocks) else None
         old=by_heading.get(heading) or next((r for r in prior if r.get('start')==start and r.get('end')==stop),{})
-        r={**copy.deepcopy(old),'key':old.get('key',heading),'start':start,'end':stop,'heading':heading,'date_label':nodes[i].get_text(' ',strip=True),'legacy_anchor':nodes[i].get('id')}
+        known=known_by_heading.get(heading) or next((r for r in previous.get('ranges',[]) if r.get('start')==start and r.get('end')==stop),{})
+        # A browser-only key must never prevent an Opener save. Existing
+        # persisted identities remain authoritative; a malformed unsaved key
+        # is safely rebuilt from the durable heading block.
+        if valid_identity(known.get('key')):
+            key=known['key']
+        else:
+            key=next((candidate for candidate in (old.get('key'),heading) if valid_identity(candidate) and candidate not in persisted_keys and candidate not in used_keys),None)
+        if key is None:
+            key='b'+secrets.token_hex(16)
+        used_keys.add(key)
+        r={**copy.deepcopy(old),'key':key,'start':start,'end':stop,'heading':heading,'date_label':nodes[i].get_text(' ',strip=True),'legacy_anchor':nodes[i].get('id')}
         output.append(r)
     result={'version':1,'purpose':'openers','blocks':blocks,'dividers':[blocks[i]['id'] for i in headings],'ranges':output}
     return validate(result,body)

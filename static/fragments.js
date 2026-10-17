@@ -1,4 +1,8 @@
-/* Private editor anchors. Attribute and overlay nodes never enter saved article HTML. */
+/*
+ * Stable fragment anchors live on the article's top-level HTML blocks. The
+ * editor also uses a separate data-fragment-block attribute internally; that
+ * private attribute and the margin overlays never enter saved HTML.
+ */
 class FragmentEditor {
   constructor(editor, changed, notify) {
     this.editor = editor;
@@ -14,8 +18,10 @@ class FragmentEditor {
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();
-        this.addDivider();
+        this.designate();
+        return;
       }
+      this.removeTransclusionBeforeCaret(e);
     });
     editor.addEventListener('input', () => {
       if (this.meta) {
@@ -32,6 +38,40 @@ class FragmentEditor {
       'blockquote.blynger-citation.blyg-transclusion',
     ))
       quote.setAttribute('contenteditable', 'false');
+  }
+  removeTransclusionBeforeCaret(event) {
+    if (event.key !== 'Backspace' || event.ctrlKey || event.metaKey || event.altKey)
+      return false;
+    const selection = getSelection();
+    if (!selection.rangeCount || !selection.isCollapsed) return false;
+    const block = this.cursor();
+    if (!block || block.parentElement !== this.editor) return false;
+    const before = document.createRange();
+    before.selectNodeContents(block);
+    try {
+      before.setEnd(selection.anchorNode, selection.anchorOffset);
+    } catch {
+      return false;
+    }
+    if (
+      before.toString() ||
+      before.cloneContents().querySelector?.('img,audio,video')
+    )
+      return false;
+    const quote = block.previousElementSibling;
+    if (!quote?.matches('blockquote.blynger-citation.blyg-transclusion')) return false;
+    event.preventDefault();
+    quote.remove();
+    const caret = document.createRange();
+    caret.selectNodeContents(block);
+    caret.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    this.assign();
+    if (this.meta?.purpose === 'openers') this.syncOpeners();
+    this.draw();
+    this.changed();
+    return true;
   }
   id() {
     return 'b' + crypto.randomUUID().replaceAll('-', '');
@@ -113,6 +153,7 @@ class FragmentEditor {
       t.includes('![[') ||
       el.matches('blockquote.blyg-transclusion,blockquote.blynger-citation') ||
       !!el.querySelector('blockquote.blyg-transclusion,blockquote.blynger-citation') ||
+      el.matches('.blynger-series-title,.blynger-series-next') ||
       el.matches('h1') ||
       (author &&
         new RegExp(
@@ -127,7 +168,7 @@ class FragmentEditor {
     );
   }
   assign() {
-    // Only opt-in posts acquire private block anchors; legacy prose remains untouched.
+    // Only opt-in posts acquire anchors; legacy prose remains untouched.
     for (const n of [...this.editor.childNodes])
       if (n.nodeType === 3 && n.textContent.trim()) {
         const p = document.createElement('p');
@@ -136,8 +177,9 @@ class FragmentEditor {
       }
     const seen = new Set();
     for (const el of this.editor.children) {
-      let id = el.dataset.fragmentBlock;
+      let id = el.dataset.fragmentBlock || el.dataset.blyngerBlock;
       if (!id || seen.has(id)) el.dataset.fragmentBlock = id = this.id();
+      else el.dataset.fragmentBlock = id;
       seen.add(id);
     }
     const order = [...this.editor.children].map((e) => e.dataset.fragmentBlock);
@@ -219,6 +261,25 @@ class FragmentEditor {
     }
     this.order = order;
   }
+  writeMarkers() {
+    if (!this.meta) return;
+    const elements = [...this.editor.children],
+      byId = new Map(elements.map((el) => [el.dataset.fragmentBlock, el])),
+      ids = elements.map((el) => el.dataset.fragmentBlock);
+    for (const el of elements) {
+      el.removeAttribute('data-blynger-fragment');
+      el.removeAttribute('data-blynger-break');
+      el.dataset.blyngerBlock = el.dataset.fragmentBlock;
+    }
+    for (const range of this.meta.ranges || []) {
+      const start = ids.indexOf(range.start),
+        end = range.end ? ids.indexOf(range.end) : ids.length;
+      if (start < 0 || end <= start) continue;
+      for (let i = start; i < end; i++) elements[i].dataset.blyngerFragment = range.key;
+    }
+    for (const id of this.meta.dividers || [])
+      byId.get(id)?.setAttribute('data-blynger-break', '');
+  }
   load(meta) {
     this.order = [];
     this.ends = new Map();
@@ -240,11 +301,10 @@ class FragmentEditor {
       els.forEach((el, i) => (el.dataset.fragmentBlock = this.meta.blocks[i].id));
       this.assign();
       if (this.meta.purpose === 'openers') this.syncOpeners();
-      else if (this.syncHeadingDividers()) repaired = true;
       if (repaired) {
         this.changed();
         this.notify(
-          'Blynger repaired the page structure and added fragment breaks for its H2 headings. Your writing is unchanged.',
+          'Blynger repaired the page structure. Your writing and reusable fragment choices are unchanged.',
         );
       }
     }
@@ -289,7 +349,12 @@ class FragmentEditor {
     }
     this.assign();
   }
-  html() {
+  serialize() {
+    if (this.meta) {
+      this.assign();
+      if (this.meta.purpose === 'openers') this.syncOpeners();
+      this.writeMarkers();
+    }
     const c = this.editor.cloneNode(true);
     for (const el of c.querySelectorAll('[data-fragment-block]'))
       el.removeAttribute('data-fragment-block');
@@ -297,34 +362,46 @@ class FragmentEditor {
       'blockquote.blynger-citation.blyg-transclusion[contenteditable]',
     ))
       el.removeAttribute('contenteditable');
-    return c.innerHTML;
+    if (this.meta)
+      this.meta.blocks = [...this.editor.children].map((el) => {
+        const block = el.cloneNode(true);
+        for (const n of [block, ...block.querySelectorAll('*')]) {
+          n.removeAttribute('data-fragment-block');
+          n.removeAttribute('data-blynger-block');
+          n.removeAttribute('data-blynger-fragment');
+          n.removeAttribute('data-blynger-break');
+        }
+        for (const n of [
+          block,
+          ...block.querySelectorAll(
+            'blockquote.blynger-citation.blyg-transclusion[contenteditable]',
+          ),
+        ])
+          if (n.matches?.('blockquote.blynger-citation.blyg-transclusion'))
+            n.removeAttribute('contenteditable');
+        return { id: el.dataset.fragmentBlock, html: publicImages(block.outerHTML) };
+      });
+    return {
+      html: publicImages(c.innerHTML),
+      fragments: this.meta ? structuredClone(this.meta) : null,
+    };
+  }
+  html() {
+    return this.serialize().html;
   }
   snapshot() {
-    if (!this.meta) return null;
-    this.assign();
-    if (this.meta.purpose === 'openers') this.syncOpeners();
-    this.meta.blocks = [...this.editor.children].map((el) => {
-      const c = el.cloneNode(true);
-      for (const n of [c, ...c.querySelectorAll('[data-fragment-block]')])
-        n.removeAttribute('data-fragment-block');
-      for (const n of [
-        c,
-        ...c.querySelectorAll(
-          'blockquote.blynger-citation.blyg-transclusion[contenteditable]',
-        ),
-      ])
-        if (n.matches?.('blockquote.blynger-citation.blyg-transclusion'))
-          n.removeAttribute('contenteditable');
-      return { id: el.dataset.fragmentBlock, html: publicImages(c.outerHTML) };
-    });
-    return structuredClone(this.meta);
+    return this.serialize().fragments;
   }
   clearAll() {
     this.meta = null;
     this.order = [];
     this.ends = new Map();
-    for (const el of this.editor.querySelectorAll('[data-fragment-block]'))
+    for (const el of this.editor.querySelectorAll('*')) {
       el.removeAttribute('data-fragment-block');
+      el.removeAttribute('data-blynger-block');
+      el.removeAttribute('data-blynger-fragment');
+      el.removeAttribute('data-blynger-break');
+    }
     this.draw();
     this.changed();
   }
@@ -445,6 +522,7 @@ class FragmentEditor {
       if (
         i === els.length ||
         this.excluded(el) ||
+        el?.matches('h2') ||
         this.meta.dividers.includes(el.dataset.fragmentBlock)
       ) {
         if (start !== null)
@@ -490,6 +568,34 @@ class FragmentEditor {
     this.changed();
     this.draw();
   }
+  removeDesignation() {
+    if (this.meta?.purpose === 'openers') {
+      this.notify('Opener fragments are automatic.');
+      return;
+    }
+    const el = this.cursor();
+    if (!el || !this.meta) {
+      this.notify('Place the cursor in a reusable fragment.');
+      return;
+    }
+    this.assign();
+    const ids = [...this.editor.children].map((node) => node.dataset.fragmentBlock),
+      position = ids.indexOf(el.dataset.fragmentBlock),
+      range = this.meta.ranges.find(
+        (candidate) =>
+          ids.indexOf(candidate.start) <= position &&
+          (candidate.end ? ids.indexOf(candidate.end) : ids.length) > position,
+      );
+    if (!range) {
+      this.notify('This section is already ordinary prose.');
+      return;
+    }
+    this.meta.ranges = this.meta.ranges.filter((candidate) => candidate !== range);
+    this.meta.ordinary = [...new Set([...(this.meta.ordinary || []), range.start])];
+    this.changed();
+    this.draw();
+    this.notify('Section is ordinary prose. Any previously published fragment remains available.');
+  }
   insertTK(content, selected) {
     const e = this.editor;
     e.focus();
@@ -514,7 +620,6 @@ class FragmentEditor {
       this.notify('Insert TK in the post body, outside the title and signature.');
       return false;
     }
-    this.activate();
     r.deleteContents();
     let block = top(r.startContainer);
     const holder = document.createElement('div');
@@ -525,6 +630,9 @@ class FragmentEditor {
       tailRange.setEndAfter(block.lastChild || block);
       const tail = block.cloneNode(false);
       tail.removeAttribute('data-fragment-block');
+      tail.removeAttribute('data-blynger-block');
+      tail.removeAttribute('data-blynger-fragment');
+      tail.removeAttribute('data-blynger-break');
       tail.append(tailRange.extractContents());
       block.after(generated);
       if (tail.textContent.trim() || tail.querySelector('img,video,audio'))
@@ -552,28 +660,10 @@ class FragmentEditor {
       this.notify('TK added to this Opener. Its fragment identity is preserved.');
       return;
     }
-    this.activate();
-    const els = [...this.editor.children];
-    for (const el of els) {
-      if (this.excluded(el)) continue;
-      if (el.matches('.blyg-tk-gen') || el.querySelector('.blyg-tk-gen')) {
-        if (!this.meta.dividers.includes(el.dataset.fragmentBlock))
-          this.meta.dividers.push(el.dataset.fragmentBlock);
-        const next = el.nextElementSibling;
-        if (next && !this.meta.dividers.includes(next.dataset.fragmentBlock))
-          this.meta.dividers.push(next.dataset.fragmentBlock);
-      }
-    }
-    const old = this.meta.ranges;
-    this.meta.ranges = this.sections().map((r) => ({
-      ...r,
-      key: old.find((x) => x.start === r.start)?.key || r.start,
-    }));
+    if (this.meta) this.assign();
     this.changed();
     this.draw();
-    this.notify(
-      'TK and the surrounding body sections are fragments. Title and signature excluded.',
-    );
+    this.notify('TK added inside this thread. It does not create additional feed items.');
   }
   isOpenerHeading(el) {
     return el.matches('h3') || (el.matches('strong') && this.excluded(el));

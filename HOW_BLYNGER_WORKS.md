@@ -1,5 +1,7 @@
 # How Blynger Works
 
+**Current application release described here: 0.12.0.**
+
 Blynger is a local application for writing, maintaining, reading from, and publishing a static personal website.
 
 It grew out of the practical problem of maintaining [example.com](https://example.com/): a hand-built static site that had accumulated years of HTML, changing designs, peculiar conventions, and ordinary website pages alongside a blog.
@@ -81,6 +83,24 @@ They use descriptive names such as `year-2018.html` and do not participate in nu
 
 This is an important architectural boundary: **Blynger manages a website, not merely a stream of Blyg posts.**
 
+#### Series
+
+A Series is a private organizing record that coordinates several ordinary Posts
+and one ordinary static Page. It has a title, a short navigation plug, a
+description and an ordered list of member Posts. Each member may carry a
+free-form detail such as a chapter or passage range. New Series begin empty;
+headline text never enrolls a Post without the author's explicit selection.
+
+The public result deliberately uses the rest of the site's machinery rather
+than introducing a new public object type: member Posts receive a linked
+italic Series title, the preceding member receives a small link to the next
+installment, and the Series Page lists every installment chronologically. The
+Series Page uses the current Page template and enters the sitemap, but it is
+site furniture—not a Blyg item and not a new ordinary RSS entry. Blynger keeps
+the coordination record in private state. The selector and detail are saved as
+ordinary draft metadata; the coordinated static HTML is generated only during
+Review & publish and appears in the author's normal publication review.
+
 ### Images
 
 Images is the site's asset workspace.
@@ -124,7 +144,7 @@ It provides the transition from **reading something** to **doing something with 
 
 A Reader item can become source material for a quotation, response or fork. Genuine Blyg material retains its protocol identity throughout those operations; ordinary web material retains only the provenance it actually possesses.
 
-Reader is designed to keep substantial state locally. It caches remote content for offline use, performs network synchronization independently of ordinary writing operations, isolates failing subscriptions and keeps Saved material independently of the current subscription list.
+Reader is designed to keep substantial state locally. It caches remote content for offline use, performs network synchronization independently of ordinary writing operations, isolates failing subscriptions and keeps Saved material independently of the current subscription list. Sync also treats a media-write failure as an isolated warning and still saves the successfully synchronized items and watermarks in a final durability step.
 
 That local reading history also creates an interesting future possibility: recommendation or discovery systems can operate on private local evidence of what the user reads, saves, likes, reacts to, quotes, forks or responds to without requiring a central service to own the resulting preference graph.
 
@@ -163,7 +183,23 @@ Blynger attempts to:
 - record the exact approved commit;
 - retry that exact publication safely if the network operation fails.
 
+Publication review itself is prepared in the background, so rebuilding a large
+static site or checking the hosted branch does not require one long-lived browser
+request. When the review is ready, it represents a specific set of rendered
+drafts and queued pins. If either changes before confirmation creates the commit,
+Blynger refuses that stale review and asks for a fresh one.
+
+Once the approved commit and its included drafts and pins are durably recorded,
+the slower network push runs in the background. The review closes so the author
+can continue writing. A quiet status message reports success; only failure or
+an uncertain remote result interrupts the author. While that approved publication
+is in flight, another Review, Prepare, or hosted-version refresh is refused. Later
+writing is neither cleared nor accidentally included, and successful finalization
+clears only work represented in the approved commit.
+
 That caution follows from the earlier principle: the website repository is not a temporary build directory. It is the public site.
+
+Blynger also keeps enough durable local state to distinguish an ordinary saved draft from a prepared publication, a publication whose remote status is uncertain, and one that has been finalized locally. Recovery is therefore explicit rather than improvisational: an interrupted publication can be checked against the exact approved commit; damaged private state is preserved, including a timestamped copy when later validation fails; restoring a verified Studio or Reader snapshot does not overwrite that good backup with the state being abandoned; and malformed generated or Reader records can be isolated without preventing the rest of the application from opening.
 
 ## Public files and private state are different things
 
@@ -173,7 +209,7 @@ That can include:
 
 - drafts;
 - editing metadata;
-- stable fragment mappings;
+- stable fragment mappings and durable authoring identities;
 - Reader caches;
 - source snapshots;
 - Saved and Liked state;
@@ -187,6 +223,12 @@ The public website contains only what belongs in the published representation.
 The website files, Blynger application code and private application data are intended to remain separate.
 
 This division becomes especially important when Blynger implements Blygger, because the application's private machinery for preserving provenance can be much richer than the protocol representation ultimately published.
+
+## The application is local, but no longer monolithic
+
+Blynger remains one local application, but its implementation is now divided along deliberate responsibility boundaries rather than concentrated in one large source file. The local server and routing layer, core site-management and publication logic, Reader behavior, Reader networking, fragment handling, configuration, metadata and generated-page presentation are maintained as focused modules, with the browser interface and native Mac wrapper separated from those Python responsibilities.
+
+That source layout is an implementation detail, not part of the public Blyg contract. Its purpose is to make the application easier to review, test and change without forcing unrelated parts of Blynger to know one another's internals. `DEVELOPMENT.md` contains the current code map; this document stays at the architectural level.
 
 ---
 
@@ -210,9 +252,9 @@ Blygger gives published pieces of writing stable identities.
 
 Blynger can expose ordinary Posts and Openers through that model.
 
-A larger Post can also contain intentionally reusable **fragments**. Blynger maintains private stable fragment identities while editing and produces the corresponding public Blyg objects when those fragments are published.
+A larger Post can also contain intentionally reusable **fragments**. Blynger puts durable authoring identities on the human article's top-level HTML blocks and retains a private compatibility map. It produces the corresponding clean public Blyg objects when those fragments are published; the authoring attributes never enter canonical Blyg JSON.
 
-In Blynger's editor, H2 headings start fragments on fragment-enabled writing, and explicit fragment controls can add or remove boundaries. Considerable repair machinery exists because browser HTML editing can otherwise disturb the relationship between visible prose and a persistent fragment identity.
+In Blynger's editor, H2 headings start fragments on fragment-enabled writing, and explicit fragment controls can add or remove boundaries. Because identity now travels with each HTML block, ordinary edits and whole-block movement no longer require Blynger to infer location from text and position alone. Compatibility repair remains for older unmarked drafts and genuinely ambiguous structural edits still stop safely.
 
 That repair machinery is **Blynger**.
 
@@ -230,7 +272,7 @@ A Blyg transclusion says something stronger:
 
 Blynger therefore does not treat every blockquote as a transclusion.
 
-Reader **Quote** is always a conventional editable blockquote headed **From:** with a linked page title. It makes no protocol transclusion claim. A genuine whole-item Blyg transclusion is reserved for **Stub**, where it preserves the item's actual identity and the exact source/version incorporated into the published response.
+Reader **Quote** is always a conventional editable blockquote headed **From:** with a linked page title. It makes no protocol transclusion claim. In the Post editor, **Transclude** can instead import a specific Blyg permalink and insert a genuine protected whole-item transclusion without making the post a response. **Respond / Stub** adds the same source snapshot while separately declaring the response relationship. Neither URL action subscribes to the source blyg.
 
 ### Blynger's interface opinion
 
@@ -253,7 +295,10 @@ Blynger consequently preserves two separate facts when responding to a genuine B
 
 Blynger's current Stub editor begins genuine Blyg responses with the whole source item as a protected transclusion. The entire transclusion can be deleted without deleting the response relationship itself.
 
-A Stub can become either a full Blynger Post or a Quick Opener.
+A Stub can become either a full Blynger Post or a Quick Opener. For Openers,
+the saved response target is attached to the Opener's durable heading identity
+rather than to its position in a submitted list, so reordering metadata cannot
+move or duplicate provenance.
 
 That is a **Blynger interface decision** built around the underlying Blygger response primitive.
 
@@ -326,7 +371,7 @@ Blynger has its own TK authoring feature and robot treatment for AI-generated pa
 
 Blygger Studio has also established an open convention for identifying generated passages in interoperable material.
 
-As of Blynger 0.9.26, Reader understands that shared `blyg-tk-gen` convention and can display the source item's self-reported model, date and source-count disclosure. Blynger explicitly does **not** claim to independently verify those assertions. It credits and adapts the MIT-licensed Studio implementation rather than pretending the convention originated in Blynger.
+Blynger writes the exact Codex model selected for each newly generated TK passage into its own disclosure metadata, while older passages without recorded model metadata remain honestly labeled **not stated**. Reader also understands the shared `blyg-tk-gen` convention when it encounters generated passages from other Blyg sources and can display the source item's self-reported model, date and source-count disclosure. Blynger explicitly does **not** claim to independently verify those assertions. It credits and adapts the MIT-licensed Studio implementation rather than pretending the convention originated in Blynger.
 
 This is a useful model for interoperability work:
 
@@ -426,6 +471,6 @@ The goal remains the same:
 
 ## About this document
 
-This document was written by **ChatGPT (OpenAI)** from Blynger's source documentation, changelog, public repository, and discussions with the project's author. It describes the current architecture rather than serving as the normative definition of the Blygger protocol.
+This document is maintained by **ChatGPT (OpenAI)** from Blynger's source documentation, changelog, public repository, and discussions with the project's author. It describes the current architecture rather than serving as the normative definition of the Blygger protocol.
 
 For normative Blygger behavior, refer to the current Blygger specification.

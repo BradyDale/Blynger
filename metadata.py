@@ -63,14 +63,18 @@ def enrich(raw,name,root,published=None,modified=None,standalone=False,config=No
             if not path.is_relative_to(Path(root).resolve()) or not path.is_file():return None
             return site+path.relative_to(Path(root).resolve()).as_posix()
         return url
-    image=normalize_image(tags.get('og:image') or tags.get('twitter:image'))
-    if not image:
-        image=next((u for im in article.find_all('img') if not im.find_parent('nav') and not im.find_parent('a') and (u:=normalize_image(im.get('src')))),None)
-    image=image or next((normalize_image(value) for value in config.get('default_images',[]) if normalize_image(value)),None)
+    defaults=[normalize_image(value) for value in config.get('default_images',[])]
+    defaults=[value for value in defaults if value]
+    existing_image=normalize_image(tags.get('og:image') or tags.get('twitter:image'))
+    article_image=next((u for im in article.find_all('img') if not im.find_parent('nav') and not im.find_parent('a') and (u:=normalize_image(im.get('src')))),None)
+    # A managed site default is only a fallback. Once an author adds an image
+    # to the article, social previews should use it. Preserve an explicitly
+    # configured non-default image for legacy pages that chose one by hand.
+    image=(existing_image if existing_image and existing_image not in defaults else article_image) or existing_image or (defaults[0] if defaults else None)
     image_alt=tags.get('og:image:alt') or ''
     for im in soup.find_all('img'):
         if image and normalize_image(im.get('src'))==image and im.get('alt'):image_alt=im['alt'];break
-    if image and not image_alt:image_alt=author if image in [normalize_image(v) for v in config.get('default_images',[])] else 'Image accompanying '+title
+    if image and not image_alt:image_alt=author if image in defaults else 'Image accompanying '+title
     date=valid_date(tags.get('article:published_time')) or valid_date(published)
     site_page=name in set(config.get('main_pages',[])) or standalone
     if not site_page:

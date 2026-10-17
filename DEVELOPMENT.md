@@ -10,6 +10,8 @@ the code.
 - `core.py` coordinates drafts, versions, static publication, and Git.
 - `page_templates.py` owns small generated-page templates and forward-only
   presentation styles.
+- `series.py` owns human-page Series decorations and static Series index
+  contents; `core.py` retains private membership state and publication.
 - `reader.py` owns private Reader state, feed interpretation, quotations,
   Stubs, forks, and conversation relationships.
 - `reader_network.py` is the bounded, DNS-pinned public network transport.

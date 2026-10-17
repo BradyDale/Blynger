@@ -2,7 +2,7 @@ import copy, json, re, subprocess, unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from bs4 import BeautifulSoup
-from core import Studio, new_page, digest, FragmentFileConflict, FragmentStateError
+from core import Studio, new_page, digest, region, FragmentFileConflict, FragmentStateError
 from test_core import StudioTests
 import fragments
 
@@ -25,6 +25,50 @@ class FragmentTests(unittest.TestCase):
         d=self.draft();before=(self.root/'1.html').read_bytes();self.studio.save_draft(d)
         s=Studio(self.root,self.base/'private');self.assertEqual(s.page('1.html')['fragments'],d['fragments'])
         self.assertEqual(before,(self.root/'1.html').read_bytes());self.assertEqual(s.state['published'],{});self.assertEqual(s.state['fragment_ids'],{})
+        raw=s.state['drafts']['1.html']['raw']
+        self.assertIn('data-blynger-block="b2"',raw)
+        self.assertIn('data-blynger-fragment="first"',raw)
+        self.assertIn('data-blynger-break=""',raw)
+
+    def test_durable_markers_recover_a_missing_private_map(self):
+        d=self.draft();self.studio.save_draft(d)
+        self.studio.state['drafts']['1.html']['fragments']=None
+        self.studio.save_state()
+        reopened=Studio(self.root,self.base/'private').page('1.html')
+        self.assertEqual(reopened['fragments']['ranges'],d['fragments']['ranges'])
+        self.assertEqual([b['id'] for b in reopened['fragments']['blocks']],[f'b{i}' for i in range(7)])
+
+    def test_atomic_transclusion_refresh_preserves_durable_block_marker(self):
+        d=self.studio.page('1.html')
+        token='quote-token'
+        quote='<blockquote class="blyg-transclusion" data-blynger-quote="'+token+'" data-blyg-id="00000000000000000000000000" data-blyg-version="1"><p>Exact source words.</p></blockquote>'
+        blocks=['<h1>Test title</h1>','<p>Introduction.</p>',quote,'<p>Authored response.</p>','<p>—Example Author<br>September 26, 2026</p>']
+        meta={'version':1,'blocks':[{'id':f'q{i}','html':block} for i,block in enumerate(blocks)],'dividers':['q3'],'ranges':[{'key':'response','start':'q3','end':'q4'}]}
+        marked=fragments.embed(meta,''.join(blocks))
+        raw=new_page('Test title','<p>Temporary.</p>')
+        start,end=region(raw)
+        d['raw']=raw[:start]+marked+raw[end:]
+        d['fragments']=meta
+        d['quotes']={token:{'visible_html':quote,'token':token}}
+        self.studio.save_draft(d)
+        saved=self.studio.state['drafts']['1.html']['raw']
+        soup=BeautifulSoup(saved,'html.parser')
+        protected=soup.select_one('blockquote[data-blynger-quote="'+token+'"]')
+        self.assertEqual(protected['data-blynger-block'],'q2')
+        self.assertEqual(self.studio.page('1.html')['fragments']['ranges'],meta['ranges'])
+
+    def test_whole_fragment_movement_keeps_its_identity(self):
+        d=self.draft();self.studio.save_draft(d)
+        raw=self.studio.state['drafts']['1.html']['raw'];a,b=region(raw)
+        soup=BeautifulSoup(raw[a:b],'html.parser');nodes=[node for node in soup.contents if getattr(node,'name',None)]
+        first=nodes[2:4]
+        for node in first:node.extract()
+        nodes[1].insert_before(*first)
+        moved=raw[:a]+str(soup)+raw[b:]
+        self.studio.state['drafts']['1.html']['raw']=moved
+        recovered=self.studio.page('1.html')['fragments']
+        item=next(item for item in recovered['ranges'] if item['key']=='first')
+        self.assertEqual((item['start'],item['end']),('b2','b1'))
     def test_browser_repaired_h2_boundaries_survive_save_reopen_and_prepare(self):
         d=self.studio.page('1.html')
         blocks=['<h1>Test title</h1>','<p>Introduction.</p>','<ul><li>List thought.</li></ul>','<h2>Second thought</h2>','<p>Body two.</p>','<h2>Third thought</h2>','<p>Body three.</p>','<p>—Example Author<br>September 26, 2026</p>']
@@ -53,6 +97,9 @@ class FragmentTests(unittest.TestCase):
         for doc in docs.values():
             self.assertRegex(doc['id'],r'^[0-7][0-9a-hjkmnp-tv-z]{25}$')
             self.assertNotIn('fragment-block',doc['content_html']);self.assertNotIn('fragment-dot',doc['content_md'])
+            self.assertNotIn('data-blynger-',doc['content_html'])
+        human=(self.root/'1.html').read_text()
+        self.assertIn('data-blynger-block=',human);self.assertIn('data-blynger-fragment=',human)
         self.assertTrue((self.root/f'blyg/f/{iid}/index.html').exists())
         page=(self.root/f'blyg/f/{iid}/index.html').read_text()
         discovery=BeautifulSoup(page,'html.parser');self.assertEqual(discovery.find('link',rel='blyg')['href'],'/blyg/');self.assertEqual(discovery.find('link',rel='alternate',type='application/rss+xml')['href'],'/feed.xml');self.assertEqual(discovery.find('link',rel='icon')['href'],'/images/favicon.png')
@@ -82,6 +129,26 @@ class FragmentTests(unittest.TestCase):
         self.assertEqual(len(page.find_all('img',alt='Hero')),1)
         iid=self.studio.state['ids']['1.html'];item=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         self.assertIn('alt="Hero"',item['content_html']);self.assertIn('/blyg/media/',item['content_html'])
+    def test_fragment_can_begin_with_a_managed_image_during_publication(self):
+        image=b'fragment-cover';filename=digest(image)+'.jpg'
+        folder=self.root/'images'/'blynger';folder.mkdir(parents=True,exist_ok=True)
+        (folder/filename).write_bytes(image)
+        d=self.studio.page('1.html')
+        blocks=['<h1>Test title</h1>','<p class="blynger-image blynger-image-standard"><img alt="Cover" src="/images/blynger/'+filename+'"></p>','<p>Fragment prose.</p>','<p>—Example Author<br>October 16, 2026</p>']
+        meta={'version':1,'blocks':[{'id':f'i{i}','html':block} for i,block in enumerate(blocks)],'dividers':['i1'],'ranges':[{'key':'image-fragment','start':'i1','end':'i3'}]}
+        marked=fragments.embed(meta,''.join(blocks));raw=new_page('Test title','<p>Temporary.</p>');a,b=region(raw)
+        d['raw']=raw[:a]+marked+raw[b:];d['fragments']=meta
+        self.studio.save_draft(d);self.studio.prepare()
+        iid=self.studio.state['fragment_ids']['1.html']['image-fragment']
+        doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        self.assertIn('/blyg/media/'+filename,doc['content_html'])
+        self.assertIn('data-blynger-fragment="image-fragment"',(self.root/'1.html').read_text())
+    def test_internal_link_absolutizing_does_not_delete_fragment_boundary(self):
+        blocks=['<h1>Title</h1>','<p>First section.</p>','<p>Read <a href="/25.html">Biting the Sun</a>.</p>','<p>—Example Author<br>October 16, 2026</p>']
+        meta={'version':1,'blocks':[{'id':f'link{i}','html':block} for i,block in enumerate(blocks)],'dividers':['link1'],'ranges':[{'key':'first','start':'link1','end':'link2'},{'key':'second','start':'link2','end':'link3'}]}
+        public=''.join(blocks).replace('href="/25.html"','href="https://example.com/25.html"')
+        rebased=fragments.rebase_managed(meta,public,'https://example.com/')
+        self.assertEqual([(r['key'],r['start'],r['end']) for r in rebased['ranges']],[('first','link1','link2'),('second','link2','link3')])
     def test_removing_designation_keeps_published_item(self):
         self.connect();d=self.draft();self.studio.save_draft(d);self.publish();ids=self.studio.state['fragment_ids']['1.html']
         d=self.studio.page('1.html');d['fragments']['ranges']=[];self.studio.save_draft(d);self.publish()
@@ -157,6 +224,7 @@ class FragmentTests(unittest.TestCase):
         self.studio.save_draft(reopened)
         self.assertIsNone(self.studio.state['drafts']['1.html']['fragments'])
         self.assertIsNone(self.studio.page('1.html')['fragments'])
+        self.assertNotIn('data-blynger-',self.studio.state['drafts']['1.html']['raw'])
 
     def test_pages_shed_legacy_fragment_metadata_without_changing_html(self):
         before=(self.root/'index.html').read_bytes();source={'raw':before.decode(),'base':digest(before),'new':False,'fragments':self.draft()['fragments']}
@@ -177,6 +245,8 @@ class FragmentTests(unittest.TestCase):
         script=re.sub(r'\s+','',(Path(__file__).parent/'static/app.js').read_text())
         self.assertIn("e.code==='fragment-state'",script)
         self.assertIn('openBrokenFragmentPage',script)
+        self.assertIn('repairBrokenFragments',script)
+        self.assertIn('Rebuildfragmentmarkersandsavedraft',script)
         self.assertIn('affected===page?.name',script)
     def test_generation_provenance_belongs_to_each_fragment(self):
         d=self.draft();m=d['fragments'];m['blocks'][2]['html']='<div class="blyg-tk-gen"><h1>A generated heading</h1><p>First generated thought.</p></div>'
@@ -186,5 +256,41 @@ class FragmentTests(unittest.TestCase):
         for key,model in [('first','first-model'),('tk','second-model')]:
             doc=json.loads((self.root/f'blyg/items/{ids[key]}.json').read_text())
             self.assertEqual(doc['generated'],[{'sources':[],'model':model}])
+
+    def test_new_post_with_tk_and_manual_boundaries_saves_and_prepares(self):
+        d=self.studio.page('1.html')
+        blocks=[
+            '<h1>Test title</h1>',
+            '<p>Before TK.</p>',
+            '<div class="blyg-tk-gen"><p>Generated thought.</p></div>',
+            '<p>After TK.</p>',
+            '<p>Manually separated thought.</p>',
+            '<p>—Example Author<br>October 16, 2026</p>',
+        ]
+        meta={
+            'version':1,
+            'blocks':[{'id':f't{i}','html':block} for i,block in enumerate(blocks)],
+            'dividers':['t1','t2','t3','t4'],
+            'ranges':[
+                {'key':'before','start':'t1','end':'t2'},
+                {'key':'generated','start':'t2','end':'t3'},
+                {'key':'after','start':'t3','end':'t4'},
+                {'key':'manual','start':'t4','end':'t5'},
+            ],
+        }
+        marked=fragments.embed(meta,''.join(blocks))
+        raw=new_page('Test title','<p>Temporary.</p>');a,b=region(raw)
+        d['raw']=raw[:a]+marked+raw[b:]
+        d['fragments']=copy.deepcopy(meta)
+        d['generated']=[{'sources':[],'model':'test-model'}]
+        self.studio.save_draft(d)
+        saved=self.studio.page('1.html')
+        self.assertEqual(saved['fragments']['ranges'],meta['ranges'])
+        self.studio.prepare()
+        ids=self.studio.state['fragment_ids']['1.html']
+        self.assertEqual(set(ids),{'before','generated','after','manual'})
+        generated=json.loads((self.root/f"blyg/items/{ids['generated']}.json").read_text())
+        self.assertIn('Generated thought.',generated['content_html'])
+        self.assertEqual(generated['generated'],[{'sources':[],'model':'test-model'}])
 
 def load_tests(loader,tests,pattern):return loader.loadTestsFromTestCase(FragmentTests)

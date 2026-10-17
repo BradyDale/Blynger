@@ -85,10 +85,34 @@ function testDelayedPageLoadsAndPendingTyping() {
   );
 }
 
+function testDelayedMarkdownCannotCrossDocuments() {
+  const gate = new LatestRequest();
+  let page = '12.html',
+    edits = 7;
+  const originalPage = page,
+    paste = gate.begin(edits);
+  page = '13.html';
+  gate.invalidate();
+  assert.equal(
+    page === originalPage && gate.accepts(paste, edits),
+    false,
+    'a Markdown response must not be accepted after switching documents',
+  );
+  page = '12.html';
+  const pending = gate.begin(edits);
+  edits += 1;
+  assert.equal(
+    page === originalPage && gate.accepts(pending, edits),
+    false,
+    'a Markdown response must not overwrite typing made while conversion was pending',
+  );
+}
+
 (async () => {
   await testSerialAndOutOfOrderSaves();
   await testFailureCanRetryWithoutChangingPayload();
   testDelayedPageLoadsAndPendingTyping();
+  testDelayedMarkdownCannotCrossDocuments();
   console.log('editor safety tests passed');
 })().catch((error) => {
   console.error(error);

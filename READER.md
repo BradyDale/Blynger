@@ -6,6 +6,8 @@ The protocol source of truth for this release was the live [Blyg 0.3 specificati
 
 Imported Blyg, RSS/Atom, and ordinary-web HTML never enters Blynger's privileged document. It is sanitized with `nh3` and rendered in an opaque sandboxed frame. The frame cannot read Blynger's DOM or API token, submit forms, call local routes, navigate the parent, open nested frames, or run source-provided scripts. Its own deny-by-default Content Security Policy permits only locally cached Reader media and one exact local Blynger bridge script.
 
+Opened items embed Blynger's already validated, content-addressed cache files as inert media resources inside that opaque document. This avoids a WebKit failure that blocks local media routes from a sandboxed `srcdoc` frame without granting imported writing a same-origin identity or fresh network access. Quotation and publication continue to use managed media files rather than embedding these display-only resources.
+
 That bridge has a deliberately small vocabulary: selected text, selected genuine-fragment index, and a clicked safe link travel out; a requested fragment selection travels in. Every message is bound to both the exact frame window and a random per-opening channel. Quote, Stub, Fork, Open original, Saved, Like, and private-response controls remain in the trusted outer application.
 
 The Reader sanitizer removes arbitrary source IDs and classes in addition to active HTML, event handlers, styles, forms, and dangerous URL schemes. It preserves only safe structural/media attributes and the specific shared `blyg-tk-gen`, `blyg-transclusion`, and `blyg-partial` conventions Blynger understands. The main application document separately uses a deny-by-default Content Security Policy.
@@ -37,6 +39,8 @@ subscription refresh may download at most 64 MB of media. Limit and integrity
 messages use the same visible Reader diagnostics as network failures.
 
 The reading desk shows one local **Last sync** date and time rather than per-subscription performance timings. Actual feed errors remain visible; detailed timing stays in private diagnostics for troubleshooting. The Saved shelf has its own local loading and item-count status rather than subscription-sync messages. Switching between Reader and Saved clears the prior list immediately, and delayed responses are discarded when they belong to a workspace the user has already left.
+
+Reader offers **Newest** and **Pace-layered** ordering. The latter adapts the MIT-licensed Blygger Studio reference model reviewed at revision `e5ffc32023e4649a7523e9a72d3422b254ee6d79`: new items enter at the top, each public revision climbs one place, and every pinned version halves an item's sinking speed, through six layers. Blynger's mixed-source cache does not retain every historical pinned transclusion body, so its Reader calculation intentionally uses the version and own-pin history available in each current wire document rather than claiming Studio's complete single-blyg inherited-pin calculation. Resurfaced cards state their version, revision date, pin count, and movement; progressively deeper green is supporting information, not the only explanation.
 
 Blyg-native items and ordinary Web/RSS items have separate badges and quiet
 background treatments in both the feed and opened-item view. Generated passages

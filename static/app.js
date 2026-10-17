@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id),
   token = document.querySelector('meta[name="blynger-token"]').content;
 let page = null,
   pages = [],
+  seriesList = [],
   dirty = false,
   mode = 'visual',
   selection = null,
@@ -12,10 +13,13 @@ let page = null,
   editRevision = 0,
   refreshRevision = 0,
   readerLoadRevision = 0,
+  publicationInFlight = false,
+  lastPublicationJob = null,
   currentWorkspace = 'openers',
   postSort = 'updated';
 const saveQueue = new BlyngerEditorSafety.SerialQueue(),
-  pageRequests = new BlyngerEditorSafety.LatestRequest();
+  pageRequests = new BlyngerEditorSafety.LatestRequest(),
+  pasteRequests = new BlyngerEditorSafety.LatestRequest();
 const esc = (s) =>
   String(s).replace(
     /[&<>"']/g,
@@ -34,6 +38,17 @@ async function api(path, data) {
     throw e;
   }
   return d;
+}
+async function openExternal(url) {
+  const native = window.webkit?.messageHandlers?.openExternal;
+  if (native) {
+    // A custom navigation also reaches WKNavigationDelegate when WebKit's
+    // script-message bridge is present but silently drops a message. The
+    // native app cancels this navigation and opens the validated destination.
+    location.href = 'blynger-external://open?url=' + encodeURIComponent(url);
+    return { message: 'Opened in your browser.' };
+  }
+  return api('open-external', { url });
 }
 function status(s) {
   $('status').textContent = s;
@@ -86,14 +101,18 @@ function error(e) {
   }
   const fragmentProblem =
       e.code === 'fragment-state' ||
-      /fragment (?:anchors|boundar|break|ranges?)/i.test(e.message),
+      /fragment (?:anchors|block marker|boundar|break|ranges?)/i.test(e.message),
     affected = e.page || page?.name,
     samePage = affected === page?.name,
-    canClear = fragmentProblem && samePage && page?.kind === 'post';
+    canRepair = fragmentProblem && samePage,
+    canClear = canRepair && page?.kind === 'post';
   const explanation = !fragmentProblem
     ? ''
     : samePage
-      ? 'Your writing and ordinary formatting will be kept. This removes every reusable fragment boundary from this draft so you can save now and add fragments again later.'
+      ? 'Blynger can rebuild the durable markers while keeping your writing and fragment identities.' +
+        (canClear
+          ? ' The separate removal option is a last resort that removes reusable fragment boundaries from this draft.'
+          : '')
       : 'The fragment problem belongs to ' +
         affected +
         ', not the page currently open. Open that page to review its boundaries; this draft is not the cause.';
@@ -106,6 +125,9 @@ function error(e) {
       '<div class="dialog-actions"><button id="dismissError">OK</button>' +
       (fragmentProblem && !samePage
         ? '<button id="openBrokenFragmentPage">Open ' + esc(affected) + '</button>'
+        : '') +
+      (canRepair
+        ? '<button id="repairBrokenFragments">Rebuild fragment markers and save draft</button>'
         : '') +
       (canClear
         ? '<button id="clearBrokenFragments">Remove all fragments and save draft</button>'
@@ -130,6 +152,18 @@ function error(e) {
         await save(false, true);
         status('Draft saved without fragments. Your writing is unchanged.');
       });
+  if (canRepair)
+    $('repairBrokenFragments').onclick = () =>
+      run(async () => {
+        const b = $('repairBrokenFragments');
+        b.disabled = true;
+        if (mode === 'source') applySource();
+        $('dialog').close();
+        await save(false, false, true);
+        status(
+          'Fragment markers rebuilt. Your writing and fragment identities are unchanged.',
+        );
+      });
 }
 async function run(fn) {
   try {
@@ -143,11 +177,33 @@ function syncPublishButton() {
   const ready = dirty || publicationReady,
     b = $('publish');
   b.classList.toggle('ready', ready);
-  b.disabled = publishing || !ready;
+  b.disabled = publishing || publicationInFlight || !ready;
 }
 async function updatePublicationState() {
-  publicationReady = (await api('publication-status')).ready;
+  const state = await api('publication-status');
+  publicationInFlight = ['queued', 'publishing'].includes(state.state);
+  publicationReady = state.ready;
+  if (publicationInFlight) status(state.message || 'Publishing… You can keep writing.');
+  if (state.id && state.id !== lastPublicationJob && state.state === 'succeeded') {
+    lastPublicationJob = state.id;
+    status('Published successfully.');
+    await refresh();
+  }
+  if (state.id && state.id !== lastPublicationJob && ['failed', 'uncertain'].includes(state.state)) {
+    lastPublicationJob = state.id;
+    error(Error(state.message));
+  }
   syncPublishButton();
+  if (publicationInFlight) watchPublication();
+}
+let publicationPoll = null;
+function watchPublication() {
+  if (publicationPoll) return;
+  publicationPoll = setTimeout(async () => {
+    publicationPoll = null;
+    await run(updatePublicationState);
+    if (publicationInFlight) watchPublication();
+  }, 1500);
 }
 function mark() {
   editRevision += 1;
@@ -391,9 +447,21 @@ function pasteQuoteText(block, text) {
   end.collapse(false);
   s.addRange(end);
 }
+function looksLikeMarkdown(text) {
+  return (
+    /^(?: {0,3}#{1,6}\s| {0,3}>\s?| {0,3}(?:[-+*]|\d+[.)])\s| {0,3}(?:```|~~~)| {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$)/m.test(
+      text,
+    ) ||
+    /(?:\*\*|__)[^\n]+(?:\*\*|__)|(?:^|[^*])\*[^\n*]+\*|(?:^|[^_])_[^\n_]+_|!?\[[^\]\n]+\]\([^\s)]+(?:\s+["'][^"']*["'])?\)/m.test(
+      text,
+    ) ||
+    /^\s*\|?.+\|.+\n\s*\|?\s*:?-{3,}/m.test(text)
+  );
+}
 $('editor').addEventListener('paste', (e) => {
   e.preventDefault();
-  let text = e.clipboardData.getData('text/plain').trim();
+  const pasted = e.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'),
+    text = pasted.trim();
   const anchor = window.getSelection().anchorNode,
     block = (anchor?.nodeType === 1 ? anchor : anchor?.parentElement)?.closest?.(
       'blockquote.blynger-citation,blockquote.blyg-transclusion',
@@ -411,6 +479,42 @@ $('editor').addEventListener('paste', (e) => {
   }
   if (block) {
     pasteQuoteText(block, text);
+  } else if (looksLikeMarkdown(pasted)) {
+    capture();
+    const pastePage = page?.name,
+      pasteMode = mode,
+      pasteSelection = selection?.cloneRange(),
+      ticket = pasteRequests.begin(editRevision);
+    run(async () => {
+      const rendered = await api('markdown-paste', { text: pasted });
+      const selectionStillExists =
+        pasteSelection && $('editor').contains(pasteSelection.startContainer);
+      if (
+        page?.name !== pastePage ||
+        mode !== pasteMode ||
+        !pasteRequests.accepts(ticket, editRevision) ||
+        !selectionStillExists
+      ) {
+        modal(
+          'Blynger — Markdown paste kept aside',
+          '<p>The document or selection changed while Blynger was formatting this Markdown, so it was not inserted into the wrong place.</p>' +
+            '<p>Copy it below and paste it again where you want it.</p>' +
+            '<textarea id="markdownPasteRecovery" readonly rows="10"></textarea>' +
+            '<div class="dialog-actions"><button id="copyMarkdownPaste">Copy Markdown</button><button id="dismissMarkdownPaste">OK</button></div>',
+        );
+        $('markdownPasteRecovery').value = pasted;
+        $('copyMarkdownPaste').onclick = async () => {
+          await navigator.clipboard.writeText(pasted);
+          $('copyMarkdownPaste').textContent = 'Copied';
+        };
+        $('dismissMarkdownPaste').onclick = () => $('dialog').close();
+        return;
+      }
+      selection = pasteSelection;
+      insert(rendered.html);
+      normalizeParagraphs();
+    });
+    return;
   } else document.execCommand('insertText', false, straightQuotes(text));
   normalizeParagraphs();
   capture();
@@ -490,14 +594,17 @@ function renderPages() {
 }
 async function refresh() {
   const request = ++refreshRevision,
-    result = await Promise.all([api('pages'), api('settings'), api('publication-status')]);
+    result = await Promise.all([api('pages'), api('settings'), api('series')]);
   if (request !== refreshRevision) return;
   pages = result[0];
   const s = result[1];
   siteOrigin = s.site;
-  publicationReady = result[2].ready;
+  seriesList = result[2];
   renderPages();
   syncPublishButton();
+  // A cloud-synced Git folder can be cold. Publication detection must never
+  // hold the authoring interface hostage while macOS fetches its metadata.
+  run(updatePublicationState);
 }
 function responseLabel(stub) {
   if (!stub) return '';
@@ -518,6 +625,7 @@ async function openPage(name) {
     !confirm('Leave this page and discard unsaved edits? Saved drafts are kept.')
   )
     return false;
+  pasteRequests.invalidate();
   const ticket = pageRequests.begin(editRevision);
   const result = await Promise.all([
     api('page?name=' + encodeURIComponent(name)),
@@ -551,12 +659,13 @@ async function openPage(name) {
     ['index.html', 'portfolio.html', 'openers.html', 'privacypolicy.html'].includes(
       page.name,
     );
+  $('renumberPost').hidden = page.kind !== 'post' || !page.new || !!page.deleted;
   $('deletePost').textContent = page.deleted ? 'Restore post…' : 'Delete post…';
   $('editor').contentEditable = page.deleted ? 'false' : 'true';
   for (const id of ['save', 'queue', 'preview', 'images', 'sourceTab'])
     $(id).disabled = !!page.deleted;
   $('tk').disabled = !!page.deleted || page.kind !== 'post';
-  for (const id of ['versions', 'mainFragment', 'quote', 'fragment', 'removeFragment'])
+  for (const id of ['versions', 'mainFragment', 'transclude', 'respondStub', 'quote', 'fragment', 'removeFragment'])
     $(id).disabled = !!page.deleted || page.kind !== 'post';
   fragmentEditor.layer.hidden = page.kind !== 'post' && page.name !== 'openers.html';
   $('source').value = page.raw;
@@ -570,6 +679,26 @@ async function openPage(name) {
   const marker = $('responseMarker');
   marker.textContent = responseLabel(page.stub_of);
   marker.hidden = !page.stub_of;
+  const seriesControls = $('seriesControls'),
+    seriesSelect = $('postSeries'),
+    selectedSeries = page.series?.id || '';
+  seriesControls.hidden = page.kind !== 'post' || !!page.deleted;
+  seriesSelect.innerHTML =
+    '<option value="">None</option>' +
+    seriesList
+      .map(
+        (record) =>
+          '<option value="' +
+          esc(record.id) +
+          '"' +
+          (record.id === selectedSeries ? ' selected' : '') +
+          '>' +
+          esc(record.title) +
+          '</option>',
+      )
+      .join('');
+  $('seriesAttribute').value = page.series?.attribute || '';
+  $('seriesAttributeLabel').hidden = !selectedSeries;
   $('pinPlan').hidden = !page.pin_available;
   $('pinOnPublish').checked = !!page.pin_on_publish;
   $('kind').textContent =
@@ -598,27 +727,34 @@ async function openPage(name) {
   );
   return true;
 }
-async function saveOnce(clearFragments = false) {
+async function saveOnce(clearFragments = false, repairFragmentMarkers = false) {
   if (!page) return;
   if (!dirty) {
     status('No unsaved changes.');
     return;
   }
   if (mode === 'source') applySource();
+  // Durable HTML markers and their private fragment map must come from the
+  // same reconciliation pass. Otherwise a final boundary repair can make the
+  // two halves of one save disagree.
+  const serialized = fragmentEditor.serialize();
   const target = page,
     name = page.name,
     revision = editRevision,
     payload = {
       name,
       base: page.base,
-      raw: raw(),
+      raw: page.prefix + serialized.html + page.suffix,
       generated: structuredClone(generated),
       quotes: structuredClone(quotes),
-      fragments: fragmentEditor.snapshot(),
+      fragments: serialized.fragments,
       clear_fragments: clearFragments,
+      repair_fragment_markers: repairFragmentMarkers,
       stub_of: page.stub_of,
       forked_from: page.forked_from,
       pin_on_publish: $('pinOnPublish').checked,
+      series_id: $('postSeries').value || null,
+      series_attribute: $('seriesAttribute').value,
     };
   const result = await api('save', payload);
   if (page !== target || page.name !== name) return result;
@@ -639,8 +775,10 @@ async function saveOnce(clearFragments = false) {
   await refresh();
   return result;
 }
-function save(requireClean = true, clearFragments = false) {
-  const operation = saveQueue.enqueue(() => saveOnce(clearFragments));
+function save(requireClean = true, clearFragments = false, repairFragmentMarkers = false) {
+  const operation = saveQueue.enqueue(() =>
+    saveOnce(clearFragments, repairFragmentMarkers),
+  );
   return operation.then((result) => {
     if (requireClean && dirty)
       throw Error('Newer edits remain unsaved. Save them before continuing.');
@@ -730,6 +868,35 @@ $('newPage').onclick = () => {
       await openPage(p.name);
     });
 };
+$('createSeries').onclick = () => {
+  modal(
+    'Create Series',
+    '<label>Series title<input id="seriesTitle" placeholder="October of Zarathustra"></label>' +
+      '<label>Short plug<input id="seriesPlug" placeholder="Zarathustra"></label>' +
+      '<label>Description<textarea id="seriesDescription" rows="6" placeholder="What is this series for?"></textarea></label>' +
+      '<p class="hint">Blynger will detect existing posts whose headlines contain the series title. It will create a normal static Page and queue the member pages for review.</p>' +
+      '<div class="dialog-actions"><button id="confirmCreateSeries">Create series draft</button></div>',
+  );
+  $('seriesTitle').focus();
+  $('confirmCreateSeries').onclick = () =>
+    run(async () => {
+      if (dirty) await save();
+      const result = await api('create-series', {
+        title: $('seriesTitle').value,
+        plug: $('seriesPlug').value,
+        description: $('seriesDescription').value,
+      });
+      $('dialog').close();
+      await refresh();
+      if (page) await openPage(page.name);
+      status(result.message);
+    });
+};
+$('postSeries').onchange = () => {
+  $('seriesAttributeLabel').hidden = !$('postSeries').value;
+  mark();
+};
+$('seriesAttribute').oninput = mark;
 $('sourceTab').onclick = () => {
   if (!page || mode === 'source') return;
   fragmentEditor.snapshot();
@@ -920,7 +1087,6 @@ for (const b of document.querySelectorAll('[data-format],[data-block]')) {
     $('editor').focus();
     document.execCommand(b.dataset.format || 'formatBlock', false, b.dataset.block || null);
     normalizeParagraphs();
-    if (b.dataset.block === 'h2') fragmentEditor.addDivider();
     capture();
     updateFormatState();
     mark();
@@ -1114,6 +1280,7 @@ $('settings').onclick = () =>
         field('feed_description', 'Feed description', s.feed_description) +
         field('blogroll_heading', 'Blogroll heading', s.blogroll_heading) +
         field('twitter_creator', 'Social account (optional)', s.twitter_creator) +
+        field('tk_model', 'TK Codex model', s.tk_model) +
         '<h3>Publishing</h3>' +
         field('remote', 'Git remote', s.remote) +
         field('branch', 'Git branch', s.branch) +
@@ -1137,6 +1304,7 @@ $('settings').onclick = () =>
           'feed_description',
           'blogroll_heading',
           'twitter_creator',
+          'tk_model',
           'remote',
           'branch',
           'ssh_key',
@@ -1162,13 +1330,54 @@ $('settings').onclick = () =>
       }
     };
   });
+async function waitForReview() {
+  // Preparing the local files can take longer than WebKit will wait on one
+  // request. A dropped response is "Load failed"; the work continues, so ask again.
+  let sawRunning = false,
+    missed = 0;
+  try {
+    const started = await api('start-review', {});
+    sawRunning = started.state === 'running';
+  } catch (e) {
+    if (e.message !== 'Load failed') throw e;
+  }
+  while (true) {
+    let state;
+    try {
+      state = await api('review-status');
+      missed = 0;
+    } catch (e) {
+      if (e.message !== 'Load failed') throw e;
+      missed += 1;
+      if (!sawRunning && missed >= 3) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    if (!state.state || state.state === 'idle') {
+      await api('start-review', {});
+      continue;
+    }
+    if (state.state === 'running') {
+      sawRunning = true;
+      status(state.message || 'Preparing local publication files…');
+      setPublishBusy(true, 'Preparing…');
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    if (state.state === 'ready') return state.review;
+    const err = Error(state.message || 'Publication review could not be prepared.');
+    if (state.code) err.code = state.code;
+    if (state.files) err.files = state.files;
+    err.can_accept = !!state.can_accept;
+    if (state.page) err.page = state.page;
+    throw err;
+  }
+}
 $('publish').onclick = () =>
   publicationTask(async () => {
     if (dirty) await save();
-    status('Preparing local publication files…');
-    await api('prepare', { review: false });
-    status('Checking the hosted version…');
-    const r = await api('refresh-review', {});
+    status('Preparing local publication files… This can take a minute.');
+    const r = await waitForReview();
     modal(
       'Review publication',
       '<p><b>' +
@@ -1215,33 +1424,30 @@ $('publish').onclick = () =>
       status('Prepared locally. Nothing sent to the website.');
     };
     $('confirmPublish').onclick = async () => {
-      if (publishing) return;
-      publishing = true;
-      setPublishBusy(true, 'Posting');
+      if (publishing || publicationInFlight) return;
       const b = $('confirmPublish');
       b.disabled = true;
-      b.textContent = 'Posting';
-      status('Posting…');
+      b.textContent = 'Starting…';
+      status('Preserving the approved publication…');
       try {
         const result = await api('publish', {
           signature: r.signature,
           note: $('publicationNote').value,
         });
-        $('publishResult').textContent = result.message;
-        status(result.message);
-        b.textContent = 'Close';
-        b.onclick = () => $('dialog').close();
-        await refresh();
-        if (page) await openPage(page.name);
+        publicationInFlight = true;
+        lastPublicationJob = null;
+        $('dialog').close();
+        status(result.message || 'Publishing… You can keep writing.');
+        syncPublishButton();
+        watchPublication();
       } catch (e) {
         $('publishResult').className = 'notice error';
         $('publishResult').textContent = e.message;
-        b.textContent = 'Retry publication';
-        status('Publication failed: ' + e.message);
-      } finally {
-        publishing = false;
-        setPublishBusy(false);
+        b.textContent = 'Try again';
+        status('Publication could not start: ' + e.message);
         b.disabled = false;
+      } finally {
+        syncPublishButton();
       }
     };
     if (page) page = await api('page?name=' + encodeURIComponent(page.name));
@@ -1361,6 +1567,66 @@ $('versions').onclick = () =>
   });
 $('quote').onclick = () => run(openQuotePicker);
 
+function openURLComposition(kind) {
+  if (!page || page.kind !== 'post' || mode !== 'visual') return;
+  if (kind === 'stub' && page.stub_of) {
+    status('This post is already a response Stub. A Stub can have only one target.');
+    return;
+  }
+  capture();
+  const responding = kind === 'stub';
+  modal(
+    responding ? 'Respond / Stub' : 'Transclude Blyg item',
+    '<label>Blyg fragment or thread URL<input id="compositionURL" type="url" placeholder="https://…/f/…/" aria-label="Blyg item URL"></label>' +
+      '<p class="hint">' +
+      (responding
+        ? 'Makes this post a response to one item and inserts its verified snapshot. This does not subscribe you to the source.'
+        : 'Inserts a verified snapshot at the cursor without making this post a response. This does not subscribe you to the source.') +
+      '</p><p id="compositionError" class="error" role="alert"></p><div class="dialog-actions"><button id="confirmComposition">' +
+      (responding ? 'Respond and insert' : 'Insert transclusion') +
+      '</button></div>',
+  );
+  $('compositionURL').focus();
+  const submit = () =>
+    run(async () => {
+      const button = $('confirmComposition');
+      button.disabled = true;
+      button.textContent = 'Importing…';
+      try {
+        const imported = await api('import-item', { url: $('compositionURL').value.trim() });
+        const quoted = await api('quote-item', {
+          source: 'remote',
+          key: imported.selected,
+          selection: { mode: 'whole', transclude: true },
+        });
+        $('dialog').close();
+        showWriting();
+        if (quoted.snapshot) quotes[quoted.snapshot.token] = quoted.snapshot;
+        const content = responding ? quoted.stub_label_html + quoted.html : quoted.html;
+        insert('<p><br></p>' + content + '<p><br></p>');
+        if (responding) {
+          page.stub_of = structuredClone(quoted.stub_of);
+          $('responseMarker').textContent = responseLabel(page.stub_of);
+          $('responseMarker').hidden = false;
+        }
+        fragmentEditor.lockTransclusions();
+        mark();
+        await save();
+        status(responding ? 'Response Stub saved locally.' : 'Transclusion inserted and saved locally.');
+      } catch (e) {
+        if ($('compositionError')) $('compositionError').textContent = e.message;
+        button.disabled = false;
+        button.textContent = responding ? 'Respond and insert' : 'Insert transclusion';
+      }
+    });
+  $('confirmComposition').onclick = submit;
+  $('compositionURL').onkeydown = (event) => {
+    if (event.key === 'Enter') submit();
+  };
+}
+$('transclude').onclick = () => openURLComposition('transclude');
+$('respondStub').onclick = () => openURLComposition('stub');
+
 $('fragment').onmousedown = (e) => e.preventDefault();
 $('fragment').onclick = () => {
   if (!page || mode !== 'visual') return;
@@ -1376,7 +1642,7 @@ $('fragment').onclick = () => {
     getSelection().removeAllRanges();
     getSelection().addRange(selection);
   }
-  fragmentEditor.addDivider();
+  fragmentEditor.designate();
   capture();
 };
 $('removeFragment').onclick = () => {
@@ -1386,7 +1652,7 @@ $('removeFragment').onclick = () => {
     getSelection().removeAllRanges();
     getSelection().addRange(selection);
   }
-  fragmentEditor.removeDivider();
+  fragmentEditor.removeDesignation();
   capture();
 };
 
@@ -1449,7 +1715,7 @@ $('mainFragment').onclick = () => {
     getSelection().removeAllRanges();
     getSelection().addRange(selection);
   }
-  fragmentEditor.addDivider();
+  fragmentEditor.designate();
   capture();
 };
 function setWorkspaceChrome(name, wide = false) {
@@ -1464,6 +1730,8 @@ function setWorkspaceChrome(name, wide = false) {
   for (const id of [
     'versions',
     'mainFragment',
+    'transclude',
+    'respondStub',
     'quote',
     'tk',
     'fragment',
@@ -1489,7 +1757,7 @@ function showWriting() {
     nonPost = page && page.kind !== 'post';
   for (const id of ['save', 'queue', 'preview', 'images']) $(id).disabled = unavailable;
   $('tk').disabled = unavailable || nonPost;
-  for (const id of ['versions', 'mainFragment', 'quote', 'fragment'])
+  for (const id of ['versions', 'mainFragment', 'transclude', 'respondStub', 'quote', 'fragment'])
     $(id).disabled = unavailable || nonPost;
 }
 function readerMessage(text) {
@@ -1507,6 +1775,7 @@ async function showReader(sync = true) {
   $('readerActions').hidden = currentWorkspace === 'saved';
   $('savedViews').hidden = currentWorkspace !== 'saved';
   $('readerViewFilter').hidden = currentWorkspace === 'saved';
+  $('readerOrder').hidden = currentWorkspace === 'saved';
   for (const id of ['save', 'queue', 'preview', 'images', 'versions', 'tk', 'mainFragment'])
     $(id).disabled = true;
   $('readerItems').replaceChildren();
@@ -1640,7 +1909,9 @@ async function loadReader() {
       '&q=' +
       encodeURIComponent(q) +
       '&view=' +
-      encodeURIComponent(view),
+      encodeURIComponent(view) +
+      '&order=' +
+      encodeURIComponent($('readerOrder').value),
   );
   if (request !== readerLoadRevision || workspace !== currentWorkspace) return;
   readerSubscriptions = d.subscriptions;
@@ -1672,9 +1943,14 @@ async function loadReader() {
         ? 'Not synced yet.'
         : 'Add a Blyg URL to begin reading.';
   readerMessage(
-    workspace === 'saved'
-      ? d.items.length + ' saved ' + (d.items.length === 1 ? 'post.' : 'posts.')
-      : [...errors, syncMessage].filter(Boolean).join('\n'),
+    [
+      d.recovery && d.recovery.message,
+      workspace === 'saved'
+        ? d.items.length + ' saved ' + (d.items.length === 1 ? 'post.' : 'posts.')
+        : [...errors, syncMessage].filter(Boolean).join('\n'),
+    ]
+      .filter(Boolean)
+      .join('\n'),
   );
   $('readerItems').replaceChildren();
   if (!d.items.length)
@@ -1684,6 +1960,15 @@ async function loadReader() {
     read: (item) => run(() => readItem(item)),
     quote: (item) =>
       run(() => chooseQuote({ source: 'remote', key: item.key, title: item.title }, true)),
+    stub: (item, destination) =>
+      run(async () => {
+        const prepared = await api('quote-item', {
+          source: 'remote',
+          key: item.key,
+          selection: { mode: 'whole', transclude: true },
+        });
+        chooseStub(item, prepared, destination);
+      }),
     save: (item) =>
       run(async () => {
         await api('reader-mark', { key: item.key, field: 'saved', value: !item.saved });
@@ -1699,10 +1984,18 @@ async function loadReader() {
         await api('reader-react', { key: item.key, reaction: emoji });
         await loadReader();
       }),
+    isolate: (item) =>
+      run(async () => {
+        if (!confirm('Skip this malformed item? Its cached data will be preserved.'))
+          return;
+        await api('reader-isolate', { key: item.key });
+        await loadReader();
+      }),
   });
 }
 $('readerSource').onchange = () => run(loadReader);
 $('readerViewFilter').onchange = () => run(loadReader);
+$('readerOrder').onchange = () => run(loadReader);
 let readerSearchTimer;
 $('readerSearch').oninput = () => {
   clearTimeout(readerSearchTimer);
@@ -1875,8 +2168,23 @@ async function readItem(item) {
   const bridge = BlyngerReaderFrame.connect(frame, {
     selection: update,
     link: (data) => {
-      if (/^(https?:|mailto:|tel:)/i.test(data.href))
-        run(() => api('open-external', { url: data.href }));
+      if (!/^(https?:|mailto:|tel:)/i.test(data.href)) return;
+      const match =
+        /^https?:\/\/[^/]+\/(?:[^?#]*\/)?(?:t|f)\/[0-9a-z]{26}\/?(?:[?#].*)?$/i.test(
+          data.href,
+        );
+      if (match)
+        run(async () => {
+          const result = await api('reader-open', {
+            url: data.href,
+            allow_subscription: true,
+          });
+          const items = (await api('reader')).items;
+          const linked = items.find((candidate) => candidate.key === result.selected);
+          if (linked) await readItem(linked);
+          else await openExternal(data.href);
+        });
+      else run(() => openExternal(data.href));
     },
   });
   $('dialog').addEventListener('close', () => bridge.close(), { once: true });
@@ -1923,8 +2231,7 @@ async function readItem(item) {
       });
       chooseStub(item, prepared);
     });
-  $('openOriginal').onclick = () =>
-    run(() => api('open-external', { url: d.original_url }));
+  $('openOriginal').onclick = () => run(() => openExternal(d.original_url));
   const followConversation = (link) =>
     run(async () => {
       if (link.key) {
@@ -1936,7 +2243,7 @@ async function readItem(item) {
           return;
         }
       }
-      await api('open-external', { url: link.url });
+      await openExternal(link.url);
     });
   if ($('readerConversationBack'))
     $('readerConversationBack').onclick = () => followConversation(d.conversation.backward);
@@ -1945,6 +2252,15 @@ async function readItem(item) {
       followConversation(d.conversation.forward[Number(button.dataset.forward)]);
   if ($('forkReading'))
     $('forkReading').onclick = () => {
+      if (!pins.length) {
+        const button = $('forkReading');
+        button.textContent = 'Requires a pinned post';
+        status('Fork requires a pinned source version. Quote or Stub still work here.');
+        setTimeout(() => {
+          if (button.isConnected) button.textContent = 'Fork';
+        }, 2200);
+        return;
+      }
       modal(
         'Fork pinned version',
         '<p>A fork is an editable copy with permanent lineage, not a quotation.</p><div id="forkVersions"></div>',
@@ -2076,56 +2392,72 @@ async function chooseQuote(item, newPost) {
   $('dialog').close();
   await addQuote();
 }
-function chooseStub(item, quoted) {
+function chooseStub(item, quoted, destination = null) {
   const native = !quoted.stub_of.url,
-    context = native ? quoted.stub_label_html + quoted.html : quoted.stub_html;
+    context = native ? quoted.stub_label_html + quoted.html : quoted.stub_html,
+    openerFields =
+      '<label>Quick Opener response<textarea id="stubOpener" placeholder="Your brief response…"></textarea></label>',
+    postFields =
+      '<label>Post headline<input id="stubTitle" value="' +
+      esc('Response to ' + item.title) +
+      '"></label>',
+    actions =
+      destination === 'opener'
+        ? '<button id="stubToOpener">Create Opener Stub</button>'
+        : destination === 'post'
+          ? '<button id="stubToPost">Create Post Stub</button>'
+          : '<button id="stubToOpener">Stub to Opener</button><button id="stubToPost">Stub to post</button>';
   modal(
     'Stub — response to ' + item.title,
-    '<p class="hint">A Stub keeps one permanent response target. For a Blyg item, its complete verified snapshot starts the draft as a protected quotation; delete the whole quotation if you do not want it. The response remains a Stub either way.</p><label>Post headline<input id="stubTitle" value="' +
-      esc('Response to ' + item.title) +
-      '"></label><label>Quick Opener response<textarea id="stubOpener" placeholder="Your brief response…"></textarea></label><div class="dialog-actions"><button id="stubToOpener">Stub to Opener</button><button id="stubToPost">Stub to post</button></div>',
+    '<p class="hint">A Stub keeps one permanent response target. For a Blyg item, its complete verified snapshot starts the draft as a protected quotation; delete the whole quotation if you do not want it. The response remains a Stub either way.</p>' +
+      (destination === 'opener' ? openerFields : destination === 'post' ? postFields : postFields + openerFields) +
+      '<div class="dialog-actions">' + actions + '</div>',
   );
-  $('stubToPost').onclick = () =>
-    run(async () => {
-      if (dirty) await save();
-      const p = await api('new', { title: $('stubTitle').value, stub_of: quoted.stub_of });
-      $('dialog').close();
-      await refresh();
-      await openPage(p.name);
-      const first = $('editor').querySelector('p');
-      if (!first) throw Error('New post body is missing.');
-      const holder = document.createElement('div');
-      holder.innerHTML = localImages('<p><br></p>' + context + '<p><br></p>');
-      first.replaceWith(...holder.childNodes);
-      if (native && quoted.snapshot) quotes[quoted.snapshot.token] = quoted.snapshot;
-      fragmentEditor.lockTransclusions();
-      selection = null;
-      mark();
-      await save();
-      status('Response stub saved as a post draft.');
-    });
-  $('stubToOpener').onclick = () =>
-    run(async () => {
-      const text = $('stubOpener').value.trim();
-      if (!text) {
-        $('stubOpener').focus();
-        return;
-      }
-      if (dirty) await save();
-      $('dialog').close();
-      await openPage('openers.html');
-      const opener = fragmentEditor.newOpener(text, {
-        stub_of: quoted.stub_of,
-        stub_html: localImages(context),
-        pin_on_publish: true,
+  if ($('stubToPost'))
+    $('stubToPost').onclick = () =>
+      run(async () => {
+        if (dirty) await save();
+        const p = await api('new', { title: $('stubTitle').value, stub_of: quoted.stub_of });
+        $('dialog').close();
+        await refresh();
+        await openPage(p.name);
+        const first = $('editor').querySelector('p');
+        if (!first) throw Error('New post body is missing.');
+        const holder = document.createElement('div');
+        holder.innerHTML = localImages('<p><br></p>' + context + '<p><br></p>');
+        first.replaceWith(...holder.childNodes);
+        if (native && quoted.snapshot) quotes[quoted.snapshot.token] = quoted.snapshot;
+        fragmentEditor.lockTransclusions();
+        selection = null;
+        mark();
+        await save();
+        status('Response stub saved as a post draft.');
       });
-      if (!opener) throw Error('Could not add the response Opener.');
-      if (native && quoted.snapshot) quotes[quoted.snapshot.token] = quoted.snapshot;
-      fragmentEditor.lockTransclusions();
-      capture();
-      await save();
-      status('Response stub saved as a new Opener draft.');
-    });
+  if ($('stubToOpener')) {
+    $('stubOpener').focus();
+    $('stubToOpener').onclick = () =>
+      run(async () => {
+        const text = $('stubOpener').value.trim();
+        if (!text) {
+          $('stubOpener').focus();
+          return;
+        }
+        if (dirty) await save();
+        $('dialog').close();
+        await openPage('openers.html');
+        const opener = fragmentEditor.newOpener(text, {
+          stub_of: quoted.stub_of,
+          stub_html: localImages(context),
+          pin_on_publish: true,
+        });
+        if (!opener) throw Error('Could not add the response Opener.');
+        if (native && quoted.snapshot) quotes[quoted.snapshot.token] = quoted.snapshot;
+        fragmentEditor.lockTransclusions();
+        capture();
+        await save();
+        status('Response stub saved as a new Opener draft.');
+      });
+  }
 }
 
 $('editHeadline').onclick = () => {
@@ -2170,6 +2502,29 @@ $('editHeadline').onclick = () => {
     });
 };
 
+$('renumberPost').onclick = () => {
+  if (!page || !page.new || page.kind !== 'post') return;
+  modal(
+    'Change post number',
+    '<p>Move this unpublished draft to an unused number. Published posts and reserved numbers cannot be replaced.</p>' +
+      '<label>Post number<input id="postNumber" inputmode="numeric" pattern="[0-9]+" value="' +
+      esc(page.name.replace(/\.html$/, '')) +
+      '"></label><div class="dialog-actions"><button id="savePostNumber">Change number</button></div>',
+  );
+  $('postNumber').focus();
+  $('postNumber').select();
+  $('savePostNumber').onclick = () =>
+    run(async () => {
+      if (dirty) await save();
+      const changed = await api('renumber-post', {name: page.name, number: $('postNumber').value});
+      dirty = false;
+      $('dialog').close();
+      await refresh();
+      await openPage(changed.name);
+      status('Draft moved to ' + changed.name + '. The website has not changed.');
+    });
+};
+
 $('deletePost').onclick = () => {
   if (!page) return;
   const restore = !!page.deleted;
@@ -2204,6 +2559,128 @@ $('deletePost').onclick = () => {
       }
     });
 };
+async function showRecovery() {
+  const recovery = await api('recovery'),
+    publication = recovery.publication,
+    subscriptions = recovery.subscriptions
+      .map(
+        (sub) =>
+          '<li><b>' +
+          esc(sub.title) +
+          '</b>' +
+          (sub.error
+            ? '<small class="recovery-error">' + esc(sub.error) + '</small>'
+            : '') +
+          '<button class="recovery-subscription" data-id="' +
+          esc(sub.id) +
+          '" data-paused="' +
+          !sub.active +
+          '">' +
+          (sub.active ? 'Pause' : 'Resume') +
+          '</button></li>',
+      )
+      .join(''),
+    isolated = recovery.isolated
+      .map(
+        (item) =>
+          '<li><b>' +
+          esc(item.title) +
+          '</b><small>' +
+          esc(item.site) +
+          '</small>' +
+          (item.reason
+            ? '<small class="recovery-error">' + esc(item.reason) + '</small>'
+            : '') +
+          (item.restorable
+            ? '<button class="recovery-item" data-key="' +
+              esc(item.key) +
+              '">Show again</button>'
+            : '<small>Preserved for recovery.</small>') +
+          '</li>',
+      )
+      .join('');
+  modal(
+    'Blynger Recovery',
+    '<div class="recovery-grid"><section><h3>Publication</h3><p class="recovery-state recovery-' +
+      esc(publication.state) +
+      '"><b>' +
+      esc(publication.message) +
+      '</b></p>' +
+      (publication.retryable
+        ? '<button id="recoveryRetry">Retry the exact approved publication</button>'
+        : '') +
+      '</section><section><h3>Studio state</h3><p>' +
+      esc(recovery.studio?.message || 'Studio state is healthy.') +
+      '</p><button id="studioRecoveryRestore" ' +
+      (recovery.studio_backup_available ? '' : 'disabled') +
+      '>Restore verified Studio backup</button></section><section><h3>Subscriptions</h3><p>Pausing stops refreshes without deleting cached or saved items.</p><ul class="recovery-list">' +
+      (subscriptions || '<li>No subscriptions.</li>') +
+      '</ul></section><section><h3>Isolated Reader items</h3><p>Skipped items remain on this Mac and can be shown again.</p><ul class="recovery-list">' +
+      (isolated || '<li>No isolated items.</li>') +
+      '</ul></section><section><h3>Reader backup</h3><p>A restore replaces current Reader state with the last verified backup while preserving the state it replaces.</p><button id="recoveryRestore" ' +
+      (recovery.backup_available ? '' : 'disabled') +
+      '>Restore verified backup</button></section><section><h3>Diagnostics</h3><p>Copies counts and status only—no writing, site addresses, subscription addresses, credentials, keys, or local paths.</p><button id="recoveryCopy">Copy redacted diagnostics</button></section></div><div class="dialog-actions"><button id="closeRecovery">Close</button></div>',
+  );
+  $('closeRecovery').onclick = () => $('dialog').close();
+  if ($('recoveryRetry'))
+    $('recoveryRetry').onclick = () =>
+      run(async () => {
+        const result = await api('retry-publication', {});
+        publicationInFlight = true;
+        lastPublicationJob = null;
+        $('dialog').close();
+        status(result.message || 'Publishing… You can keep writing.');
+        syncPublishButton();
+        watchPublication();
+      });
+  for (const button of document.querySelectorAll('.recovery-subscription'))
+    button.onclick = () =>
+      run(async () => {
+        const result = await api('reader-pause', {
+          subscription: button.dataset.id,
+          value: button.dataset.paused !== 'true',
+        });
+        status(result.message);
+        await showRecovery();
+      });
+  for (const button of document.querySelectorAll('.recovery-item'))
+    button.onclick = () =>
+      run(async () => {
+        const result = await api('reader-restore-isolated', { key: button.dataset.key });
+        status(result.message);
+        await showRecovery();
+      });
+  $('recoveryRestore').onclick = () =>
+    run(async () => {
+      if (
+        !confirm(
+          'Restore the last verified Reader backup? The current Reader state will also be preserved.',
+        )
+      )
+        return;
+      const result = await api('reader-restore-backup', {});
+      status(result.message);
+      await showRecovery();
+    });
+  $('studioRecoveryRestore').onclick = () =>
+    run(async () => {
+      if (
+        !confirm(
+          'Restore the last verified Studio backup? The current private state will also be preserved, and Blynger must then be reopened.',
+        )
+      )
+        return;
+      const result = await api('studio-restore-backup', {});
+      status(result.message);
+      await showRecovery();
+    });
+  $('recoveryCopy').onclick = () =>
+    run(async () => {
+      await navigator.clipboard.writeText(JSON.stringify(recovery.diagnostics, null, 2));
+      status('Redacted diagnostics copied.');
+    });
+}
+$('recovery').onclick = () => run(showRecovery);
 $('about').onclick = () =>
   modal(
     'About Blynger',
@@ -2214,7 +2691,7 @@ $('about').onclick = () =>
 $('help').onclick = () =>
   modal(
     'Blynger Help',
-    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing and drafts, with search, versions, fragments, quotations, and TK. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf.</p></section><section><h3>Save and publish</h3><p><b>Save draft</b> keeps work private. <b>Queue</b> saves it for a later publication. <b>Review &amp; publish</b> shows the exact website files before anything is sent.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. The rare <b>Rebuild Blyg archive</b> repair action is under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
+    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing and drafts, with search, versions, fragments, quotations, and TK. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf.</p></section><section><h3>Save and publish</h3><p><b>Save draft</b> keeps work private. <b>Queue</b> saves it for a later publication. <b>Review &amp; publish</b> shows the exact website files before anything is sent.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. <b>Recovery</b> reports local and uncertain publication states, pauses troublesome subscriptions, manages isolated items, and restores verified Reader backups. The rare <b>Rebuild Blyg archive</b> repair action is also under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
   );
 document.addEventListener('click', (event) => {
   if (event.target.id === 'closeAbout') $('dialog').close();
@@ -2226,4 +2703,7 @@ run(async () => {
   await refresh();
   setWorkspaceChrome('openers', true);
   await openPage('openers.html');
+  const recovery = await api('recovery-notice');
+  const notices = [recovery.studio?.message, recovery.reader?.message].filter(Boolean);
+  if (notices.length) status(notices.join(' ') + ' Open Help → Recovery for details.');
 });

@@ -27,8 +27,10 @@ class TKLinkTests(unittest.TestCase):
         def fake_codex(args,**kwargs):
             Path(args[args.index('-o')+1]).write_text(PROSE)
             return SimpleNamespace(returncode=0,stderr='')
-        with patch('app.subprocess.run',side_effect=fake_codex):
+        with patch('app.subprocess.run',side_effect=fake_codex) as run:
             result=generate(self.studio,'Include a source link.','','1.html')
+        self.assertIn('--model',run.call_args.args[0])
+        self.assertEqual(result['provenance']['model'],self.studio.config['tk_model'])
         self.assertEqual(BeautifulSoup(result['html'],'html.parser').find('a',string='the source')['href'],URL)
         d=self.studio.create('TK link regression test')
         d['raw']=d['raw'].replace('<p>Start writing here.</p>',result['html'])
@@ -66,7 +68,7 @@ class TKLinkTests(unittest.TestCase):
         self.studio.prepare();page=(self.root/d['name']).read_text();soup=BeautifulSoup(page,'html.parser');iid=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         self.assertEqual(json.loads(soup.article['data-generated']),[provenance]);self.assertIsNotNone(soup.find('style',id='blynger-generation-disclosure-style'));self.assertIsNotNone(soup.find('script',id='blynger-generation-disclosure-script'))
         self.assertNotIn('data-generated',doc['content_html']);self.assertNotIn('blynger-gen-badge',doc['content_html']);self.assertEqual(doc['generated'],[provenance])
-        frozen=BeautifulSoup((self.root/f'blyg/f/{iid}/v1/index.html').read_text(),'html.parser');self.assertEqual(json.loads(frozen.article['data-generated']),[provenance]);self.assertIsNotNone(frozen.find('script',id='blynger-generation-disclosure-script'))
+        frozen=BeautifulSoup((self.root/f'blyg/t/{iid}/v1/index.html').read_text(),'html.parser');self.assertEqual(json.loads(frozen.article['data-generated']),[provenance]);self.assertIsNotNone(frozen.find('script',id='blynger-generation-disclosure-script'))
         first=page;self.studio.prepare();self.assertEqual((self.root/d['name']).read_text(),first)
     def test_disclosure_script_labels_claim_and_quoted_author(self):
         from generation_disclosure import SCRIPT

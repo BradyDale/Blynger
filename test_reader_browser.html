@@ -4,7 +4,7 @@ async function until(fn){for(let n=0;n<500;n++){if(fn())return;await new Promise
 document.getElementById('run').onclick=async()=>{document.getElementById('run').disabled=true;output.textContent='Running';try{
 const frame=document.getElementById('app'),w=frame.contentWindow,d=frame.contentDocument,$=id=>d.getElementById(id);
 await until(()=>$('heading').textContent==='Openers');
-assert(!/File|Website|Help|Edit/.test(d.querySelector('.menubar').textContent),'Dead header menus removed');assert($('mainFragment').textContent==='Fragment','Main toolbar Fragment button present');
+assert(!/File|Website|Help|Edit/.test(d.querySelector('.menubar').textContent),'Dead header menus removed');assert($('mainFragment').textContent==='Reusable fragment','Main toolbar reusable-fragment button present');
 $('readerNav').click();await until(()=>$('readerStatus').textContent.includes('Add a Blyg'));assert(!$('readerView').hidden,'Reader handles zero subscriptions');
 $('readerAdd').click();assert($('dialog').open&&$('readerURL'),'Add Blyg opens a URL discovery dialog');$('readerURL').value='https://blyg.aneeshsathe.com/';$('confirmSubscribe').click();assert($('readerAdd').disabled&&$('readerSync').textContent==='Syncing…','Sync feedback appears immediately');await until(()=>!$('readerAdd').disabled);
 assert($('readerItems').children.length>0,'Aneesh subscription imported published items');const firstCount=$('readerItems').children.length;$('readerSync').click();await until(()=>!$('readerSync').disabled);assert($('readerItems').children.length===firstCount,'Refreshing does not duplicate items');

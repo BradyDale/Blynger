@@ -5,7 +5,9 @@ const path = require('path');
 const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch({
-    executablePath: '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    executablePath:
+      process.env.BLYNGER_BROWSER ||
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
     headless: true,
   });
   try {
@@ -41,7 +43,7 @@ const assert = require('node:assert/strict');
       });
       editor.dispatchEvent(event);
       if (!event.defaultPrevented) throw Error('Find not prevented');
-      if (f.meta.dividers.length !== 1) throw Error('Insert divider');
+      if (f.meta.ranges.length !== 1) throw Error('Designate reusable fragment');
       editor.dispatchEvent(
         new KeyboardEvent('keydown', {
           key: 'f',
@@ -51,15 +53,19 @@ const assert = require('node:assert/strict');
           cancelable: true,
         }),
       );
-      if (f.meta.dividers.length !== 1) throw Error('Fragment shortcut removed a boundary');
-      f.removeDivider();
-      if (f.meta.dividers.length) throw Error('Remove fragment failed');
-      f.addDivider();
+      if (f.meta.ranges.length !== 0) throw Error('Fragment shortcut did not toggle designation');
+      f.designate();
+      if (f.meta.ranges.length !== 1) throw Error('Restore designation failed');
+      f.removeDesignation();
+      if (f.meta.ranges.length) throw Error('Make ordinary prose failed');
+      f.designate();
       at(editor.children[1]);
       if (f.meta.ranges.length !== 1) throw Error('Designate implicit edges');
       const saved = f.snapshot(),
         html = f.html();
-      if (/fragment-block|fragment-dot/.test(html)) throw Error('Private data leaked');
+      if (/data-fragment-block|fragment-dot/.test(html)) throw Error('Private data leaked');
+      if (!/data-blynger-block/.test(html) || !/data-blynger-fragment/.test(html))
+        throw Error('Durable fragment markers missing');
       editor.innerHTML = html;
       f.load(saved);
       if (JSON.stringify(f.snapshot()) !== JSON.stringify(saved)) throw Error('Roundtrip');
@@ -70,11 +76,11 @@ const assert = require('node:assert/strict');
         getSelection().getRangeAt(0),
       );
       const tk = f.snapshot();
-      if (tk.ranges.length !== 3) throw Error('TK sections');
+      if (tk.ranges.length !== 1) throw Error('TK created extra feed items');
       if (!f.html().includes('Another ') || !f.html().includes('paragraph.'))
         throw Error('Mid-paragraph TK lost prose');
       const keys = tk.ranges.map((r) => r.key);
-      const after = tk.ranges[2];
+      const after = tk.ranges[0];
       const moving = [...editor.children].filter((el) => {
         const ids = tk.blocks.map((b) => b.id),
           i = ids.indexOf(el.dataset.fragmentBlock);
@@ -86,6 +92,10 @@ const assert = require('node:assert/strict');
       const reordered = f.snapshot();
       if (reordered.ranges.map((r) => r.key).join() !== keys.join())
         throw Error('Reorder lost identities');
+      const marked = f.html();
+      for (const key of keys)
+        if (!marked.includes(`data-blynger-fragment="${key}"`))
+          throw Error('Moved fragment lost its durable identity');
       return {
         saved,
         tk: reordered,
@@ -98,10 +108,10 @@ const assert = require('node:assert/strict');
       '/private/tmp/blynger-fragment-browser-result.json',
       JSON.stringify(result, null, 2),
     );
-    assert.equal(result.tk.ranges.length, 3);
+    assert.equal(result.tk.ranges.length, 1);
     assert.ok(!result.tk.ranges.some((r) => r.start === result.tk.blocks[0].id));
     console.log(
-      'Browser checks passed: additive shortcut, explicit removal, persistence, implicit edges, TK separation, no layout shift or metadata leakage.',
+      'Browser checks passed: explicit reusable-fragment designation, removal, persistence, TK containment, no layout shift or metadata leakage.',
     );
   } finally {
     await browser.close();

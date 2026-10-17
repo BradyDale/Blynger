@@ -6,6 +6,8 @@ The October 3, 2026 revision of the living Blyg 0.3 specification promoted parti
 
 **Stub** is the explicit strict response action and records exactly one immutable target: `{origin, id, version}` for a genuine Blyg item, or the normative `{url}` form when a plain-web response is supported. A Blyg target may also carry the specification's optional `cited` context. Repeated editable quotations can be added around the response while the response keeps one target.
 
+The Post editor also exposes the protocol distinction directly. **Transclude** accepts a specific Blyg fragment or thread permalink, privately imports only that item, and inserts its protected snapshot without declaring a response. **Respond / Stub** performs the same one-item import and insertion while also making that item the post's immutable `stub_of` target. Neither action subscribes to the source blyg; Reader remains a convenient source of writing rather than a prerequisite for composition.
+
 A Stub can create a normal response post or a quick Opener. Both begin with a
 genuine whole-item transclusion when the target is a Blyg item. Write mode treats
 that source as one protected block: the author may delete the whole block but

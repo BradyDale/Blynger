@@ -1,4 +1,4 @@
-import copy, json, tempfile, unittest
+import copy, json, tempfile, threading, unittest
 from bs4 import BeautifulSoup
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -36,6 +36,15 @@ class ReaderTests(unittest.TestCase):
     def test_zero_subscriptions(self):self.assertEqual(self.r.listing(),[]);self.assertEqual(self.r.sync()['subscriptions'],[])
     def test_valid_subscription_imports_ground_truth(self):
         self.sub();i=self.item();self.assertEqual(i['origin'],ORIGIN);self.assertEqual(i['doc']['id'],IID);self.assertEqual(i['doc']['kind'],'fragment');self.assertEqual(i['doc']['author']['name'],'Other Author');self.assertEqual(self.r.listing()[0]['title'],'Remote words');self.assertIn(ORIGIN+'feed.xml',self.net.calls)
+    def test_one_off_item_import_does_not_subscribe_or_crawl_archive(self):
+        self.net.urls[ORIGIN+'f/'+IID+'/']=('<html><head><link rel="blyg" href="'+ORIGIN+'"></head></html>','text/html')
+        result=self.r.import_item(ORIGIN+'f/'+IID+'/');item=self.r.item(result['selected']);sub=self.r.state['subscriptions'][item['subscription']]
+        self.assertEqual(item['doc']['id'],IID);self.assertFalse(sub['active']);self.assertEqual(sub['added_via'],'one-off authoring import')
+        self.assertNotIn(ORIGIN+'feed.xml',self.net.calls);self.assertNotIn(ORIGIN+'items/index.json',self.net.calls)
+        self.assertEqual(self.r.listing(),[]);self.assertIn('without subscribing',result['message'])
+    def test_one_off_item_import_rejects_bad_hash(self):
+        broken=doc();broken['content_hash']='sha256:'+'0'*64;self.net.add(items=[broken]);self.net.urls[ORIGIN+'f/'+IID+'/']=('<html><head><link rel="blyg" href="'+ORIGIN+'"></head></html>','text/html')
+        with self.assertRaisesRegex(ValueError,'hash does not match'):self.r.import_item(ORIGIN+'f/'+IID+'/')
     def test_invalid_url_and_invalid_blyg(self):
         for url in ('file:///tmp/a','https://user:pass@x/a','not a url'):
             with self.assertRaises(ValueError):self.r.subscribe(url)
@@ -68,6 +77,93 @@ class ReaderTests(unittest.TestCase):
         self.net.add(items=[doc(text=words)]);self.sub();row=self.r.listing()[0]
         self.assertFalse(row['excerpt'].startswith(row['title']))
         self.assertNotEqual(row['excerpt'],words)
+    def test_pace_layered_order_explains_a_revision_climbing_one_place(self):
+        first=doc(text='First');first['created']='2026-01-01T00:00:00Z';first['updated']='2026-01-04T00:00:00Z';first['version']=2;first['changelog']=[{'version':1,'at':first['created'],'pinned':True},{'version':2,'at':first['updated']}]
+        second=doc(iid='0'*25+'2',text='Second');second['created']='2026-01-02T00:00:00Z';second['updated']=second['created'];second['changelog'][0]['at']=second['created']
+        third=doc(iid='0'*25+'3',text='Third');third['created']='2026-01-03T00:00:00Z';third['updated']=third['created'];third['changelog'][0]['at']=third['created']
+        self.net.add(items=[first,second,third]);self.sub()
+        newest=self.r.listing();paced=self.r.listing(order='pace')
+        self.assertEqual([row['id'] for row in newest],[third['id'],second['id'],first['id']])
+        self.assertEqual([row['id'] for row in paced],[third['id'],first['id'],second['id']])
+        revised=paced[1];self.assertEqual(revised['pace_rise'],1);self.assertEqual(revised['revision_count'],1);self.assertEqual(revised['pin_count'],1);self.assertEqual(revised['updated'],'2026-01-04T00:00:00Z')
+    def test_malformed_cached_changelog_does_not_break_pace_and_can_be_isolated(self):
+        self.sub();key=self.r.key(ORIGIN,IID);self.r.state['items'][key]['doc']['changelog']=[None];self.r.save()
+        reloaded=Reader(self.data,self.net,lambda:self.time);rows=reloaded.listing(order='pace')
+        self.assertEqual(len(rows),1);self.assertIn('malformed changelog',rows[0]['pace_warning'])
+        self.assertEqual(len(reloaded.listing(order='newest')),1)
+        reloaded.isolate(key);self.assertEqual(Reader(self.data,self.net,lambda:self.time).listing(order='pace'),[])
+    def test_malformed_remote_changelog_is_rejected_without_replacing_cache(self):
+        sid=self.sub();before=copy.deepcopy(self.item()['doc']);bad=doc(version=2,text='Bad update');bad['changelog']=[None];self.net.add(items=[bad]);self.r.sync(sid)
+        self.assertEqual(self.item()['doc'],before);self.assertTrue(any('malformed changelog' in warning for warning in self.r.state['subscriptions'][sid]['warnings']))
+    def test_damaged_state_recovers_verified_backup_and_preserves_bad_file(self):
+        self.sub();key=self.r.key(ORIGIN,IID);self.r.mark(key,'saved',True);self.r.save()
+        self.r.file.write_text('{not json')
+        recovered=Reader(self.data,self.net,lambda:self.time)
+        self.assertTrue(recovered.item(key)['saved']);self.assertIsNotNone(recovered.recovery_status())
+        self.assertTrue(recovered.damaged_file.is_file());self.assertEqual(recovered.damaged_file.read_text(),'{not json')
+        self.assertTrue(Reader._load_state(recovered.file)['items'][key]['saved'])
+        self.assertTrue(Reader._load_state(recovered.backup)['items'][key]['saved'])
+    def test_damaged_state_without_backup_starts_in_recovery_mode(self):
+        other=self.data/'damaged';root=other/'remote-reader';root.mkdir(parents=True);(root/'reader.json').write_text('[]')
+        recovered=Reader(other,self.net,lambda:self.time)
+        self.assertEqual(recovered.listing(),[]);self.assertIn('recovery mode',recovered.recovery_status()['message'])
+        self.assertTrue(recovered.damaged_file.is_file())
+    def test_orphaned_cached_item_is_preserved_and_isolated(self):
+        self.sub()
+        key=self.r.key(ORIGIN,IID)
+        del self.r.state['subscriptions'][self.item()['subscription']]
+        self.r.save()
+        recovered=Reader(self.data,self.net,lambda:self.time)
+        self.assertEqual(recovered.listing(),[])
+        self.assertIn(key,recovered.state['items'])
+        row=recovered.recovery_overview()['isolated'][0]
+        self.assertEqual(row['key'],key)
+        self.assertFalse(row['restorable'])
+        self.assertIn('missing',row['reason'])
+        with self.assertRaisesRegex(ValueError,'missing subscription'):
+            recovered.restore_isolated(key)
+
+    def test_non_object_cached_item_is_preserved_outside_live_items(self):
+        self.r.state['items']['broken']='unreadable record'
+        self.r.save()
+        recovered=Reader(self.data,self.net,lambda:self.time)
+        self.assertNotIn('broken',recovered.state['items'])
+        self.assertEqual(recovered.state['invalid_items']['broken'],'unreadable record')
+        self.assertEqual(recovered.recovery_overview()['invalid_item_count'],1)
+    def test_recovery_can_pause_without_deleting_and_restore_isolated_item(self):
+        sid=self.sub();key=self.r.key(ORIGIN,IID);self.r.isolate(key);self.r.pause(sid,True)
+        overview=self.r.recovery_overview();self.assertEqual(overview['paused'][0]['id'],sid);self.assertEqual(overview['isolated'][0]['key'],key)
+        self.assertIn(key,self.r.state['items']);self.r.pause(sid,False);self.r.restore_isolated(key)
+        self.assertTrue(self.r.state['subscriptions'][sid]['active']);self.assertEqual(len(self.r.listing()),1)
+    def test_backup_restore_preserves_replaced_state_and_uses_verified_data(self):
+        self.sub();key=self.r.key(ORIGIN,IID);self.r.mark(key,'saved',True);self.r.save()
+        self.r.mark(key,'saved',False);verified=self.r.backup.read_bytes();result=self.r.restore_backup()
+        self.assertIn('verified backup',result['message']);self.assertTrue(self.r.item(key)['saved'])
+        self.assertEqual(self.r.backup.read_bytes(),verified)
+        self.assertTrue(Reader._load_state(self.r.backup)['items'][key]['saved'])
+        self.assertTrue(self.r.damaged_file.is_file());self.assertIn('restored',self.r.recovery_status()['message'])
+        self.assertNotIn(ORIGIN,json.dumps(self.r.diagnostics()))
+
+    def test_save_preserves_an_invalid_reader_file_before_replacing_it(self):
+        rejected='{"items": []}'
+        self.r.file.write_text(rejected)
+        self.r.save()
+        copies=list(self.r.root.glob('reader.damaged-save-*.json'))
+        self.assertEqual(len(copies),1);self.assertEqual(copies[0].read_text(),rejected)
+        self.assertIsInstance(Reader._load_state(self.r.file),dict)
+        self.assertIn('preserved an invalid',self.r.recovery_status()['message'])
+    def test_overlapping_publication_and_reader_action_both_survive_reload(self):
+        import interactions as interaction_log
+        self.sub();key=self.r.key(ORIGIN,IID);entered=threading.Event();release=threading.Event();original=interaction_log.publication_entries
+        def delayed(*args,**kwargs):entered.set();release.wait(2);return original(*args,**kwargs)
+        current={'id':'0'*25+'3','version':1,'created':self.time,'updated':self.time,'stub_of':{'origin':ORIGIN,'id':IID,'version':1}}
+        interaction_log.publication_entries=delayed
+        try:
+            publication=threading.Thread(target=lambda:self.r.record_publications({}, {current['id']:current}));publication.start();self.assertTrue(entered.wait(1))
+            marker=threading.Thread(target=lambda:self.r.mark(key,'saved',True));marker.start();release.set();publication.join(2);marker.join(2)
+        finally:interaction_log.publication_entries=original;release.set()
+        reloaded=Reader(self.data,self.net,lambda:self.time)
+        self.assertTrue(reloaded.item(key)['saved']);self.assertIn('stub',{row['kind'] for row in reloaded.interactions()})
     def test_stub_target_plain_web_and_uncached_blyg_fallbacks(self):
         item={'doc':{'stub_of':{'url':'https://news.example/story','cited':{'excerpt':'A web headline'}}}}
         self.assertEqual(self.r.stub_target(item),{'version':None,'url':'https://news.example/story','label':'A web headline'})
@@ -121,6 +217,23 @@ class ReaderTests(unittest.TestCase):
         sid=self.sub();d=doc();d['updated']='2025-01-01T00:00:00Z';self.net.add(items=[d]);self.r.sync(sid);self.assertEqual(self.item()['doc']['updated'],'2026-01-01T00:00:00Z')
     def test_declared_media_without_html_is_cached_and_rendered(self):
         d=doc();d['media']=[{'url':'media/a.png','mime':'image/png'}];self.net.add(items=[d]);self.net.urls[ORIGIN+'media/a.png']=(b'image','image/png');self.sub();self.assertTrue(self.item()['has_visual_media']);self.assertIn('/reader-media/',self.r.rendered(self.item()['key']))
+        isolated=self.r.rendered(self.item()['key'],inline_assets=True);self.assertIn('src="data:image/png;base64,aW1hZ2U="',isolated);self.assertNotIn('/reader-media/',isolated)
+    def test_media_write_failure_does_not_lose_synced_item_or_watermark(self):
+        import reader
+        from unittest.mock import patch
+        sid=self.sub();updated=doc(version=2,text='Changed despite media failure');url=ORIGIN+'media/a.png'
+        updated['media']=[{'url':url,'mime':'image/png'}];self.net.add(items=[updated]);self.net.urls[url]=(b'image','image/png')
+        original=reader.atomic
+        def fail_asset(path,data):
+            if Path(path).parent==self.r.assets:raise OSError('media disk write failed')
+            return original(path,data)
+        with patch('reader.atomic',side_effect=fail_asset):result=self.r.sync(sid)
+        self.assertIn('1 changed items',result['message'])
+        self.assertIn('media disk write failed',self.r.state['subscriptions'][sid]['warnings'])
+        reloaded=Reader(self.data,self.net,lambda:self.time);key=self.r.key(ORIGIN,IID)
+        self.assertEqual(reloaded.state['watermarks'][key]['version'],2)
+        self.assertEqual(reloaded.item(key)['doc']['version'],2)
+        self.assertEqual(reloaded.item(key)['assets'],{})
     def test_failure_preserves_cached_content(self):
         sid=self.sub();before=copy.deepcopy(self.r.state['items']);self.net.urls={};self.r.sync(sid);self.assertEqual(before,self.r.state['items']);self.assertTrue(self.r.state['subscriptions'][sid]['error'])
     def test_rollback_and_stealth_edit_is_rejected(self):

@@ -23,6 +23,17 @@ class MetadataTests(unittest.TestCase):
   one=enrich(raw,'43.html',Path('/tmp'),published='2026-09-26T08:00:00Z')
   two=enrich(one,'43.html',Path('/tmp'),published='2027-01-01',modified='2026-09-27T08:00:00Z')
   soup=BeautifulSoup(two,'html.parser');self.assertEqual(soup.find('meta',property='article:published_time')['content'],'2026-09-26T08:00:00Z')
+ def test_article_image_replaces_managed_default_social_image(self):
+  with tempfile.TemporaryDirectory() as folder:
+   root=Path(folder);(root/'images').mkdir();Image.new('RGB',(400,400)).save(root/'images/self400.jpg');Image.new('RGB',(1200,630)).save(root/'images/post.jpg')
+   raw='<html><head><title>Post</title><meta property="og:image" content="https://example.com/images/self400.jpg"><meta name="twitter:image" content="https://example.com/images/self400.jpg"></head><body><article><h1>Post</h1><p><img src="/images/post.jpg" alt="Book cover"></p><p>A sufficiently long opening paragraph for the current description.</p></article></body></html>'
+   config={**__import__('configuration').DEFAULT_SETTINGS,'default_images':['/images/self400.jpg']}
+   soup=BeautifulSoup(enrich(raw,'44.html',root,config=config),'html.parser')
+   self.assertEqual(soup.find('meta',property='og:image')['content'],'https://example.com/images/post.jpg')
+   self.assertEqual(soup.find('meta',attrs={'name':'twitter:image'})['content'],'https://example.com/images/post.jpg')
+   self.assertEqual(soup.find('meta',property='og:image:alt')['content'],'Book cover')
+   self.assertEqual(soup.find('meta',property='og:image:width')['content'],'1200')
+   self.assertEqual(soup.find('meta',property='og:image:height')['content'],'630')
  def test_existing_generator_version_does_not_churn_on_app_upgrade(self):
   raw='<html><head><title>Post</title><meta name="generator" content="Blynger 0.2.0"></head><body><article><h1>Post</h1><p>Some sufficiently long words for an automatic description.</p></article></body></html>'
   updated=enrich(raw,'1.html',Path('/tmp'))

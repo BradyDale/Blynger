@@ -1,6 +1,7 @@
 import hashlib, json, re, subprocess, tempfile, unittest
 from pathlib import Path
 import xml.etree.ElementTree as ET
+from unittest.mock import patch
 from core import Studio, new_page, NS
 
 class StudioTests(unittest.TestCase):
@@ -14,6 +15,67 @@ class StudioTests(unittest.TestCase):
         subprocess.run(['git','add','.'],cwd=self.root,check=True); subprocess.run(['git','commit','-qm','Initial'],cwd=self.root,check=True)
         self.studio=Studio(self.root,self.base/'private')
     def tearDown(self): self.tmp.cleanup()
+    def test_write_mode_hides_only_the_duplicate_document_headline(self):
+        style=(Path(__file__).parent/'static/style.css').read_text()
+        self.assertIn('#editor > h1:first-child',style)
+        self.assertIn('display: none',style)
+
+    def test_root_security_headers_are_publishable(self):
+        self.assertTrue(self.studio.allowed('.htaccess'))
+        self.assertFalse(self.studio.allowed('.git/config'))
+    def test_damaged_studio_state_recovers_verified_backup_and_preserves_file(self):
+        draft=self.studio.create('Protected draft')
+        self.studio.save_draft(draft)
+        self.studio.save_state()
+        self.studio.file.write_text('{not json')
+        recovered=Studio(self.root,self.studio.data)
+        self.assertIn(draft['name'],recovered.state['drafts'])
+        self.assertIn('verified backup',recovered.studio_recovery_status()['message'])
+        self.assertTrue(recovered.damaged_state_file.is_file())
+        self.assertEqual(recovered.damaged_state_file.read_text(),'{not json')
+
+    def test_damaged_studio_state_without_backup_opens_recovery_mode(self):
+        other=self.base/'damaged-private'
+        other.mkdir()
+        (other/'state.json').write_text('[]')
+        recovered=Studio(self.root,other)
+        self.assertEqual(recovered.state['drafts'],{})
+        self.assertIn('recovery mode',recovered.studio_recovery_status()['message'])
+        self.assertTrue(recovered.damaged_state_file.is_file())
+
+    def test_malformed_generated_item_is_skipped_without_being_changed(self):
+        folder=self.root/'blyg/items'
+        folder.mkdir(parents=True)
+        bad=folder/'00000000000000000000000000.json'
+        bad.write_text('{bad')
+        reopened=Studio(self.root,self.studio.data)
+        self.assertEqual(bad.read_text(),'{bad')
+        self.assertEqual(reopened.studio_recovery_status()['invalid_public_items'],1)
+    def test_verified_studio_backup_can_be_restored_without_losing_replaced_state(self):
+        first=self.studio.create('First protected draft')
+        self.studio.save_draft(first)
+        self.studio.save_state()
+        second=self.studio.create('Later draft')
+        verified=self.studio.backup.read_bytes()
+        result=self.studio.restore_state_backup()
+        self.assertIn('verified backup',result['message'])
+        self.assertIn(first['name'],self.studio.state['drafts'])
+        self.assertNotIn(second['name'],self.studio.state['drafts'])
+        self.assertEqual(self.studio.backup.read_bytes(),verified)
+        self.assertNotIn(second['name'],self.studio._load_state(self.studio.backup)['drafts'])
+        self.assertTrue(self.studio.damaged_state_file.is_file())
+        replaced=json.loads(self.studio.damaged_state_file.read_text())
+        self.assertIn(second['name'],replaced['drafts'])
+
+    def test_save_preserves_an_invalid_studio_file_before_replacing_it(self):
+        rejected='{"drafts": []}'
+        self.studio.file.write_text(rejected)
+        self.studio.save_state()
+        copies=list(self.studio.data.glob('state.damaged-save-*.json'))
+        self.assertEqual(len(copies),1)
+        self.assertEqual(copies[0].read_text(),rejected)
+        self.assertIsInstance(self.studio._load_state(self.studio.file),dict)
+        self.assertIn('preserved an invalid',self.studio.studio_recovery_status()['message'])
     def test_migration_preserves_pages_ids_and_protocol(self):
         before={p.name:p.read_bytes() for p in self.root.glob('*.html')}; self.studio.migrate(); ids=dict(self.studio.state['ids']); self.studio.migrate()
         self.assertEqual(ids,self.studio.state['ids']); self.assertEqual(before,{p.name:p.read_bytes() for p in self.root.glob('*.html')})
@@ -21,7 +83,7 @@ class StudioTests(unittest.TestCase):
         for item in index['items']:
             self.assertRegex(item['id'],r'^[0-7][0-9a-hjkmnp-tv-z]{25}$')
             d=json.loads((self.root/'blyg/items'/f"{item['id']}.json").read_text()); self.assertEqual(d['content_hash'],'sha256:'+hashlib.sha256(d['content_md'].encode()).hexdigest()); self.assertEqual(d['updated'],d['changelog'][-1]['at'])
-            self.assertNotIn('title',d);self.assertNotIn('url',d);self.assertEqual(d['page'],'f/'+d['id']+'/')
+            self.assertNotIn('title',d);self.assertNotIn('url',d);self.assertEqual(d['kind'],'thread');self.assertEqual(d['transclusions'],[]);self.assertEqual(d['page'],'t/'+d['id']+'/')
         self.assertEqual({d['id'] for d in index['items']},{self.studio.state['ids']['1.html']})
         self.assertNotIn('index.html',self.studio.state['ids'])
         rss=ET.parse(self.root/'blyg/feed.xml'); self.assertIsNotNone(rss.find('./channel/{'+NS+'}manifest'))
@@ -40,7 +102,7 @@ class StudioTests(unittest.TestCase):
         self.studio.migrate();iid=self.studio.state['ids']['1.html']
         d=self.studio.create('Linking post');d['raw']=d['raw'].replace('Start writing here.','See [['+iid+']] for context.');self.studio.save_draft(d);self.studio.prepare()
         own=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{own}.json').read_text())
-        self.assertNotIn('transclusions',doc);self.assertIn('href="https://example.com/blyg/f/'+iid+'/"',doc['content_html']);self.assertNotIn('[[',doc['content_html'])
+        self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['transclusions'],[]);self.assertIn('href="https://example.com/blyg/t/'+iid+'/"',doc['content_html']);self.assertNotIn('[[',doc['content_html'])
 
     def test_explicit_version_directive_is_rejected(self):
         d=self.studio.create('Reserved syntax');d['raw']=d['raw'].replace('Start writing here.','![[00000000000000000000000000@v1]]');self.studio.save_draft(d)
@@ -87,6 +149,45 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.studio.create('Next')['name'],'43.html')
         self.assertEqual(self.studio.create('After that')['name'],'44.html')
         self.assertIn('Keep this too',(self.root/'2026-09-25-new-post.html').read_text())
+
+    def test_discard_unpublished_draft_releases_failed_prepare_id_and_number(self):
+        d=self.studio.create('Temporary');name=d['name'];iid='0'*25+'1';fid='0'*25+'2'
+        self.studio.state['ids'][name]=iid
+        self.studio.state['fragment_ids'][name]={'temporary':fid}
+        self.studio.state['item_titles'].update({iid:'Temporary',fid:'Fragment'})
+        self.studio.state['site_feed_titles'].update({iid:'Temporary',fid:'Fragment'})
+        self.studio.state['series']={'test-series':{'title':'Test','plug':'Test','description':'<p>Test.</p>','page':'series-test.html','members':[{'name':name,'attribute':'One'}]}}
+        self.studio.discard(name)
+        self.assertNotIn(name,self.studio.state['ids'])
+        self.assertNotIn(name,self.studio.state['fragment_ids'])
+        self.assertNotIn(iid,self.studio.state['item_titles']);self.assertNotIn(fid,self.studio.state['site_feed_titles'])
+        self.assertEqual(self.studio.state['series']['test-series']['members'],[])
+        self.assertEqual(self.studio.create('Replacement')['name'],name)
+
+    def test_never_published_deletion_needs_no_restore_and_reuses_number(self):
+        draft=self.studio.create('Build casualty');name=draft['name']
+        self.studio.delete_post(name)
+        self.assertNotIn(name,self.studio.state['deleted_posts'])
+        self.assertEqual(self.studio.create('Real post')['name'],name)
+
+    def test_new_draft_can_fill_unused_number_without_losing_identity_or_series(self):
+        (self.root/'4.html').write_text(new_page('Later','Later post.'))
+        draft=self.studio.create('Fill the gap');self.assertEqual(draft['name'],'5.html')
+        iid='0'*25+'1';self.studio.state['ids'][draft['name']]=iid
+        self.studio.state['series']={'test':{'title':'Test','plug':'Test','description':'<p>Test.</p>','page':'series-test.html','members':[{'name':draft['name'],'attribute':'Gap'}]}}
+        changed=self.studio.renumber_post(draft['name'],3)
+        self.assertEqual(changed['name'],'3.html');self.assertNotIn('5.html',self.studio.state['drafts'])
+        self.assertEqual(self.studio.state['ids']['3.html'],iid)
+        self.assertEqual(self.studio.state['series']['test']['members'][0]['name'],'3.html')
+        self.assertIn('https://example.com/3.html',self.studio.state['drafts']['3.html']['raw'])
+
+    def test_post_renumber_rejects_every_reserved_or_published_number(self):
+        draft=self.studio.create('New draft')
+        with self.assertRaisesRegex(ValueError,'already used or reserved'):self.studio.renumber_post(draft['name'],1)
+        second=self.studio.create('Second draft')
+        with self.assertRaisesRegex(ValueError,'already used or reserved'):self.studio.renumber_post(second['name'],int(draft['name'][:-5]))
+        with self.assertRaisesRegex(ValueError,'positive whole-number'):self.studio.renumber_post(second['name'],0)
+        with self.assertRaisesRegex(ValueError,'Only a new'):self.studio.renumber_post('1.html',7)
 
     def test_standalone_page_does_not_advance_post_sequence(self):
         self.studio.create_page('Archive for 2018','year-2018.html')
@@ -153,8 +254,8 @@ class StudioTests(unittest.TestCase):
 
     def test_fragment_dialog_uses_simple_break_language(self):
         script=(Path(__file__).parent/'static/app.js').read_text()
-        self.assertIn('fragmentEditor.addDivider()',script)
-        self.assertIn('fragmentEditor.removeDivider()',script)
+        self.assertIn('fragmentEditor.designate()',script)
+        self.assertIn('fragmentEditor.removeDesignation()',script)
         self.assertNotIn('Use section as fragment / ordinary prose',script)
 
     def test_center_control_and_published_alignment_are_preserved(self):
@@ -207,6 +308,20 @@ class StudioTests(unittest.TestCase):
     def test_review_ignores_stale_pending_paths_identical_to_baseline(self):
         self.studio.state['pending']=['1.html'];self.studio.save_state()
         self.assertNotIn('1.html',[c['path'] for c in self.studio.review()['changes']])
+    def test_pending_file_names_remain_valid_state(self):
+        self.studio.state['pending']=['1.html','blyg/feed.xml'];self.studio.save_state()
+        reopened=Studio(self.root,self.studio.data)
+        self.assertEqual(reopened.state['pending'],['1.html','blyg/feed.xml'])
+        self.assertIsNone(reopened.studio_recovery_status())
+    def test_current_commit_paths_use_the_cached_index(self):
+        original=self.studio.git
+        calls=[]
+        def observed(*args,**kwargs):
+            if args and args[0] in ('ls-tree','ls-files'):calls.append((args,kwargs))
+            return original(*args,**kwargs)
+        with patch.object(self.studio,'git',side_effect=observed):
+            first=self.studio.tree_paths('HEAD');second=self.studio.tree_paths('HEAD')
+        self.assertEqual(first,second);self.assertEqual([call[0][0] for call in calls],['ls-files'])
     def test_review_and_publish_include_explicit_file_removals(self):
         obsolete=self.root/'obsolete.html';obsolete.write_text(new_page('Obsolete','<p>Remove me.</p>'))
         self.studio.git('add','obsolete.html');self.studio.git('commit','-m','Add obsolete fixture')
@@ -220,12 +335,14 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn('obsolete.html',self.studio.git('ls-tree','-r','--name-only','HEAD').splitlines())
         self.assertFalse(self.studio.publication_status()['ready'])
     def test_publication_status_only_lights_for_publishable_work(self):
-        self.assertFalse(self.studio.publication_status()['ready'])
+        self.assertFalse(self.studio.publication_status()['ready']);self.assertEqual(self.studio.publication_status()['state'],'up_to_date')
         d=self.studio.page('1.html');d['raw']=d['raw'].replace('Original','Drafted');self.studio.save_draft(d)
-        self.assertTrue(self.studio.publication_status()['ready'])
+        self.assertTrue(self.studio.publication_status()['ready']);self.assertEqual(self.studio.publication_status()['state'],'saved_locally')
         self.studio.discard('1.html');self.assertFalse(self.studio.publication_status()['ready'])
         (self.root/'notes.private').write_text('not publishable');self.assertFalse(self.studio.publication_status()['ready'])
-        (self.root/'1.html').write_text(new_page('Changed','<p>Changed outside.</p>'));self.assertTrue(self.studio.publication_status()['ready'])
+        (self.root/'1.html').write_text(new_page('Changed','<p>Changed outside.</p>'));self.assertTrue(self.studio.publication_status()['ready']);self.assertEqual(self.studio.publication_status()['state'],'prepared_locally')
+        self.studio.state['pending_publication']={'commit':'example'};status=self.studio.publication_status()
+        self.assertEqual(status['state'],'uncertain');self.assertTrue(status['retryable'])
     def test_published_edit_announces_each_protocol_event_but_site_feed_stays_calm(self):
         self.studio.migrate(); self.studio.state['published']={p.stem:json.loads(p.read_text()) for p in (self.root/'blyg/items').glob('*.json') if p.name!='index.json'}; self.studio.remember(self.studio.state['published'])
         d=self.studio.page('1.html'); d['raw']=d['raw'].replace('Original','Revision'); self.studio.save_draft(d); self.studio.prepare(); self.studio.prepare()
@@ -270,11 +387,14 @@ class StudioTests(unittest.TestCase):
         self.assertIn('class="tk-robot"',html)
         self.assertNotIn('✦ TK assistant',html)
         self.assertIn('id="help"',html)
+        self.assertIn('id="recovery"',html)
         static=Path(__file__).parent/'static';js=(static/'app.js').read_text()+(static/'reader-ui.js').read_text()
         compact_js=re.sub(r'\s+','',js)
         def assert_compact(value):self.assertIn(re.sub(r'\s+','',value),compact_js)
-        self.assertIn("['versions','mainFragment','quote','tk','fragment','removeFragment'",compact_js)
+        self.assertIn("['versions','mainFragment','transclude','respondStub','quote','tk','fragment','removeFragment'",compact_js)
         assert_compact("modal('Blynger Help'")
+        for recovery_text in ("modal('Blynger Recovery'", "api('retry-publication'", "api('reader-pause'", "api('reader-restore-backup'", 'Copy redacted diagnostics'):
+            assert_compact(recovery_text)
         assert_compact("'Last sync: '+BlyngerReaderUI.syncTime")
         self.assertNotIn("+' took '+",js)
         assert_compact("workspace==='saved'?'saved'")
@@ -323,6 +443,30 @@ class StudioTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.studio.publish(review['signature'])
         commit=self.studio.state['pending_publication']['commit'];self.assertEqual(self.studio.git('rev-parse','HEAD'),commit);hook.unlink()
         result=self.studio.publish(review['signature']);self.assertIn('push completed',result['message']);self.assertNotIn('pending_publication',self.studio.state);self.assertEqual(self.studio.git('rev-parse','HEAD'),commit)
+    def test_failed_push_retry_preserves_a_later_draft(self):
+        remote=self.base/'remote.git';subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True);self.studio.git('remote','add','website',str(remote));self.studio.migrate();review=self.studio.review()
+        hook=remote/'hooks'/'pre-receive';hook.write_text('#!/bin/sh\nexit 1\n');hook.chmod(0o755)
+        with self.assertRaises(ValueError):self.studio.publish(review['signature'])
+        later=self.studio.create('Written after the failed push')
+        self.studio.state['pins']['queued-after-failure']=['3'];self.studio.save_state();hook.unlink()
+        self.studio.publish(review['signature'])
+        self.assertIn(later['name'],self.studio.state['drafts'])
+        self.assertIn('Start writing here.',self.studio.state['drafts'][later['name']]['raw'])
+        self.assertEqual(self.studio.state['pins']['queued-after-failure'],['3'])
+    def test_failed_push_retry_records_the_approved_version_not_later_edits(self):
+        remote=self.base/'remote.git';subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True);self.studio.git('remote','add','website',str(remote))
+        post=self.studio.create('Approved post');post['raw']=post['raw'].replace('Start writing here.','Approved words.');self.studio.save_draft(post);self.studio.prepare(review=False);review=self.studio.review()
+        hook=remote/'hooks'/'pre-receive';hook.write_text('#!/bin/sh\nexit 1\n');hook.chmod(0o755)
+        with self.assertRaises(ValueError):self.studio.publish(review['signature'])
+        later=self.studio.page(post['name']);later['raw']=later['raw'].replace('Approved words.','Later unpublished words.');self.studio.save_draft(later)
+        with self.assertRaisesRegex(ValueError,'already being sent'):self.studio.prepare(review=False)
+        hook.unlink()
+        self.studio.publish(review['signature'])
+        iid=self.studio.state['ids'][post['name']]
+        hosted=json.loads(subprocess.run(['git','--git-dir',str(remote),'show','master:blyg/items/'+iid+'.json'],capture_output=True,check=True,text=True).stdout)
+        self.assertIn('Approved words.',hosted['content_html']);self.assertNotIn('Later unpublished words.',hosted['content_html'])
+        self.assertEqual(self.studio.state['published'][iid],hosted)
+        self.assertIn('Later unpublished words.',self.studio.state['drafts'][post['name']]['raw'])
     def test_media_immutable(self):
         from PIL import Image
         Image.new('RGB',(2,2),'red').save(self.root/'images/test.png')
