@@ -58,3 +58,11 @@ The remaining large modules should be reduced incrementally, along tested
 seams, rather than rewritten wholesale. `core.py` in particular contains the
 oldest behavior and protects a hand-built public site; clarity matters, but a
 large risky rearrangement would defeat the purpose.
+
+## Webmentions
+
+Before changing Blynger's Webmention system, read
+[`docs/WEBMENTIONS_AGENT_GUIDE.md`](docs/WEBMENTIONS_AGENT_GUIDE.md). It records
+the architectural assumptions that failed during implementation, the security
+boundaries that survived review, and a recommended build and activation order
+for other Blygger-compatible clients.

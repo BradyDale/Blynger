@@ -8,6 +8,10 @@ For a fuller explanation of the static-first design and how its workspaces and
 Blyg features fit together, see [How Blynger Works](HOW_BLYNGER_WORKS.md).
 Developers and reviewers can start with [DEVELOPMENT.md](DEVELOPMENT.md) for a
 short code map, module boundaries, and the readability rules used for new work.
+Agents implementing Webmentions for another Blygger client should also read
+[the Webmentions agent field guide](docs/WEBMENTIONS_AGENT_GUIDE.md), which
+records the failed assumptions, security lessons, and deployment checks learned
+while building and activating Blynger's system.
 
 ![Blynger’s desktop interface](docs/blynger-ui.svg)
 

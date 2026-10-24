@@ -1668,15 +1668,18 @@ At every stopping point, report:
 - The final gate retained the Stage 11 live-health evidence and passed all
   **539 Python tests**, JavaScript syntax, Editor safety, Reader UI, Thicket UI,
   release-metadata consistency, and `git diff --check`.
-- Webmentions implementation is complete. Later work on Blynger's own writing
-  as a Reading source and the broader Thicket/UI redesign is separate product
-  work, not another Webmentions activation stage.
+- Webmentions implementation is complete. Later work on local authoring
+  shortcuts and the broader Thicket/UI redesign is separate product work, not
+  another Webmentions activation stage.
 
-### Deferred after Webmentions — own writing in Reading
+### Deferred after Webmentions — local right-click responses
 
-- Add “your own blyg” as a Reading source so published Posts and Openers can be
-  used like other Blyg items without subscribing to the public site.
-- Consider context-menu shortcuts on a local Post or Opener for **Stub** and
-  **Transclude** into a new Post or new Opener, plus the already-planned Quote,
-  Link, and Fork-from-a-pin actions. Keep this out of the Stage 10 activation
-  change set so the new authoring path receives its own UX and safety review.
+- Do **not** add the author's own site as a Reading source. Blynger already has
+  the authoritative local records needed for this workflow.
+- Add a context menu to an existing local published Post or Opener with
+  **Stub**, **Transclude**, and **Fork** actions. Each action should open a new
+  Post or Opener with exact immutable source/version provenance. Fork must be
+  offered only when the source has an eligible pinned version.
+- Treat this as a new authoring path with its own UX and safety review. It must
+  never silently publish, alter the source item, or mistake a mutable working
+  draft for the cited public version.
