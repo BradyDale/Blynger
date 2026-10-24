@@ -1,4 +1,50 @@
+## 0.13.0 — Webmentions
+
+- Send Webmentions in the background after a successful publication and show delivery results in **Thicket** without delaying writing or publishing.
+- Receive, verify, and privately synchronize incoming Webmentions through the the configured Git host endpoint. Thicket shows only verified activity, tracks unread responses without duplicating reverification, and supports Off, Open, deny-list, and allow-list policies.
+- Keep the public receiver limited to exact published targets, process untrusted sources with bounded scheduled work, and preserve last-known-good data through failures and restarts.
+- Give new Openers Central Time headings while leaving older date-only and Roman-numeral headings unchanged.
+- Keep one stalled DNS lookup from delaying every unrelated Webmention fetch. Bounded requests now share same-host resolution while using a small fixed resolver pool, preserving the thread limit and the total request deadline.
+- Add `💭` to Reader's private responses, beside `🤯`, `🙄`, `👎`, `😂`, and `❓`. Like stays its own `👍` action. One emoji response can be active per item. The new response is local only and is not published as Blyg metadata.
+- Add three private volume responses: Mute (`🔇`), Quieter (`🔉`), and Louder (`🔊`). They follow the same local-only, one-response-at-a-time behavior.
+- Prepare staged writing inside an isolated state snapshot so every intermediate
+  save and every interrupted/reopened preparation retains the complete private
+  Drafts collection, including unrelated Posts and Openers.
+- Build automatic Series publication dependencies from the published Series
+  page rather than an unstaged private revision. After publication, restore the
+  private Series prose rebased onto the new managed installment list; an
+  explicitly staged Series edit still publishes normally.
+- Complete an independent Webmention security review and fix its three
+  reproduced defects: recover outgoing work after a missing queue file, prevent
+  cross-process queue overwrites, keep verified inbound retention bounded, and
+  reject a Blyg 0.4-only source relation from 0.3 documents.
+- Treat newer verified-inbound exports as strictly ordered authoritative
+  snapshots, so retention also bounds the Mac archive and a pruned source can
+  reappear without a stale receipt-counter conflict; reject rollback and
+  altered same-revision replays.
+- Put Webmention DNS resolution, redirects, headers, and response bodies under
+  one hard end-to-end deadline, actively interrupting slow remote sources and
+  delivery endpoints without changing ordinary Reader fetch behavior.
+- Make inbound verification and target-registry locks reject symlinks, hard
+  links, and broader-than-owner permissions; add crash, concurrency, storage,
+  corruption, replay, rollback, and last-good recovery coverage across the
+  complete inbound pipeline.
+- Show a Series name beside a Post title only on the homepage. Individual Post
+  pages and Series indexes now use the plain Post title without a redundant
+  `: Series name` suffix.
+- Make **Save** return staged writing to private Drafts, while **Stage** remains
+  the one-way action that includes writing in the next publication.
+- Separate saving from publishing intent. **Save** keeps writing privately; **Stage** is the only editor action that adds a draft to **Review & publish**.
+- Move Save and Stage into the lower-left of the document, remove Save and Queue from the top toolbar, and distinguish the actions with green and olive-yellow controls.
+- Preserve older drafts as unstaged during migration, publish only the explicitly staged set and its generated dependencies, and clear only work represented by a successful publication.
+- Safely unwind generated review files and automatic Series dependencies when staged work is changed or unstaged, preventing an abandoned review from leaking into a later publication.
+
 ## 0.12.0 — Safer publishing and recovery
+
+- Add a dedicated **Drafts** workspace that gathers every locally saved Post, Opener, and Page, shows a live count, and reopens saved writing directly after an app restart.
+- Let the Openers editor discard one never-published draft Opener without removing the aggregate draft or any published entry.
+- Let an author deliberately remove a published Opener from the aggregate page while preserving its Blyg item, identity, and history.
+- Skip cloud-evicted generated Blyg item files during startup identity recovery, so an operating-system or sync update cannot freeze Blynger while it tries to download the published archive.
 
 - Prepare publication reviews in the background so large sites no longer leave the native window waiting on one long request or produce a misleading **Load failed** message.
 - Keep the interface responsive while preparation and hosted-version checks run, and retain the existing guided recovery messages when preparation finds a fragment problem.
@@ -12,6 +58,8 @@
 - Treat a Reader media-write failure as an isolated warning and save synchronized items and watermarks in a final durability step even when later sync work fails.
 - Add separate **Transclude** and **Respond / Stub** actions to the Post editor. Each accepts one Blyg item permalink, imports only that verified item without subscribing to or crawling its source, and inserts its protected snapshot; only **Respond / Stub** records a permanent response target.
 - Add regression coverage for long-running review preparation and for reopening state that contains pending filenames.
+- Normalize browser-only Opener HTML before validating and embedding durable fragment markers, preventing harmless editor attributes and paste cleanup from producing a false anchor-mismatch error.
+- Move the final SSH availability and hosted-version check into the background publication job, so **Publish** closes immediately even when the server is slow or unavailable; failures remain recoverable and are reported after the window closes.
 
 Recovery note: diagnosis preserved the pre-finish snapshot as `state.preserved-backup-c43c718-20261017-132006.json`. It is for recovery inspection only and must not be restored wholesale because it contains an already-completed publication marker. All visible writing in its sixteen draft records has been confirmed present in the published pages.
 

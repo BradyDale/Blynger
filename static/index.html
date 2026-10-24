@@ -25,18 +25,29 @@
           <button id="postsNav" data-workspace="posts" class="active">Posts</button>
           <button id="openersNav" data-workspace="openers">Openers</button>
           <button id="pagesNav" data-workspace="pages">Pages</button>
+          <button
+            id="draftsNav"
+            data-workspace="drafts"
+            title="Locally saved writing that has not been published"
+          >
+            Drafts
+          </button>
           <button id="imagesNav" data-workspace="images">Images</button>
           <button id="readerNav" data-workspace="reader">Reader</button>
           <button id="savedNav" data-workspace="saved">Saved</button>
+          <button id="thicketNav" data-workspace="thicket">Thicket</button>
         </nav>
         <div class="toolbar" id="authorToolbar">
           <button id="new">▤ New post</button
           ><button id="newOpener" hidden>New opener</button
           ><button id="newPage">▣ New page</button><i></i>
-          <button id="save">▣ Save draft</button><button id="preview">◉ Preview</button
-          ><button id="images">▧ Insert image</button
+          <button id="preview">◉ Preview</button><button id="images">▧ Insert image</button
           ><button id="versions">◷ Versions</button
-          ><button id="mainFragment" title="Publish this section as a reusable fragment · Control+Shift+F">Reusable fragment</button
+          ><button
+            id="mainFragment"
+            title="Publish this section as a reusable fragment · Control+Shift+F"
+          >
+            Reusable fragment</button
           ><button id="transclude">Transclude</button
           ><button id="respondStub">Respond / Stub</button
           ><button id="quote">❞ Quote post</button
@@ -44,8 +55,7 @@
             <span class="tk-robot" aria-hidden="true"></span>TK assistant
           </button>
           <div class="spacer"></div>
-          <button id="queue">Queue</button
-          ><button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
+          <button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
         </div>
         <div class="workspace" id="workspace">
           <aside id="libraryPane">
@@ -79,10 +89,6 @@
                   <label id="seriesAttributeLabel"
                     >Detail <input id="seriesAttribute" placeholder="Chapters 1.12–1.15"
                   /></label>
-                  <small
-                    >Saved with the draft; Series pages and navigation are prepared when you
-                    review publication.</small
-                  >
                 </div>
               </div>
               <div>
@@ -104,7 +110,11 @@
               ><button id="center" aria-pressed="false">Center</button
               ><button id="blockquote">❞ Blockquote</button
               ><button data-format="insertUnorderedList">• List</button
-              ><button id="fragment" title="Publish this section as a reusable fragment · Control+Shift+F">Reusable fragment</button
+              ><button
+                id="fragment"
+                title="Publish this section as a reusable fragment · Control+Shift+F"
+              >
+                Reusable fragment</button
               ><button id="removeFragment">Make ordinary prose</button>
             </div>
             <div
@@ -129,10 +139,12 @@
               hidden
             ></textarea>
             <div class="document-foot">
-              <span>✎ Drafts stay on this Mac until you publish.</span
+              <div class="draft-actions"><button id="save">Save</button><button id="stage" aria-pressed="false">Stage</button></div
+              ><span>✎ Drafts stay on this Mac until staged and published.</span
               ><label id="pinPlan" class="pin-plan" hidden
                 ><input id="pinOnPublish" type="checkbox" /> Pin this version when
                 published</label
+              ><button id="manageDraftOpeners" hidden>Manage Openers…</button
               ><button id="revert">Revert to file</button><span id="saveState">Ready</span>
             </div>
           </section>
@@ -199,6 +211,49 @@
               are never added to the website, feeds, or public source export.
             </div>
           </section>
+          <section id="thicketView" class="thicket-view" hidden>
+            <div class="document-heading">
+              <div>
+                <div class="eyebrow">LAST 24 HOURS</div>
+                <h1>Thicket</h1>
+                <div class="filename">Incoming and outgoing Webmention activity.</div>
+              </div>
+            </div>
+            <div class="thicket-dashboard" aria-label="Webmentions in the last 24 hours">
+              <section>
+                <b>OUT</b><strong id="thicketOutCount">—</strong>
+                <span>sent successfully</span>
+                <button id="thicketFailed" class="thicket-failed" hidden></button>
+              </section>
+              <section>
+                <b>IN</b><strong id="thicketInCount">—</strong>
+                <span id="thicketInCaption">Checking incoming activity…</span>
+              </section>
+            </div>
+            <div class="thicket-ledger">
+              <div class="thicket-ledger-head">
+                <h2>Recent notifications</h2>
+                <span
+                  >Outgoing copies a report. Incoming opens its source; the circle marks it
+                  read.</span
+                >
+              </div>
+              <div id="thicketEntries"></div>
+              <button id="thicketMore" class="thicket-more" hidden>
+                Show earlier notifications
+              </button>
+            </div>
+            <div class="thicket-foot">
+              <span
+                ><i id="thicketStatusLight"></i
+                ><span id="thicketServiceStatus">Checking Webmention service…</span></span
+              >
+              <span
+                ><button id="thicketPause" class="thicket-pause">Pause outgoing</button
+                ><span>Newest first</span></span
+              >
+            </div>
+          </section>
         </div>
         <footer class="statusbar">
           <span id="status" role="status">Opening your site…</span
@@ -228,6 +283,7 @@
     <script src="/static/editor-safety.js"></script>
     <script src="/static/reader-frame.js"></script>
     <script src="/static/reader-ui.js"></script>
+    <script src="/static/thicket-ui.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

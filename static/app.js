@@ -174,7 +174,7 @@ async function run(fn) {
 }
 $('closeDialog').onclick = () => $('dialog').close();
 function syncPublishButton() {
-  const ready = dirty || publicationReady,
+  const ready = publicationReady,
     b = $('publish');
   b.classList.toggle('ready', ready);
   b.disabled = publishing || publicationInFlight || !ready;
@@ -189,7 +189,11 @@ async function updatePublicationState() {
     status('Published successfully.');
     await refresh();
   }
-  if (state.id && state.id !== lastPublicationJob && ['failed', 'uncertain'].includes(state.state)) {
+  if (
+    state.id &&
+    state.id !== lastPublicationJob &&
+    ['failed', 'uncertain'].includes(state.state)
+  ) {
     lastPublicationJob = state.id;
     error(Error(state.message));
   }
@@ -271,7 +275,7 @@ function applySource() {
   $('visualTab').classList.add('active');
   $('sourceTab').classList.remove('active');
   count();
-  status('HTML changes applied to Write. Save or queue the draft when ready.');
+  status('HTML changes applied to Write. Save or stage the draft when ready.');
 }
 function capture() {
   const s = window.getSelection();
@@ -544,7 +548,9 @@ function renderPages() {
       ? !p.main && p.kind === 'post' && (postSort === 'deleted' ? p.deleted : !p.deleted)
       : currentWorkspace === 'pages'
         ? p.kind === 'page' || (p.main && p.name !== 'openers.html')
-        : false,
+        : currentWorkspace === 'drafts'
+          ? p.draft && !p.deleted
+          : false,
   );
   if (currentWorkspace === 'posts')
     shown.sort(
@@ -555,6 +561,8 @@ function renderPages() {
               String(a[postSort === 'deleted' ? 'updated' : postSort] || ''),
             ),
     );
+  if (currentWorkspace === 'drafts')
+    shown.sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
   $('pages').replaceChildren();
   for (const p of shown) {
     if (!(p.title + ' ' + p.name).toLowerCase().includes(q)) continue;
@@ -572,7 +580,17 @@ function renderPages() {
         ? ' · ' +
           (postSort === 'created' ? 'created ' : 'updated ') +
           shortDate(p[postSort === 'deleted' ? 'updated' : postSort])
-        : '';
+        : currentWorkspace === 'drafts'
+          ? ' · ' +
+            (p.name === 'openers.html'
+              ? 'Openers'
+              : p.kind === 'page' || p.main
+                ? 'Page'
+                : 'Post') +
+            ' · updated ' +
+            shortDate(p.updated) +
+            (p.draft_state ? ' · ' + p.draft_state : '')
+          : '';
     b.innerHTML =
       '<span class="icon">' +
       (p.main || p.kind === 'page' ? '▣' : '▤') +
@@ -588,15 +606,19 @@ function renderPages() {
   }
   if (!$('pages').children.length)
     $('pages').textContent =
-      postSort === 'deleted'
-        ? 'No deleted posts.'
-        : 'No matching ' + (currentWorkspace === 'posts' ? 'posts.' : 'pages.');
+      currentWorkspace === 'drafts'
+        ? 'No saved drafts.'
+        : postSort === 'deleted'
+          ? 'No deleted posts.'
+          : 'No matching ' + (currentWorkspace === 'posts' ? 'posts.' : 'pages.');
 }
 async function refresh() {
   const request = ++refreshRevision,
     result = await Promise.all([api('pages'), api('settings'), api('series')]);
   if (request !== refreshRevision) return;
   pages = result[0];
+  const draftCount = pages.filter((p) => p.draft && !p.deleted).length;
+  $('draftsNav').textContent = 'Drafts' + (draftCount ? ' (' + draftCount + ')' : '');
   const s = result[1];
   siteOrigin = s.site;
   seriesList = result[2];
@@ -637,7 +659,7 @@ async function openPage(name) {
   }
   page = result[0];
   const settings = result[1];
-  currentWorkspace = workspaceForPage(page);
+  if (currentWorkspace !== 'drafts') currentWorkspace = workspaceForPage(page);
   showWriting();
   editRevision += 1;
   mode = 'visual';
@@ -660,12 +682,21 @@ async function openPage(name) {
       page.name,
     );
   $('renumberPost').hidden = page.kind !== 'post' || !page.new || !!page.deleted;
+  $('manageDraftOpeners').hidden = page.name !== 'openers.html';
   $('deletePost').textContent = page.deleted ? 'Restore post…' : 'Delete post…';
   $('editor').contentEditable = page.deleted ? 'false' : 'true';
-  for (const id of ['save', 'queue', 'preview', 'images', 'sourceTab'])
+  for (const id of ['save', 'stage', 'preview', 'images', 'sourceTab'])
     $(id).disabled = !!page.deleted;
   $('tk').disabled = !!page.deleted || page.kind !== 'post';
-  for (const id of ['versions', 'mainFragment', 'transclude', 'respondStub', 'quote', 'fragment', 'removeFragment'])
+  for (const id of [
+    'versions',
+    'mainFragment',
+    'transclude',
+    'respondStub',
+    'quote',
+    'fragment',
+    'removeFragment',
+  ])
     $(id).disabled = !!page.deleted || page.kind !== 'post';
   fragmentEditor.layer.hidden = page.kind !== 'post' && page.name !== 'openers.html';
   $('source').value = page.raw;
@@ -715,9 +746,11 @@ async function openPage(name) {
     $('draftBadge').textContent = 'EDITING';
     $('saveState').textContent = 'Unsaved repair';
   } else {
-    $('draftBadge').textContent = page.draft ? 'DRAFT' : 'LOCAL';
-    $('saveState').textContent = page.draft ? 'Saved draft' : 'Ready';
+    $('draftBadge').textContent = page.staged ? 'STAGED' : page.draft ? 'DRAFT' : 'LOCAL';
+    $('saveState').textContent = page.staged ? 'Staged' : page.draft ? 'Saved' : 'Ready';
   }
+  $('stage').setAttribute('aria-pressed', String(!!page.staged));
+  $('revert').textContent = page.new ? 'Discard draft' : 'Revert to published file';
   renderPages();
   count();
   status(
@@ -768,9 +801,11 @@ async function saveOnce(clearFragments = false, repairFragmentMarkers = false) {
   const fresh = await api('page?name=' + encodeURIComponent(name));
   if (page !== target || editRevision !== revision) return result;
   page = fresh;
+  $('manageDraftOpeners').hidden = page.name !== 'openers.html';
   dirty = false;
-  $('saveState').textContent = 'Draft saved';
-  $('draftBadge').textContent = 'DRAFT';
+  $('saveState').textContent = page.staged ? 'Staged' : 'Saved';
+  $('draftBadge').textContent = page.staged ? 'STAGED' : 'DRAFT';
+  $('stage').setAttribute('aria-pressed', String(!!page.staged));
   status(result.message);
   await refresh();
   return result;
@@ -789,7 +824,18 @@ async function requireSaved() {
   if (dirty) await save();
   if (dirty) throw Error('Newer edits remain unsaved. Save them before continuing.');
 }
-$('save').onclick = () => run(() => save(false));
+async function savePrivately() {
+  await save(false);
+  if (!page || readerActive || !page.draft || !page.staged) return;
+  const result = await api('stage', { name: page.name, staged: false });
+  page.staged = false;
+  $('stage').setAttribute('aria-pressed', 'false');
+  $('draftBadge').textContent = 'DRAFT';
+  $('saveState').textContent = dirty ? 'Newer unsaved changes' : 'Saved';
+  if (!dirty) status(result.message);
+  await refresh();
+}
+$('save').onclick = () => run(savePrivately);
 $('search').oninput = renderPages;
 for (const button of document.querySelectorAll('#postSort button'))
   button.onclick = () => {
@@ -804,20 +850,21 @@ $('pinOnPublish').onchange = () => {
     mark();
   }
 };
-$('queue').onclick = () =>
+$('stage').onclick = () =>
   run(async () => {
     if (!page || readerActive) return;
-    const pending = dirty || page.draft;
     await requireSaved();
-    if (!pending) {
-      status('No changes to queue.');
+    if (!page.draft) {
+      status('Save this writing before staging it.');
       return;
     }
-    await updatePublicationState();
-    status(
-      (page.title || page.name) +
-        ' is saved for the next publication. You can keep working elsewhere.',
-    );
+    const result = await api('stage', { name: page.name, staged: true });
+    page = await api('page?name=' + encodeURIComponent(page.name));
+    $('stage').setAttribute('aria-pressed', String(!!page.staged));
+    $('draftBadge').textContent = page.staged ? 'STAGED' : 'DRAFT';
+    $('saveState').textContent = page.staged ? 'Staged' : 'Saved';
+    status(result.message);
+    await refresh();
   });
 $('new').onclick = () => {
   modal(
@@ -874,7 +921,7 @@ $('createSeries').onclick = () => {
     '<label>Series title<input id="seriesTitle" placeholder="October of Zarathustra"></label>' +
       '<label>Short plug<input id="seriesPlug" placeholder="Zarathustra"></label>' +
       '<label>Description<textarea id="seriesDescription" rows="6" placeholder="What is this series for?"></textarea></label>' +
-      '<p class="hint">Blynger will detect existing posts whose headlines contain the series title. It will create a normal static Page and queue the member pages for review.</p>' +
+      '<p class="hint">Blynger will detect existing posts whose headlines contain the series title. It will create a normal static Page and include required member pages when the work is staged.</p>' +
       '<div class="dialog-actions"><button id="confirmCreateSeries">Create series draft</button></div>',
   );
   $('seriesTitle').focus();
@@ -1258,7 +1305,15 @@ $('migrate').onclick = () => {
 };
 $('settings').onclick = () =>
   run(async () => {
-    const s = await api('configuration');
+    const [s, incomingPolicy] = await Promise.all([
+      api('configuration'),
+      api('inbound-webmentions-policy').catch((error) => ({
+        available: false,
+        error: error.message,
+        mode: 'off',
+        domains: [],
+      })),
+    ]);
     const field = (id, label, value) =>
       '<label>' +
       label +
@@ -1288,8 +1343,35 @@ $('settings').onclick = () =>
         field('ssh_user', 'SSH account name', s.ssh_user) +
         field('hostname', 'SSH hostname', s.hostname) +
         field('remote_path', 'Remote repository path', s.remote_path) +
-        '<p class="hint">Blynger stores only the key’s location, never its contents.</p><div id="connectionResult"></div><div class="dialog-actions"><button id="saveSettings">Save settings</button><button id="testConnection">Test connection</button></div>',
+        '<p class="hint">Blynger stores only the key’s location, never its contents.</p>' +
+        '<h3>Incoming Webmentions</h3>' +
+        (incomingPolicy.available
+          ? '<label>Policy<select id="incomingPolicyMode"><option value="off">Off</option><option value="open">Open</option><option value="denylist">Deny list</option><option value="allowlist">Allow list</option></select></label><label>Sites (one hostname per line)<textarea id="incomingPolicyDomains" rows="4"></textarea></label><p class="hint">Deny list silently ignores listed sites. Allow list silently ignores every site not listed.</p><button id="saveIncomingPolicy">Save incoming policy</button>'
+          : '<p class="notice error">Incoming policy controls are unavailable: ' +
+            esc(incomingPolicy.error || 'not configured') +
+            '</p>') +
+        '<div id="connectionResult"></div><div class="dialog-actions"><button id="saveSettings">Save settings</button><button id="testConnection">Test connection</button></div>',
     );
+    if (incomingPolicy.available) {
+      $('incomingPolicyMode').value = incomingPolicy.mode;
+      $('incomingPolicyDomains').value = incomingPolicy.domains.join('\n');
+      $('saveIncomingPolicy').onclick = () =>
+        run(async () => {
+          const mode = $('incomingPolicyMode').value,
+            domains = $('incomingPolicyDomains').value
+              .split(/\s+/)
+              .map((value) => value.trim())
+              .filter(Boolean);
+          if (!confirm('Change incoming Webmentions to ' + mode + '?')) return;
+          const result = await api('inbound-webmentions-policy', {
+            action: 'set',
+            mode,
+            domains,
+          });
+          $('incomingPolicyDomains').value = result.domains.join('\n');
+          status('Incoming Webmention policy saved.');
+        });
+    }
     $('saveSettings').onclick = () =>
       run(async () => {
         const data = {};
@@ -1465,15 +1547,84 @@ $('revert').onclick = () =>
     if (
       !page ||
       !confirm(
-        'Discard this saved draft and unsaved edits? The existing site file will remain as it is.',
+        page.new
+          ? 'Discard this unpublished draft and release its post number?'
+          : 'Discard this saved draft and unsaved edits? The published site file will remain as it is.',
       )
     )
       return;
+    const discarded = page;
     const name = page.new ? 'index.html' : page.name;
+    const wasDrafts = currentWorkspace === 'drafts';
     await api('discard', { name: page.name });
     dirty = false;
     await refresh();
-    await openPage(name);
+    if (wasDrafts) {
+      const next = pages.find((candidate) => candidate.draft && !candidate.deleted);
+      if (next) await openPage(next.name);
+      else if (discarded.new && discarded.name !== 'openers.html')
+        await switchWorkspace('posts');
+      else {
+        currentWorkspace = workspaceForPage(discarded);
+        await openPage(name);
+      }
+    } else await openPage(name);
+  });
+
+$('manageDraftOpeners').onclick = () =>
+  run(async () => {
+    if (!page || page.name !== 'openers.html') return;
+    await requireSaved();
+    const entries = (await api('fragment-objects?name=openers.html')).filter(
+      (entry) => entry.discardable || entry.removable,
+    );
+    modal(
+      'Manage Openers',
+      '<p><b>Discard</b> erases a never-published draft. <b>Remove from page</b> creates a draft that takes a published Opener off the aggregate page while preserving its Blyg identity and history.</p><label>Find Opener<input id="draftOpenerSearch" placeholder="Date or text"></label><div id="draftOpenerRows" class="subscription-rows"></div><div class="dialog-actions"><button id="closeDraftOpeners">Done</button></div>',
+    );
+    const rows = $('draftOpenerRows');
+    if (!entries.length) rows.textContent = 'No Openers found.';
+    for (const entry of entries) {
+      const row = document.createElement('div');
+      row.className = 'subscription-row';
+      const words = document.createElement('span');
+      const title = document.createElement('b');
+      title.textContent = entry.date_label || 'Draft Opener';
+      const summary = document.createElement('small');
+      const holder = document.createElement('div');
+      holder.innerHTML = entry.html;
+      summary.textContent = holder.textContent.trim().slice(0, 180);
+      words.append(title, summary);
+      const discard = document.createElement('button');
+      discard.type = 'button';
+      discard.textContent = entry.discardable ? 'Discard' : 'Remove from page';
+      discard.onclick = () =>
+        run(async () => {
+          const message = entry.discardable
+            ? 'Discard this unpublished Opener? This cannot be undone.'
+            : 'Remove this published Opener from the aggregate Openers page? Its Blyg identity and history will be preserved.';
+          if (!confirm(message)) return;
+          const result = await api(entry.discardable ? 'discard-opener' : 'remove-opener', {
+            key: entry.reference.key,
+          });
+          $('dialog').close();
+          await refresh();
+          const next =
+            currentWorkspace === 'drafts'
+              ? pages.find((candidate) => candidate.draft && !candidate.deleted)
+              : pages.find((candidate) => candidate.name === 'openers.html');
+          if (next) await openPage(next.name);
+          status(result.message);
+        });
+      row.append(words, discard);
+      row.dataset.search = (title.textContent + ' ' + summary.textContent).toLowerCase();
+      rows.append(row);
+    }
+    $('draftOpenerSearch').oninput = () => {
+      const query = $('draftOpenerSearch').value.toLowerCase();
+      for (const row of rows.children) row.hidden = !row.dataset.search.includes(query);
+    };
+    $('closeDraftOpeners').onclick = () => $('dialog').close();
   });
 
 $('versions').onclick = () =>
@@ -1593,7 +1744,9 @@ function openURLComposition(kind) {
       button.disabled = true;
       button.textContent = 'Importing…';
       try {
-        const imported = await api('import-item', { url: $('compositionURL').value.trim() });
+        const imported = await api('import-item', {
+          url: $('compositionURL').value.trim(),
+        });
         const quoted = await api('quote-item', {
           source: 'remote',
           key: imported.selected,
@@ -1612,7 +1765,11 @@ function openURLComposition(kind) {
         fragmentEditor.lockTransclusions();
         mark();
         await save();
-        status(responding ? 'Response Stub saved locally.' : 'Transclusion inserted and saved locally.');
+        status(
+          responding
+            ? 'Response Stub saved locally.'
+            : 'Transclusion inserted and saved locally.',
+        );
       } catch (e) {
         if ($('compositionError')) $('compositionError').textContent = e.message;
         button.disabled = false;
@@ -1664,8 +1821,8 @@ $('newOpener').onclick = () => {
   modal(
     'New opener',
     '<p>' +
-      esc(fragmentEditor.openerDate()) +
-      ' · Same-day entries are numbered I, II, III… automatically.</p><label>Opener<textarea id="openerText" placeholder="What crossed your mind?"></textarea></label><label class="pin-choice"><input id="openerPin" type="checkbox" checked> Pin this version when published</label><p class="hint">Added at the top and saved as a local draft. Publishing is a separate step.</p><div class="dialog-actions"><button id="cancelOpener">Cancel</button><button id="addOpener">Add opener</button></div>',
+      esc(fragmentEditor.openerStamp()) +
+      ' · Central Time</p><label>Opener<textarea id="openerText" placeholder="What crossed your mind?"></textarea></label><label class="pin-choice"><input id="openerPin" type="checkbox" checked> Pin this version when published</label><p class="hint">Added at the top and saved as a local draft. Publishing is a separate step.</p><div class="dialog-actions"><button id="cancelOpener">Cancel</button><button id="addOpener">Add opener</button></div>',
   );
   $('openerText').focus();
   $('cancelOpener').onclick = () => $('dialog').close();
@@ -1723,7 +1880,8 @@ function setWorkspaceChrome(name, wide = false) {
   for (const button of document.querySelectorAll('.workspace-tabs button'))
     button.classList.toggle('active', button.dataset.workspace === name);
   $('workspace').className = 'workspace theme-' + name + (wide ? ' wide' : '');
-  $('authorToolbar').hidden = ['images', 'reader', 'saved'].includes(name);
+  $('authorToolbar').hidden = ['images', 'reader', 'saved', 'thicket'].includes(name);
+  const postTools = name === 'posts' || (name === 'drafts' && page?.kind === 'post');
   $('new').hidden = name !== 'posts';
   $('newPage').hidden = name !== 'pages';
   $('newOpener').hidden = name !== 'openers';
@@ -1737,27 +1895,41 @@ function setWorkspaceChrome(name, wide = false) {
     'fragment',
     'removeFragment',
   ])
-    $(id).hidden = name !== 'posts';
-  $('libraryTitle').textContent = name === 'posts' ? 'POSTS' : 'PAGES';
-  $('search').placeholder = name === 'posts' ? 'Search posts…' : 'Search pages…';
+    $(id).hidden = !postTools;
+  $('libraryTitle').textContent =
+    name === 'posts' ? 'POSTS' : name === 'drafts' ? 'DRAFTS' : 'PAGES';
+  $('search').placeholder =
+    name === 'posts'
+      ? 'Search posts…'
+      : name === 'drafts'
+        ? 'Search drafts…'
+        : 'Search pages…';
   $('search').setAttribute('aria-label', $('search').placeholder);
   $('postSort').hidden = name !== 'posts';
   renderPages();
 }
 function showWriting() {
   readerActive = false;
-  if (['images', 'reader', 'saved'].includes(currentWorkspace) && page)
+  if (['images', 'reader', 'saved', 'thicket'].includes(currentWorkspace) && page)
     currentWorkspace = workspaceForPage(page);
   $('newOpener').hidden = page?.name !== 'openers.html';
   $('readerView').hidden = true;
   $('imagesView').hidden = true;
+  $('thicketView').hidden = true;
   $('documentView').hidden = false;
   setWorkspaceChrome(currentWorkspace, currentWorkspace === 'openers');
   const unavailable = !!page?.deleted,
     nonPost = page && page.kind !== 'post';
-  for (const id of ['save', 'queue', 'preview', 'images']) $(id).disabled = unavailable;
+  for (const id of ['save', 'stage', 'preview', 'images']) $(id).disabled = unavailable;
   $('tk').disabled = unavailable || nonPost;
-  for (const id of ['versions', 'mainFragment', 'transclude', 'respondStub', 'quote', 'fragment'])
+  for (const id of [
+    'versions',
+    'mainFragment',
+    'transclude',
+    'respondStub',
+    'quote',
+    'fragment',
+  ])
     $(id).disabled = unavailable || nonPost;
 }
 function readerMessage(text) {
@@ -1770,13 +1942,14 @@ async function showReader(sync = true) {
   $('newOpener').hidden = true;
   $('documentView').hidden = true;
   $('imagesView').hidden = true;
+  $('thicketView').hidden = true;
   $('readerView').hidden = false;
   setWorkspaceChrome(currentWorkspace, true);
   $('readerActions').hidden = currentWorkspace === 'saved';
   $('savedViews').hidden = currentWorkspace !== 'saved';
   $('readerViewFilter').hidden = currentWorkspace === 'saved';
   $('readerOrder').hidden = currentWorkspace === 'saved';
-  for (const id of ['save', 'queue', 'preview', 'images', 'versions', 'tk', 'mainFragment'])
+  for (const id of ['save', 'stage', 'preview', 'images', 'versions', 'tk', 'mainFragment'])
     $(id).disabled = true;
   $('readerItems').replaceChildren();
   readerMessage(
@@ -1795,6 +1968,7 @@ async function showImagesWorkspace() {
   readerActive = false;
   $('documentView').hidden = true;
   $('readerView').hidden = true;
+  $('thicketView').hidden = true;
   $('imagesView').hidden = false;
   setWorkspaceChrome('images', true);
   const images = await api('images'),
@@ -1820,6 +1994,312 @@ async function showImagesWorkspace() {
   $('imageStatus').textContent =
     images.length + ' image files · existing files are never changed here.';
 }
+let thicketExpanded = false,
+  thicketFilter = 'all',
+  thicketSnapshot = null,
+  thicketIncoming = null,
+  thicketPolicy = null;
+function thicketTime(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return 'Time unavailable';
+  const today = new Date(),
+    sameDay = parsed.toDateString() === today.toDateString();
+  return (
+    (sameDay
+      ? ''
+      : parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ') +
+    parsed.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  );
+}
+function thicketHost(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./, '');
+  } catch (_) {
+    return 'destination unavailable';
+  }
+}
+function thicketType(entry) {
+  if (entry.withdrawal) return 'WITHDRAWAL';
+  const relations = entry.relations || [];
+  if (relations.includes('stub')) return 'STUB';
+  if (relations.includes('transclusion')) return 'TRANSCLUDE';
+  if (relations.includes('fork')) return 'FORK';
+  if (relations.includes('source')) return 'SOURCE';
+  return 'WEBMENTION';
+}
+function thicketResult(entry) {
+  if (entry.status === 'delivered')
+    return { symbol: '✓', className: 'delivered', label: 'Succeeded' };
+  if (entry.status === 'pending' || entry.status === 'retrying')
+    return {
+      symbol: '◷',
+      className: entry.status,
+      label: entry.status === 'retrying' ? 'Retry scheduled' : 'Pending',
+    };
+  return { symbol: '×', className: 'failed', label: 'Failed' };
+}
+function thicketReport(entry) {
+  return JSON.stringify(
+    {
+      direction: 'OUT',
+      title: entry.title || null,
+      site: thicketHost(entry.target_origin || entry.target),
+      type: thicketType(entry),
+      status: entry.status,
+      source: entry.source,
+      target: entry.target,
+      endpoint: entry.endpoint,
+      attempts: entry.attempts,
+      error: entry.error,
+      created_at: entry.created_at,
+      updated_at: entry.updated_at,
+      next_attempt_at: entry.next_attempt_at,
+    },
+    null,
+    2,
+  );
+}
+function thicketCell(className, value) {
+  const cell = document.createElement('span');
+  cell.className = className;
+  cell.textContent = value;
+  return cell;
+}
+function thicketKeyboardAction(row, action) {
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
+  row.onkeydown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      action();
+    }
+  };
+  row.onclick = action;
+}
+function renderThicketEntries() {
+  const holder = $('thicketEntries');
+  holder.replaceChildren();
+  if (!thicketSnapshot || !thicketIncoming) return;
+  const all = BlyngerThicketUI.combined(thicketSnapshot, thicketIncoming),
+    entries =
+      thicketFilter === 'failed'
+        ? all.filter(
+            ({ direction, entry }) =>
+              direction === 'OUT' &&
+              !['delivered', 'pending', 'retrying'].includes(entry.status),
+          )
+        : all,
+    shown = thicketExpanded ? entries : entries.slice(0, 3);
+  if (!shown.length) {
+    const empty = document.createElement('p');
+    empty.className = 'thicket-empty';
+    empty.textContent =
+      thicketFilter === 'failed'
+        ? 'No failed outgoing Webmentions.'
+        : 'No Webmention activity yet.';
+    holder.append(empty);
+  }
+  for (const item of shown) {
+    const entry = item.entry,
+      incoming = item.direction === 'IN',
+      row = document.createElement('div'),
+      title = entry.title || (incoming ? 'Published post' : 'Outgoing Webmention'),
+      main = thicketCell('thicket-main', '');
+    row.className =
+      'thicket-entry ' +
+      (incoming ? 'incoming' + (entry.unread ? ' unread' : '') : 'outgoing');
+    main.append(
+      thicketCell('thicket-direction', item.direction + ':'),
+      document.createTextNode(title),
+    );
+    row.append(main);
+    if (incoming) {
+      const source = BlyngerThicketUI.safeHttpUrl(entry.source_page),
+        action = () => {
+          if (source) run(() => openExternal(source));
+          else
+            status(
+              'This withdrawn Webmention no longer has a verified source page to open.',
+            );
+        },
+        acknowledgement = document.createElement('button');
+      const siteCell = thicketCell(
+        'thicket-site',
+        '— From: ' + BlyngerThicketUI.incomingSite(entry),
+      );
+      if (thicketPolicy?.mode === 'denylist' && entry.source_origin) {
+        const block = document.createElement('span');
+        block.className = 'thicket-block';
+        block.textContent = 'BLOCK';
+        block.tabIndex = 0;
+        block.setAttribute('role', 'button');
+        block.onclick = (event) => {
+          event.stopPropagation();
+          if (!confirm('Block this site from sending future Webmentions?')) return;
+          run(async () => {
+            thicketPolicy = await api('inbound-webmentions-policy', {
+              action: 'block',
+              source: entry.source_origin,
+            });
+            renderThicketSnapshot();
+            status('Future Webmentions from that site will be silently ignored.');
+          });
+        };
+        block.onkeydown = (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            block.click();
+          }
+        };
+        siteCell.append(document.createTextNode(' '), block);
+      }
+      row.append(
+        siteCell,
+        thicketCell('thicket-time', thicketTime(entry.at)),
+        thicketCell('thicket-type', BlyngerThicketUI.incomingType(entry)),
+      );
+      if (source) {
+        main.classList.add('thicket-open');
+        main.title = 'Open verified source page';
+        thicketKeyboardAction(main, action);
+      }
+      acknowledgement.className =
+        'thicket-result ' + (entry.unread ? 'incoming-unread' : 'incoming-read');
+      acknowledgement.textContent = entry.unread ? '●' : '✓';
+      acknowledgement.title = entry.unread ? 'Mark this activity read' : 'Already read';
+      acknowledgement.setAttribute('aria-label', acknowledgement.title);
+      acknowledgement.disabled = !entry.unread;
+      acknowledgement.onclick = (event) => {
+        event.stopPropagation();
+        run(async () => {
+          await api('inbound-webmentions-read', {
+            key: entry.key,
+            fingerprint: entry.fingerprint,
+          });
+          thicketIncoming = await api('inbound-webmentions-status');
+          renderThicketSnapshot();
+          status('Incoming Webmention marked read.');
+        });
+      };
+      row.append(acknowledgement);
+    } else {
+      const result = thicketResult(entry),
+        resultCell = thicketCell('thicket-result ' + result.className, result.symbol),
+        action = () =>
+          run(async () => {
+            await navigator.clipboard.writeText(thicketReport(entry));
+            status('Webmention report copied.');
+          });
+      row.append(
+        thicketCell(
+          'thicket-site',
+          '— To: ' + thicketHost(entry.target_origin || entry.target),
+        ),
+        thicketCell('thicket-time', thicketTime(entry.updated_at)),
+        thicketCell('thicket-type', thicketType(entry)),
+      );
+      resultCell.title = result.label;
+      resultCell.setAttribute('aria-label', result.label);
+      row.append(resultCell);
+      thicketKeyboardAction(row, action);
+    }
+    holder.append(row);
+  }
+  $('thicketMore').hidden = entries.length <= 3;
+  $('thicketMore').textContent = thicketExpanded
+    ? 'Show most recent three'
+    : 'Show earlier notifications';
+}
+async function showThicket() {
+  capture();
+  readerActive = false;
+  currentWorkspace = 'thicket';
+  $('documentView').hidden = true;
+  $('readerView').hidden = true;
+  $('imagesView').hidden = true;
+  $('thicketView').hidden = false;
+  setWorkspaceChrome('thicket', true);
+  [thicketSnapshot, thicketIncoming, thicketPolicy] = await Promise.all([
+    api('webmentions-status'),
+    api('inbound-webmentions-status'),
+    api('inbound-webmentions-policy').catch(() => null),
+  ]);
+  renderThicketSnapshot(true);
+}
+function renderThicketSnapshot(reset = false) {
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000,
+    recent = (thicketSnapshot.entries || []).filter(
+      (entry) => Date.parse(entry.updated_at) >= dayAgo,
+    ),
+    incomingRecent = (thicketIncoming.activities || []).filter(
+      (entry) => Date.parse(entry.at) >= dayAgo,
+    ),
+    delivered = recent.filter((entry) => entry.status === 'delivered').length,
+    failed = recent.filter(
+      (entry) => !['delivered', 'pending', 'retrying'].includes(entry.status),
+    ).length;
+  $('thicketOutCount').textContent = delivered;
+  $('thicketFailed').hidden = !failed;
+  $('thicketFailed').textContent = '× ' + failed + ' failed';
+  $('thicketInCount').textContent = ['current', 'stale'].includes(
+    thicketIncoming.availability,
+  )
+    ? incomingRecent.length
+    : '—';
+  $('thicketInCaption').textContent = BlyngerThicketUI.incomingCaption(thicketIncoming);
+  $('thicketNav').classList.toggle('has-unread', thicketIncoming.unread_count > 0);
+  const inboundProblem = thicketIncoming.availability === 'unavailable',
+    outgoingProblem = !thicketSnapshot.running || thicketSnapshot.last_error;
+  $('thicketStatusLight').className =
+    outgoingProblem || inboundProblem
+      ? 'problem'
+      : thicketSnapshot.paused
+        ? 'paused'
+        : 'running';
+  const outgoingStatus = thicketSnapshot.last_error
+    ? 'Webmention service needs attention: ' + thicketSnapshot.last_error
+    : thicketSnapshot.paused
+      ? 'Outgoing Webmentions paused; queued work is preserved'
+      : thicketSnapshot.running
+        ? 'Webmention service running normally'
+        : 'Webmention service is not running';
+  $('thicketServiceStatus').textContent =
+    outgoingStatus + ' · ' + BlyngerThicketUI.incomingCaption(thicketIncoming);
+  $('thicketPause').textContent = thicketSnapshot.paused
+    ? 'Resume outgoing'
+    : 'Pause outgoing';
+  $('thicketPause').disabled = Boolean(thicketSnapshot.read_only);
+  if (reset) {
+    thicketFilter = 'all';
+    thicketExpanded = false;
+  }
+  renderThicketEntries();
+}
+$('thicketPause').onclick = () =>
+  run(async () => {
+    thicketSnapshot = await api('webmentions-pause', { paused: !thicketSnapshot.paused });
+    renderThicketSnapshot();
+    status(
+      thicketSnapshot.paused
+        ? 'Outgoing Webmentions paused.'
+        : 'Outgoing Webmentions resumed.',
+    );
+  });
+$('thicketFailed').onclick = () => {
+  thicketFilter = thicketFilter === 'failed' ? 'all' : 'failed';
+  thicketExpanded = true;
+  renderThicketEntries();
+};
+$('thicketMore').onclick = () => {
+  thicketExpanded = !thicketExpanded;
+  renderThicketEntries();
+};
+async function refreshThicketUnread() {
+  thicketIncoming = await api('inbound-webmentions-status');
+  $('thicketNav').classList.toggle('has-unread', thicketIncoming.unread_count > 0);
+  if (currentWorkspace === 'thicket' && thicketSnapshot) renderThicketSnapshot();
+}
+setInterval(() => run(refreshThicketUnread), 60 * 1000);
 function workspaceForPage(value) {
   if (value?.name === 'openers.html') return 'openers';
   return value?.kind === 'post' ? 'posts' : 'pages';
@@ -1836,6 +2316,18 @@ async function switchWorkspace(name) {
     $('readerEyebrow').textContent =
       name === 'saved' ? 'YOUR READING SHELF' : 'LOCAL READING DESK';
     await showReader(name === 'reader');
+    return;
+  }
+  if (name === 'thicket') {
+    await showThicket();
+    return;
+  }
+  if (name === 'drafts') {
+    currentWorkspace = name;
+    const eligible = pages.filter((p) => p.draft && !p.deleted);
+    const target = eligible.find((p) => p.name === page?.name) || eligible[0];
+    if (target) await openPage(target.name);
+    else showWriting();
     return;
   }
   const eligible = pages.filter((p) =>
@@ -2410,14 +2902,23 @@ function chooseStub(item, quoted, destination = null) {
   modal(
     'Stub — response to ' + item.title,
     '<p class="hint">A Stub keeps one permanent response target. For a Blyg item, its complete verified snapshot starts the draft as a protected quotation; delete the whole quotation if you do not want it. The response remains a Stub either way.</p>' +
-      (destination === 'opener' ? openerFields : destination === 'post' ? postFields : postFields + openerFields) +
-      '<div class="dialog-actions">' + actions + '</div>',
+      (destination === 'opener'
+        ? openerFields
+        : destination === 'post'
+          ? postFields
+          : postFields + openerFields) +
+      '<div class="dialog-actions">' +
+      actions +
+      '</div>',
   );
   if ($('stubToPost'))
     $('stubToPost').onclick = () =>
       run(async () => {
         if (dirty) await save();
-        const p = await api('new', { title: $('stubTitle').value, stub_of: quoted.stub_of });
+        const p = await api('new', {
+          title: $('stubTitle').value,
+          stub_of: quoted.stub_of,
+        });
         $('dialog').close();
         await refresh();
         await openPage(p.name);
@@ -2516,7 +3017,10 @@ $('renumberPost').onclick = () => {
   $('savePostNumber').onclick = () =>
     run(async () => {
       if (dirty) await save();
-      const changed = await api('renumber-post', {name: page.name, number: $('postNumber').value});
+      const changed = await api('renumber-post', {
+        name: page.name,
+        number: $('postNumber').value,
+      });
       dirty = false;
       $('dialog').close();
       await refresh();
@@ -2691,7 +3195,7 @@ $('about').onclick = () =>
 $('help').onclick = () =>
   modal(
     'Blynger Help',
-    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing and drafts, with search, versions, fragments, quotations, and TK. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf.</p></section><section><h3>Save and publish</h3><p><b>Save draft</b> keeps work private. <b>Queue</b> saves it for a later publication. <b>Review &amp; publish</b> shows the exact website files before anything is sent.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. <b>Recovery</b> reports local and uncertain publication states, pauses troublesome subscriptions, manages isolated items, and restores verified Reader backups. The rare <b>Rebuild Blyg archive</b> repair action is also under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
+    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages. <b>Drafts</b> gathers all locally saved, unpublished work so it is easy to resume.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf. <b>Thicket</b> shows recent Webmention activity and delivery status.</p></section><section><h3>Save and publish</h3><p><b>Save</b> keeps writing private and makes it safe to work elsewhere. <b>Stage</b> saves it and includes it in the next publication. <b>Review &amp; publish</b> shows only staged work and its required website files before anything is sent.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. <b>Recovery</b> reports local and uncertain publication states, pauses troublesome subscriptions, manages isolated items, and restores verified Reader backups. The rare <b>Rebuild Blyg archive</b> repair action is also under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
   );
 document.addEventListener('click', (event) => {
   if (event.target.id === 'closeAbout') $('dialog').close();
@@ -2701,6 +3205,7 @@ document.addEventListener('click', (event) => {
 });
 run(async () => {
   await refresh();
+  await refreshThicketUnread();
   setWorkspaceChrome('openers', true);
   await openPage('openers.html');
   const recovery = await api('recovery-notice');

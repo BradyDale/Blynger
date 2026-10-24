@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Blynger desktop-local browser app; binds only to 127.0.0.1."""
-import argparse, copy, errno, html, json, mimetypes, os, secrets, shutil, subprocess, tempfile, threading, webbrowser
+import argparse, copy, errno, html, json, mimetypes, os, re, secrets, shutil, subprocess, tempfile, threading, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs, unquote
@@ -9,6 +9,10 @@ from configuration import load as load_settings, save as save_settings, settings
 from version import APP_VERSION, BLYG_VERSION
 from tk_render import render_tk
 from markdown_paste import render_pasted_markdown
+from webmentions import open_outbound_service
+from webmentions.inbound_sync import open_inbound_sync_service
+from webmentions.inbound_registry_refresh import open_registry_refresh_worker
+from webmentions.inbound_policy import open_inbound_policy_manager
 
 APP=Path(__file__).resolve().parent
 CODEX=shutil.which('codex') or '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
@@ -39,6 +43,17 @@ class PublicationJob:
             self.job={'id':job_id,'state':'queued','message':'Publishing started. You can keep writing.','retryable':False}
             threading.Thread(target=self._run,args=(job_id,pending),daemon=True,name='Blynger publication').start()
             return dict(self.job)
+    def resume(self):
+        """Continue an exact publication the author already approved.
+
+        A quit can happen after the host accepts the commit but before local
+        finalization clears ``pending_publication``.  Retrying is idempotent:
+        the network step first checks the hosted commit and sends nothing when
+        it is already there.
+        """
+        with self.server.lock:
+            pending=bool(self.server.studio.state.get('pending_publication'))
+        return self.start(retry=True) if pending else self.status()
     def _run(self,job_id,pending):
         with self.guard:
             if not self.job or self.job.get('id')!=job_id:return
@@ -51,6 +66,17 @@ class PublicationJob:
             with self.server.reader_lock:
                 with self.server.lock:
                     result=self.server.studio.finish_publication(pending)
+            # Delivery is secondary background work. Wake it only after the
+            # publication locks are released and never change Git success into
+            # publication failure if the service itself needs attention.
+            webmentions=getattr(self.server,'webmentions',None)
+            if webmentions is not None:
+                try:webmentions.wake()
+                except Exception as exc:result['message']+=' Webmention delivery will retry later: '+str(exc)
+            registry_refresh=getattr(self.server,'registry_refresh',None)
+            if registry_refresh is not None:
+                try:registry_refresh.wake()
+                except Exception as exc:result['message']+=' Inbound target refresh will retry after Blynger restarts: '+str(exc)
             with self.guard:self.job={'id':job_id,'state':'succeeded','message':'Published successfully.','detail':result.get('message',''),'retryable':False}
         except Exception as exc:
             with self.guard:self.job={'id':job_id,'state':'uncertain','message':'Publication needs attention: '+str(exc),'retryable':True}
@@ -170,6 +196,28 @@ class Handler(BaseHTTPRequestHandler):
                     with self.server.reader_lock:
                         with self.server.lock:
                             return self.send({'studio':self.server.studio.studio_recovery_status(),'reader':self.server.studio.reader.recovery_status()})
+                if p=='/api/webmentions-status':
+                    snapshot=self.server.webmentions.status()
+                    # Public item ids and titles make the private status ledger
+                    # understandable without exposing drafts or authored text.
+                    titles={}
+                    if getattr(self.server,'studio',None) is not None:
+                        with self.server.lock:
+                            titles={iid:self.server.studio.item_title(doc) for iid,doc in self.server.studio.state.get('published',{}).items()}
+                    for entry in snapshot.get('entries',[]):
+                        entry['title']=titles.get(entry.get('source_id'))
+                    return self.send(snapshot)
+                if p=='/api/inbound-webmentions-status':
+                    snapshot=self.server.inbound_webmentions.status()
+                    with self.server.lock:
+                        titles={iid:self.server.studio.item_title(doc) for iid,doc in self.server.studio.state.get('published',{}).items()}
+                    for entry in snapshot.get('activities',[]):
+                        parts=[part for part in urlsplit(entry.get('target') or '').path.split('/') if part]
+                        target_id=(parts[-2] if len(parts)>1 and parts[-1]=='item.json' else parts[-1]) if parts else None
+                        entry['title']=titles.get(target_id)
+                    return self.send(snapshot)
+                if p=='/api/inbound-webmentions-policy':
+                    return self.send({"available":True,**self.server.inbound_policy.status()})
                 if p=='/api/recovery':
                     with self.server.reader_lock:
                         with self.server.lock:
@@ -225,6 +273,30 @@ class Handler(BaseHTTPRequestHandler):
             d=json.loads(self.rfile.read(length)); p=urlsplit(self.path).path; studio=self.server.studio
             if p=='/api/tk': return self.send(generate(studio,d['instruction'],d.get('context',''),d.get('name')))
             if p=='/api/markdown-paste': return self.send({'html':render_pasted_markdown(d.get('text',''))})
+            if p=='/api/webmentions-pause':
+                if not isinstance(d.get('paused'),bool): raise ValueError('Webmention pause state must be true or false.')
+                self.server.webmentions.pause(d['paused'])
+                return self.send(self.server.webmentions.status())
+            if p=='/api/inbound-webmentions-refresh':
+                started=self.server.inbound_webmentions.wake()
+                return self.send({**self.server.inbound_webmentions.status(),'refresh_requested':started})
+            if p=='/api/inbound-webmentions-read':
+                if (
+                    not isinstance(d.get('key'),str)
+                    or not re.fullmatch(r'[0-9a-f]{64}',d['key'])
+                    or not isinstance(d.get('fingerprint'),str)
+                    or not re.fullmatch(r'sha256:[0-9a-f]{64}',d['fingerprint'])
+                ):
+                    raise ValueError('Choose an incoming Webmention activity to mark read.')
+                changed=self.server.inbound_webmentions.mark_read(d['key'],d['fingerprint'])
+                return self.send({'acknowledged':changed,**self.server.inbound_webmentions.status()})
+            if p=='/api/inbound-webmentions-policy':
+                action=d.get('action')
+                if action=='set':
+                    return self.send(self.server.inbound_policy.set_policy(d.get('mode'),d.get('domains')))
+                if action=='block':
+                    return self.send(self.server.inbound_policy.block(d.get('source')))
+                raise ValueError('Choose an inbound Webmention policy action.')
             if p in ('/api/reader-subscribe','/api/reader-open','/api/reader-sync','/api/reader-mark','/api/reader-react','/api/reader-blogroll','/api/reader-unsubscribe','/api/reader-isolate','/api/reader-restore-isolated','/api/reader-pause','/api/reader-restore-backup'):
                 with self.server.reader_lock:
                     if p=='/api/reader-subscribe':result=studio.reader.subscribe(d['url'])
@@ -244,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(studio.restore_state_backup())
             if p=='/api/reader-fork':
                 with self.server.reader_lock:source=studio.reader.fork_source(d['key'],d.get('version'))
-                with self.server.lock:result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'],generated=source.get('generated'))
+                with self.server.lock:result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'],generated=source.get('generated'),staged=False)
                 return self.send(result)
             if p=='/api/import-item':
                 with self.server.reader_lock:result=studio.reader.import_item(d['url'])
@@ -267,17 +339,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not mime.startswith('image/'):raise ValueError('That URL does not return an image.')
                 return self.send({'url':final,'mime':mime})
             with self.server.lock:
-                if p=='/api/save': result=studio.save_draft(d)
+                if p=='/api/save': result=studio.save_draft(d,default_staged=False)
+                elif p=='/api/stage': result=studio.stage_draft(d['name'],d.get('staged',True))
                 elif p=='/api/delete-post': result=studio.delete_post(d['name'])
                 elif p=='/api/restore-post': result=studio.restore_post(d['name'])
                 elif p=='/api/discard': result=studio.discard(d['name'])
+                elif p=='/api/discard-opener': result=studio.discard_opener(d['key'])
+                elif p=='/api/remove-opener': result=studio.remove_opener(d['key'])
                 elif p=='/api/accept-file-changes': result=studio.accept_fragment_files(d.get('files'))
                 elif p=='/api/revise': result=studio.revise(d['name'],d['note'],d.get('version'))
                 elif p=='/api/pin': result=studio.pin(d['name'],d['version'])
-                elif p=='/api/new': result=studio.create(d['title'],stub_of=d.get('stub_of'))
+                elif p=='/api/new': result=studio.create(d['title'],stub_of=d.get('stub_of'),staged=False)
                 elif p=='/api/renumber-post': result=studio.renumber_post(d['name'],d.get('number'))
-                elif p=='/api/new-page': result=studio.create_page(d['title'],d['name'])
-                elif p=='/api/create-series': result=studio.create_series(d['title'],d['plug'],d['description'])
+                elif p=='/api/new-page': result=studio.create_page(d['title'],d['name'],staged=False)
+                elif p=='/api/create-series': result=studio.create_series(d['title'],d['plug'],d['description'],staged=False)
                 elif p=='/api/assign-series': result=studio.assign_series(d['name'],d.get('series'),d.get('attribute',''))
                 elif p=='/api/upload': result=studio.upload(d['data'],d['name'],d.get('alt',''))
                 elif p=='/api/refresh-review': result=studio.refresh_review()
@@ -306,10 +381,19 @@ def main():
         if exc.errno!=errno.EADDRINUSE: raise
         print('Port is in use. If Blynger is already running, open http://127.0.0.1:'+str(args.port)); return
     server.studio=studio; server.settings_file=settings_file; server.token=secrets.token_urlsafe(32); server.lock=threading.RLock();server.reader_lock=threading.RLock();server.publication_job=PublicationJob(server);server.review_job=ReviewJob(server)
+    server.webmentions=open_outbound_service(data);server.webmentions.start()
+    server.registry_refresh=open_registry_refresh_worker(studio,settings);server.registry_refresh.wake()
+    server.inbound_policy=open_inbound_policy_manager(settings)
+    server.inbound_webmentions=open_inbound_sync_service(data,settings);server.inbound_webmentions.start()
+    # An interrupted launch leaves the exact, already-approved commit durable.
+    # Resume it in the background so a successful push cannot strand the next
+    # review behind a stale recovery marker.
+    server.publication_job.resume()
     url=f'http://127.0.0.1:{server.server_port}'
     print('Blynger is ready at '+url,flush=True)
     if not args.no_browser: webbrowser.open(url)
     try: server.serve_forever()
-    except KeyboardInterrupt: server.server_close()
+    except KeyboardInterrupt: pass
+    finally: server.registry_refresh.join(2);server.inbound_webmentions.stop();server.webmentions.stop();server.server_close()
 
 if __name__=='__main__': main()

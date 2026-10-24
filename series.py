@@ -7,6 +7,7 @@ feeds, Blyg objects, publication, or Git; core.Studio coordinates those.
 import html
 import re
 import unicodedata
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -75,7 +76,7 @@ def undecorate_post(raw, plug, series_title=None):
     return _set_headline(raw, series_title, include=False) if series_title else raw
 
 
-def decorate_post(raw, series, next_member=None):
+def decorate_post(raw, series, next_member=None, homepage_only_title=False):
     raw = _remove_old_next(clean_managed(raw), series["plug"])
     style = STYLE_START + '<style>.blynger-series-title{text-align:right}</style>' + STYLE_END
     raw = raw.replace("</head>", style + "</head>", 1)
@@ -84,7 +85,19 @@ def decorate_post(raw, series, next_member=None):
     heading = article.find("h1") if article else None
     if not heading:
         raise ValueError("A series post needs one article headline.")
-    title = canonical_title(heading.get_text(" ", strip=True), series["title"])
+    # Older Blynger builds emitted the same Series subtitle without managed
+    # boundary comments. Absorb that exact legacy furniture before adding the
+    # durable managed form so a later installment cannot duplicate it.
+    for node in list(article.select("h3.blynger-series-title")):
+        link = node.find("a", href=True)
+        link_path = urlsplit(link.get("href", "")).path.lstrip("/") if link else ""
+        if link_path == series["page"] and node.get_text(" ", strip=True).casefold() == series["title"].strip().casefold():
+            node.decompose()
+    title = canonical_title(
+        heading.get_text(" ", strip=True),
+        series["title"],
+        include=False,
+    )
     heading.clear()
     heading.string = title
     subtitle = BeautifulSoup(
@@ -120,7 +133,7 @@ def decorate_post(raw, series, next_member=None):
     return str(soup)
 
 
-def series_entries(members):
+def series_entries(members, series_title=None):
     rows = []
     for member in members:
         detail = " — " + html.escape(member["attribute"]) if member.get("attribute") else ""
@@ -128,7 +141,7 @@ def series_entries(members):
             '<li><a href="/'
             + html.escape(member["name"], quote=True)
             + '">'
-            + html.escape(member["title"])
+            + html.escape(canonical_title(member["title"], series_title, include=False) if series_title else member["title"])
             + "</a>"
             + detail
             + "</li>"
@@ -148,13 +161,13 @@ def series_body(series, members):
         '<section class="blynger-series-description">'
         + description
         + "</section>"
-        + series_entries(members)
+        + series_entries(members, series["title"])
     )
 
 
-def update_series_page(raw, members):
+def update_series_page(raw, members, series_title=None):
     """Replace only Blynger's managed installment list, preserving authored prose."""
-    entries = series_entries(members)
+    entries = series_entries(members, series_title)
     pattern = re.escape(ENTRIES_START) + r".*?" + re.escape(ENTRIES_END)
     if re.search(pattern, raw, flags=re.S):
         return re.sub(pattern, lambda _: entries, raw, count=1, flags=re.S)

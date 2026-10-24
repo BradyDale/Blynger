@@ -49,6 +49,18 @@ class OpenerTests(unittest.TestCase):
         marked=self.studio.state['drafts']['openers.html']['raw']
         self.assertIn('data-blynger-block=',marked)
         self.assertEqual(canonical(raw),canonical(remove_markers(marked)))
+
+    def test_browser_only_link_attributes_do_not_break_opener_markers(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
+        d=self.studio.page('openers.html')
+        d['raw']=d['raw'].replace('First opener.','<a href="https://example.net/book" target="_blank">First opener.</a>',1)
+        for block in d['fragments']['blocks']:
+            if 'First opener.' in block['html']:
+                block['html']=block['html'].replace('First opener.','<a href="https://example.net/book" target="_blank">First opener.</a>')
+        self.studio.save_draft(d);saved=self.studio.page('openers.html')
+        self.assertIn('href="https://example.net/book"',saved['raw'])
+        self.assertNotIn('target="_blank"',saved['raw'])
+        self.assertEqual(saved['raw'].count('data-blynger-block='),len(saved['fragments']['blocks']))
     def test_new_opener_reconciles_mixed_durable_and_new_blocks(self):
         self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
         d=self.studio.page('openers.html')
@@ -64,6 +76,31 @@ class OpenerTests(unittest.TestCase):
         self.assertIn('New morning thought.',saved['body'])
         saved_start,saved_end=region(saved['raw'])
         self.assertEqual(saved['raw'][saved_start:saved_end].count('data-blynger-block='),len(saved['fragments']['blocks']))
+    def test_discard_removes_only_a_never_published_opener(self):
+        self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html')
+        a,b=region(d['raw']);body=BeautifulSoup(d['raw'][a:b],'html.parser');first=body.find('h3')
+        first.insert_before(BeautifulSoup('<h3 id="new">October 17, 2026</h3><p>Changed my mind.</p>','html.parser'))
+        d['raw']=d['raw'][:a]+str(body)+d['raw'][b:]
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments']);self.studio.save_draft(d)
+        entries=self.studio.fragment_objects('openers.html');discardable=[entry for entry in entries if entry['discardable']]
+        self.assertEqual(len(discardable),1);self.assertIn('Changed my mind.',discardable[0]['html'])
+        self.assertFalse(any(entry['discardable'] for entry in entries if 'First opener.' in entry['html']))
+        result=self.studio.discard_opener(discardable[0]['reference']['key'])
+        self.assertIn('discarded',result['message']);self.assertNotIn('Changed my mind.',self.studio.page('openers.html')['raw'])
+        self.assertNotIn('openers.html',self.studio.state['drafts'])
+        legacy=next(entry for entry in entries if 'First opener.' in entry['html'])
+        with self.assertRaisesRegex(ValueError,'Published Openers cannot be discarded'):
+            self.studio.discard_opener(legacy['reference']['key'])
+    def test_remove_published_opener_preserves_its_blyg_item(self):
+        self.seed();self.studio.migrate_openers();self.connect();self.publish()
+        entry=next(item for item in self.studio.fragment_objects('openers.html') if 'First opener.' in item['html'])
+        iid=entry['id'];self.assertTrue(entry['removable']);self.assertTrue((self.root/f'blyg/items/{iid}.json').exists())
+        result=self.studio.remove_opener(entry['reference']['key'])
+        self.assertIn('identity and history remain',result['message']);self.assertNotIn('First opener.',self.studio.page('openers.html')['raw'])
+        self.publish()
+        self.assertNotIn('First opener.',(self.root/'openers.html').read_text())
+        self.assertTrue((self.root/f'blyg/items/{iid}.json').exists())
+        self.assertIn(iid,{item['id'] for item in json.loads((self.root/'blyg/items/index.json').read_text())['items']})
     def test_opener_marker_repair_keeps_writing_and_identities(self):
         self.seed();self.studio.migrate_openers();d=self.studio.page('openers.html');self.studio.save_draft(d)
         d=self.studio.page('openers.html');original=[r['key'] for r in d['fragments']['ranges']]

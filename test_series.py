@@ -45,13 +45,15 @@ class SeriesTests(unittest.TestCase):
         self.assertIsNotNone(subtitle)
         self.assertEqual(subtitle.get_text(strip=True),'Test Series')
         self.assertIn('.blynger-series-title{text-align:right}',first_page['raw'])
-        self.assertEqual(BeautifulSoup(first_page['body'],'html.parser').h1.get_text(strip=True),'Day one: Test Series')
+        self.assertEqual(BeautifulSoup(first_page['body'],'html.parser').h1.get_text(strip=True),'Day one')
+        homepage=BeautifulSoup(self.studio.page('index.html')['body'],'html.parser')
+        self.assertEqual(homepage.find('a',href='/'+first['name']).get_text(strip=True),'Day one: Test Series')
         self.assertIn('Next Test:',first_page['body'])
         self.assertIn(second['name'],first_page['body'])
         self.assertNotIn('Next Test:',self.studio.page(second['name'])['body'])
         series_page=self.studio.page('series-test-series.html')
         soup=BeautifulSoup(series_page['body'],'html.parser')
-        self.assertEqual([a.get_text() for a in soup.select('ol a')],['Day one: Test Series','Day two: Test Series'])
+        self.assertEqual([a.get_text() for a in soup.select('ol a')],['Day one','Day two'])
         self.assertIn('Why I am reading this.',soup.get_text())
 
     def test_create_series_never_guesses_members_from_matching_headlines(self):
@@ -81,14 +83,55 @@ class SeriesTests(unittest.TestCase):
         self.assertIn('series-test-series.html',(self.root/'sitemap.xml').read_text())
         self.assertNotIn('series-test-series.html',self.studio.state['ids'])
 
-    def test_manual_assignment_appends_one_canonical_series_suffix(self):
+    def test_manual_assignment_keeps_series_suffix_on_homepage_only(self):
         self.studio.create('One: Test Series')
         plain=self.studio.create('A title without a suffix')
         self.studio.create_series('Test Series','Test','Description.')
         self.studio.assign_series(plain['name'],'test-series','Chapter 2')
         self.studio.assign_series(plain['name'],'test-series','Chapter 2')
         title=BeautifulSoup(self.studio.page(plain['name'])['body'],'html.parser').h1.get_text(strip=True)
-        self.assertEqual(title,'A title without a suffix: Test Series')
+        self.assertEqual(title,'A title without a suffix')
+
+    def test_legacy_series_member_loses_redundant_suffix_when_another_member_is_added(self):
+        legacy=self.studio.create('Legacy title: Test Series')
+        self.studio.create_series('Test Series','Test','Description.')
+        self.studio.state['series']['test-series']['members']=[{'name':legacy['name'],'attribute':'Old'}]
+        fresh=self.studio.create('Fresh title')
+        self.studio.save_series_choice(fresh['name'],'test-series','New')
+
+        self.studio.prepare(review=False)
+
+        self.assertEqual(BeautifulSoup(self.studio.page(legacy['name'])['body'],'html.parser').h1.get_text(strip=True),'Legacy title')
+        self.assertEqual(BeautifulSoup(self.studio.page(fresh['name'])['body'],'html.parser').h1.get_text(strip=True),'Fresh title')
+
+    def test_series_page_strips_suffix_from_legacy_saved_member_titles(self):
+        raw=new_page('Test Series','<p>Introduction.</p><ol class="blynger-series-entries"><li><a href="/1.html">One: Test Series</a></li></ol>')
+        updated=__import__('series').update_series_page(
+            raw,
+            [{'name':'1.html','title':'One: Test Series','attribute':''}],
+            'Test Series',
+        )
+        soup=BeautifulSoup(updated,'html.parser')
+        self.assertEqual(soup.select_one('ol.blynger-series-entries a').get_text(strip=True),'One')
+
+    def test_reconcile_absorbs_one_legacy_unmanaged_series_subtitle(self):
+        post=self.studio.create('A thought',body='<h3 class="blynger-series-title"><i><a href="/series-test-series.html">Test Series</a></i></h3><p>Body.</p>')
+        self.studio.create_series('Test Series','Test','Description.')
+        self.studio.save_series_choice(post['name'],'test-series','Chapter 1')
+        self.studio.prepare(review=False)
+        page=self.studio.page(post['name'])
+        self.assertEqual(page['body'].count('class="blynger-series-title"'),1)
+        self.assertIn('blynger-series-subtitle-start',page['raw'])
+
+    def test_reconcile_absorbs_absolute_legacy_series_subtitles(self):
+        body='<h3 class="blynger-series-title"><i><a href="https://example.com/series-test-series.html">Test Series</a></i></h3><h3 class="blynger-series-title"><i><a href="/series-test-series.html">Test Series</a></i></h3><p>Body.</p>'
+        post=self.studio.create('A thought',body=body)
+        self.studio.create_series('Test Series','Test','Description.')
+        self.studio.save_series_choice(post['name'],'test-series','Chapter 1')
+        self.studio.prepare(review=False)
+        page=self.studio.page(post['name'])
+        self.assertEqual(page['body'].count('class="blynger-series-title"'),1)
+        self.assertIn('blynger-series-subtitle-start',page['raw'])
 
     def test_removing_assignment_removes_managed_series_furniture(self):
         first=self.studio.create('One: Test Series')

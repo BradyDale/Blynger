@@ -1,0 +1,29 @@
+#!/usr/local/bin/python3
+"""Update only the fixed owner-controlled inbound receiver policy file."""
+
+import json
+import sys
+
+sys.path.insert(0, "/home/private/blynger-webmentions/current")
+
+from webmentions.inbound_policy import CONFIG_LIMIT, update_receiver_policy
+
+
+CONFIG = "/home/protected/webmentions/config/receiver.json"
+
+
+def main():
+    payload = sys.stdin.buffer.read(CONFIG_LIMIT + 1)
+    if not payload or len(payload) > CONFIG_LIMIT:
+        raise ValueError("Invalid receiver policy request.")
+    request = json.loads(payload)
+    result = update_receiver_policy(CONFIG, request)
+    sys.stdout.write(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.stderr.write("Inbound receiver policy update failed.\n")
+        raise SystemExit(1)

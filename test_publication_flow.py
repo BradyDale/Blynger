@@ -46,6 +46,62 @@ class BackgroundPublicationTests(unittest.TestCase):
         self.assertEqual(self.studio.state['pins']['queued-while-publishing'],['3'])
         hosted=subprocess.run(['git','--git-dir',str(self.remote),'show','master:'+later['name']],capture_output=True)
         self.assertNotEqual(hosted.returncode,0)
+    def test_slow_initial_connection_runs_after_start_returns(self):
+        self.studio.create('Slow server post');review=self.studio.prepare()
+        entered=threading.Event();release=threading.Event();original=self.studio.connection
+        def delayed_connection():
+            entered.set();self.assertTrue(release.wait(5));return original()
+        self.studio.connection=delayed_connection
+        started=time.monotonic();result=self.job.start(review['signature']);elapsed=time.monotonic()-started
+        self.assertLess(elapsed,1);self.assertIn(result['state'],('queued','publishing'))
+        self.assertIn('pending_publication',self.studio.state);self.assertTrue(entered.wait(2))
+        release.set();self.wait_for('succeeded')
+        self.assertNotIn('pending_publication',self.studio.state)
+    def test_unavailable_initial_connection_is_reported_as_background_failure(self):
+        self.studio.create('Unavailable server post');review=self.studio.prepare()
+        entered=threading.Event()
+        def unavailable():
+            entered.set();raise ValueError('publishing server unavailable')
+        self.studio.connection=unavailable
+        started=time.monotonic();result=self.job.start(review['signature']);elapsed=time.monotonic()-started
+        self.assertLess(elapsed,1);self.assertIn(result['state'],('queued','publishing'))
+        self.assertTrue(entered.wait(2));status=self.wait_for('uncertain')
+        self.assertIn('publishing server unavailable',status['message'])
+        self.assertTrue(status['retryable']);self.assertIn('pending_publication',self.studio.state)
+    def test_webmention_service_wakes_after_publication_locks_are_released(self):
+        class Service:
+            def __init__(inner):inner.calls=[]
+            def wake(inner):
+                inner.calls.append((self.server.lock._is_owned(),self.server.reader_lock._is_owned()))
+        service=Service();self.server.webmentions=service
+        self.studio.create('Wake mentions');review=self.studio.prepare();self.job.start(review['signature'])
+        self.wait_for('succeeded')
+        self.assertEqual(service.calls,[(False,False)])
+    def test_webmention_wake_failure_does_not_change_publication_success(self):
+        class Service:
+            def wake(inner):raise RuntimeError('background service unavailable')
+        self.server.webmentions=Service()
+        self.studio.create('Publish anyway');review=self.studio.prepare();self.job.start(review['signature'])
+        status=self.wait_for('succeeded')
+        self.assertIn('Webmention delivery will retry later',status['detail'])
+        self.assertNotIn('pending_publication',self.studio.state)
+    def test_registry_refresh_wakes_after_publication_locks_are_released(self):
+        class Service:
+            def __init__(inner):inner.calls=[]
+            def wake(inner):
+                inner.calls.append((self.server.lock._is_owned(),self.server.reader_lock._is_owned()))
+        service=Service();self.server.registry_refresh=service
+        self.studio.create('Refresh targets');review=self.studio.prepare();self.job.start(review['signature'])
+        self.wait_for('succeeded')
+        self.assertEqual(service.calls,[(False,False)])
+    def test_registry_refresh_wake_failure_does_not_change_publication_success(self):
+        class Service:
+            def wake(inner):raise RuntimeError('registry worker unavailable')
+        self.server.registry_refresh=Service()
+        self.studio.create('Publish despite registry wake');review=self.studio.prepare();self.job.start(review['signature'])
+        status=self.wait_for('succeeded')
+        self.assertIn('Inbound target refresh will retry',status['detail'])
+        self.assertNotIn('pending_publication',self.studio.state)
     def test_later_edit_survives_and_history_uses_approved_commit(self):
         approved=self.studio.create('Exact post');approved['raw']=approved['raw'].replace('Start writing here.','Approved words.');self.studio.save_draft(approved)
         review=self.studio.prepare();entered,release=self.delayed_network();self.job.start(review['signature']);self.assertTrue(entered.wait(2))
@@ -54,7 +110,7 @@ class BackgroundPublicationTests(unittest.TestCase):
         self.assertIn(approved['name'],self.studio.state['drafts']);self.assertIn('Later unpublished words.',self.studio.state['drafts'][approved['name']]['raw'])
         published=self.studio.state['published'][self.studio.state['ids'][approved['name']]]
         self.assertIn('Approved words.',published['content_html']);self.assertNotIn('Later unpublished words.',published['content_html'])
-    def test_interrupted_job_is_preserved_for_recovery_after_restart(self):
+    def test_interrupted_job_resumes_after_restart(self):
         self.studio.create('Retry me');review=self.studio.prepare()
         original=self.studio.push_publication_network
         self.studio.push_publication_network=lambda pending:(_ for _ in ()).throw(ValueError('connection dropped'))
@@ -63,8 +119,20 @@ class BackgroundPublicationTests(unittest.TestCase):
         restarted_job=PublicationJob(self.server);restarted=restarted_job.status()
         self.assertEqual(restarted['state'],'uncertain');self.assertTrue(restarted['retryable'])
         self.studio.push_publication_network=original;self.job=restarted_job
-        restarted_job.start(retry=True);self.wait_for('succeeded')
+        restarted_job.resume();self.wait_for('succeeded')
         self.assertNotIn('pending_publication',self.studio.state)
+    def test_restart_finalizes_publication_already_on_host(self):
+        post=self.studio.create('Reached the host');review=self.studio.prepare()
+        pending=self.studio.begin_publication(review['signature'])
+        self.studio.push_publication_network(pending)
+        self.assertIn('pending_publication',self.studio.state)
+        self.assertIn(post['name'],self.studio.state['drafts'])
+        self.job=PublicationJob(self.server)
+        started=self.job.resume()
+        self.assertIn(started['state'],('queued','publishing'))
+        self.wait_for('succeeded')
+        self.assertNotIn('pending_publication',self.studio.state)
+        self.assertNotIn(post['name'],self.studio.state['drafts'])
     def test_save_after_review_is_refused_before_commit(self):
         post=self.studio.create('Reviewed post')
         post['raw']=post['raw'].replace('Start writing here.','Reviewed words.')
@@ -72,7 +140,7 @@ class BackgroundPublicationTests(unittest.TestCase):
         later=self.studio.page(post['name'])
         later['raw']=later['raw'].replace('Reviewed words.','Newer saved words.')
         self.studio.save_draft(later)
-        with self.assertRaisesRegex(ValueError,'changed after this review'):
+        with self.assertRaisesRegex(ValueError,'Review again'):
             self.studio.begin_publication(review['signature'])
         self.assertEqual(self.studio.git('rev-parse','HEAD'),head)
         self.assertNotIn('pending_publication',self.studio.state)
@@ -96,6 +164,16 @@ class BackgroundPublicationTests(unittest.TestCase):
         self.assertNotIn(post['name'],self.studio.state['drafts'])
         self.assertEqual(self.studio.state['drafts']['unrelated.html'],unrelated)
         self.assertEqual(self.studio.state['pins']['uncommitted-pin'],['7'])
+
+    def test_success_retires_exact_approved_draft_when_page_bytes_were_already_current(self):
+        post=self.studio.create('Already current');first=self.studio.prepare()
+        self.studio.push_publication(self.studio.begin_publication(first['signature']))
+        same=self.studio.page(post['name']);self.studio.save_draft(same)
+        second=self.studio.prepare()
+        self.assertIn(post['name'],self.studio.state['drafts'])
+        self.studio.push_publication(self.studio.begin_publication(second['signature']))
+        self.assertNotIn(post['name'],self.studio.state['drafts'])
+
     def test_review_job_returns_before_prepare_finishes(self):
         self.studio.create('Queued post');self.studio.git('push','website','master')
         entered=threading.Event();release=threading.Event();original=self.studio.prepare

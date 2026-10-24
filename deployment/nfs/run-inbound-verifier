@@ -1,0 +1,70 @@
+#!/usr/local/bin/python3
+"""Run one bounded, nonoverlapping inbound-verification batch."""
+
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/home/private/blynger-webmentions/current")
+
+from webmentions.inbound_queue import InboundQueue
+from webmentions.inbound_registry import validate_registry_artifact
+from webmentions.inbound_verifier import InboundVerifierWorker
+
+
+def require_directory(path, mode, *, group=None):
+    value = os.lstat(path)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != os.getuid()
+        or stat.S_IMODE(value.st_mode) != mode
+        or (group is not None and value.st_gid != group)
+    ):
+        raise ValueError("Unsafe inbound Webmention deployment boundary.")
+    return value
+
+
+def require_boundary():
+    require_directory("/home/private", 0o700)
+    require_directory("/home/private/blynger-webmentions", 0o700)
+    require_directory("/home/private/blynger-webmentions/current", 0o700)
+    protected = require_directory("/home/protected", 0o1770)
+    if protected.st_gid not in os.getgroups():
+        raise ValueError("Unsafe inbound Webmention deployment boundary.")
+    require_directory("/home/protected/webmentions", 0o750, group=protected.st_gid)
+    require_directory("/home/protected/webmentions/config", 0o2750, group=protected.st_gid)
+    # Both the web receiver and owner-side verifier create queue locks and
+    # records here. Set-group inheritance keeps every new file in the shared
+    # web group instead of whichever identity happened to create it first.
+    require_directory("/home/protected/webmentions/inbox", 0o2770, group=protected.st_gid)
+    require_directory("/home/protected/webmentions/verified", 0o700)
+
+
+def main():
+    require_boundary()
+    artifact = validate_registry_artifact(
+        json.loads(
+            Path("/home/protected/webmentions/config/targets.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    )
+    worker = InboundVerifierWorker(
+        InboundQueue("/home/protected/webmentions/inbox"),
+        artifact["registry"],
+        "/home/protected/webmentions/verified",
+        export_path="/home/protected/webmentions/verified/export.json",
+    )
+    # Scheduled-task output is emailed by the host. A successful batch is
+    # intentionally quiet; failures still reach stderr and the task monitor.
+    worker.run()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.stderr.write("Inbound Webmention verification failed.\n")
+        raise SystemExit(1)

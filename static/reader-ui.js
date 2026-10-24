@@ -143,7 +143,7 @@
       const isolate = row.querySelector('.isolate-item');
       if (isolate) isolate.onclick = () => actions.isolate(item);
       const responses = row.querySelector('.private-responses');
-      for (const emoji of ['🤯', '🙄', '👎', '😂', '❓']) {
+      for (const emoji of ['🤯', '🙄', '👎', '😂', '❓', '💭', '🔇', '🔉', '🔊']) {
         const button = document.createElement('button');
         button.className = 'reaction-item' + (item.reaction === emoji ? ' active' : '');
         button.textContent = emoji;

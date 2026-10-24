@@ -26,9 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     @objc func showPosts(){ click("postsNav") }
     @objc func showOpeners(){ click("openersNav") }
     @objc func showPages(){ click("pagesNav") }
+    @objc func showDrafts(){ click("draftsNav") }
     @objc func showImages(){ click("imagesNav") }
     @objc func showReader(){ click("readerNav") }
     @objc func showSaved(){ click("savedNav") }
+    @objc func showThicket(){ click("thicketNav") }
     @objc func rebuildArchive(){ click("migrate") }
     @objc func showRecovery(){ click("recovery") }
     @objc func showHelp(){ click("help") }
@@ -67,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         let editItem = NSMenuItem(); menu.addItem(editItem); let edit = NSMenu(title: "Edit"); editItem.submenu = edit
         for (title, action, key) in [("Undo", "undo:", "z"),("Cut", "cut:", "x"),("Copy", "copy:", "c"),("Paste", "paste:", "v"),("Select All", "selectAll:", "a")] { edit.addItem(withTitle: title, action: Selector(action), keyEquivalent: key) }
         let viewItem=NSMenuItem();menu.addItem(viewItem);let view=NSMenu(title:"View");viewItem.submenu=view
-        for (title,action) in [("Posts",#selector(showPosts)),("Openers",#selector(showOpeners)),("Pages",#selector(showPages)),("Images",#selector(showImages)),("Reader",#selector(showReader)),("Saved",#selector(showSaved))] { view.addItem(withTitle:title,action:action,keyEquivalent:"") }
+        for (title,action) in [("Posts",#selector(showPosts)),("Openers",#selector(showOpeners)),("Pages",#selector(showPages)),("Drafts",#selector(showDrafts)),("Images",#selector(showImages)),("Reader",#selector(showReader)),("Saved",#selector(showSaved)),("Thicket",#selector(showThicket))] { view.addItem(withTitle:title,action:action,keyEquivalent:"") }
         let helpItem=NSMenuItem();menu.addItem(helpItem);let help=NSMenu(title:"Help");helpItem.submenu=help
         help.addItem(withTitle:"Blynger Help",action:#selector(showHelp),keyEquivalent:"?")
         help.addItem(withTitle:"Recovery…",action:#selector(showRecovery),keyEquivalent:"")

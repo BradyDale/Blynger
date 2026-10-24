@@ -25,6 +25,9 @@
     "remote_path": "/home/public/.git",
     "hostname_suffix": ".example-host.net"
   },
+  "webmentions": {
+    "inbound_sync_enabled": false
+  },
   "runtime": {
     "source": "/path/to/Blynger",
     "python": "/path/to/python",

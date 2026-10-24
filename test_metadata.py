@@ -2,7 +2,7 @@ import json,re,tempfile,unittest
 from pathlib import Path
 from bs4 import BeautifulSoup
 from PIL import Image
-from metadata import enrich,sitemap
+from metadata import enrich,sitemap,set_webmention_discovery
 class MetadataTests(unittest.TestCase):
  def test_preserves_body_and_corrects_social_metadata(self):
   with tempfile.TemporaryDirectory() as folder:
@@ -70,6 +70,23 @@ class MetadataTests(unittest.TestCase):
   url='https://example.com/blyg/items/00000000000000000000000000.json'
   once=enrich(raw,'1.html',Path('/tmp'),item_json=url);twice=enrich(once,'1.html',Path('/tmp'),item_json=url)
   self.assertEqual(once,twice);soup=BeautifulSoup(twice,'html.parser');self.assertEqual(len(soup.find_all('link',rel='alternate',type='application/json')),1);self.assertEqual(len(soup.find_all('link',rel='blyg')),1);self.assertEqual(len(soup.find_all('link',rel='alternate',type='application/rss+xml')),1)
+
+ def test_webmention_discovery_is_managed_and_forward_only(self):
+  raw='<html><head><title>Post</title></head><body><article><h1>Post</h1><p>Enough words for a useful description.</p></article></body></html>'
+  config={**__import__('configuration').DEFAULT_SETTINGS,'webmentions':{'inbound_sync_enabled':True,'receiver_endpoint':'https://example.com/webmention.cgi'}}
+  once=enrich(raw,'1.html',Path('/tmp'),config=config);twice=enrich(once,'1.html',Path('/tmp'),config=config)
+  self.assertEqual(once,twice);self.assertEqual(BeautifulSoup(twice,'html.parser').find('link',rel='webmention')['href'],'https://example.com/webmention.cgi')
+  pinned=BeautifulSoup(enrich(raw,'1.html',Path('/tmp'),config=config,webmention_discovery=False),'html.parser')
+  self.assertIsNone(pinned.find('link',rel='webmention'));self.assertIsNotNone(pinned.find('link',rel='blyg'))
+  disabled={**config,'webmentions':{'inbound_sync_enabled':True,'receiver_endpoint':''}}
+  self.assertIsNone(BeautifulSoup(enrich(twice,'1.html',Path('/tmp'),config=disabled),'html.parser').find('link',rel='webmention'))
+
+ def test_sitewide_webmention_discovery_changes_only_the_managed_link(self):
+  raw='<html><head><title>Old page</title><style>body { color: purple; }</style></head><body><p>Handmade forever.</p></body></html>'
+  endpoint='https://example.com/webmention.cgi'
+  once=set_webmention_discovery(raw,endpoint);twice=set_webmention_discovery(once,endpoint)
+  self.assertEqual(once,twice)
+  self.assertEqual(once.replace('\n<link rel="webmention" href="'+endpoint+'">',''),raw.replace('</head>','\n</head>'))
 
  def test_quote_style_reinsertion_does_not_accumulate_metadata_whitespace(self):
   import re

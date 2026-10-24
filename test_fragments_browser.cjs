@@ -96,6 +96,13 @@ const assert = require('node:assert/strict');
       for (const key of keys)
         if (!marked.includes(`data-blynger-fragment="${key}"`))
           throw Error('Moved fragment lost its durable identity');
+      editor.innerHTML = '<h3>October 23, 2026, 2:35 PM</h3><p>Earlier opener.</p>';
+      f.meta = { purpose: 'openers', blocks: [], ranges: [], dividers: [], ordinary: [] };
+      f.assign();
+      f.syncOpeners();
+      if (!f.newOpener('New opener.')) throw Error('New opener was not added');
+      if (editor.firstElementChild.textContent === 'October 23, 2026, 2:35 PM')
+        throw Error('New opener was not inserted at the top');
       return {
         saved,
         tk: reordered,

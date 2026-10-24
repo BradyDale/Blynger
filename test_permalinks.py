@@ -22,6 +22,19 @@ class PermalinkTests(StudioTests):
         before=self.studio.content(raw,'43.html',{})
         after=self.studio.content(rendered,'43.html',{})
         self.assertEqual(before,after)
+        self.assertIn('current v3 · 2026-09-26',rendered)
+
+    def test_version_footer_timestamps_pins_and_preserves_legacy_dates(self):
+        iid='4cgbkk3zkaazdd0y336xw1b29t'
+        doc={'id':iid,'kind':'thread','version':2,'updated':'2026-10-19T18:39:57Z','changelog':[
+            {'version':1,'at':'2026-10-18T23:07:09Z','note':'Pinned','pinned':True},
+        ]}
+        self.studio.state['history'][iid]={'1':{'kind':'thread'}}
+        footer=self.studio.version_footer(doc)
+        self.assertIn('<time datetime="2026-10-19T18:39:57Z">2026-10-19 18:39 UTC</time>',footer)
+        self.assertIn('Version 1 · frozen pin</a> — 2026-10-18 Pinned',footer)
+        doc['updated']='2026-10-19'
+        self.assertIn('current v2 · 2026-10-19',self.studio.version_footer(doc))
     def test_legacy_fragment_permalink_survives_post_becoming_a_thread(self):
         self.studio.migrate();iid=self.studio.state['ids']['1.html'];first=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         # Publications made before Posts were explicitly threads retain their

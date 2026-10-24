@@ -53,8 +53,8 @@ The Saved shelf records and displays the local date and time when an item is sav
 
 ## Private signals and activity
 
-Like remains a separate local `👍` action. Reader also offers five private
-responses—`🤯`, `🙄`, `👎`, `😂`, and `❓`—with at most one of those responses
+Like remains a separate local `👍` action. Reader also offers nine private
+responses—`🤯`, `🙄`, `👎`, `😂`, `❓`, `💭`, `🔇`, `🔉`, and `🔊`—with at most one of those responses
 active on an item at a time. A response does not replace Like, so both may be
 present. Setting, changing, and clearing these choices appends an event to the
 private activity history.

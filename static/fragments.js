@@ -693,56 +693,30 @@ class FragmentEditor {
     });
     this.meta.dividers = headings.map((i) => els[i].dataset.fragmentBlock);
   }
-  roman(number) {
-    let out = '';
-    for (const [n, r] of [
-      [1000, 'M'],
-      [900, 'CM'],
-      [500, 'D'],
-      [400, 'CD'],
-      [100, 'C'],
-      [90, 'XC'],
-      [50, 'L'],
-      [40, 'XL'],
-      [10, 'X'],
-      [9, 'IX'],
-      [5, 'V'],
-      [4, 'IV'],
-      [1, 'I'],
-    ])
-      while (number >= n) {
-        out += r;
-        number -= n;
-      }
-    return out;
-  }
-  openerDate() {
-    return new Date().toLocaleDateString('en-US', {
+  openerDate(now = new Date()) {
+    return now.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
+      timeZone: 'America/Chicago',
     });
   }
-  dayKey(text) {
-    const m = text
-      .trim()
-      .match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})(?:[\s,]+[IVXLCDM]+)?$/i);
-    return m ? m[3] + '-' + m[1].toLowerCase() + '-' + Number(m[2]) : null;
+  openerTime(now = new Date()) {
+    return now.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Chicago',
+    });
+  }
+  openerStamp(now = new Date()) {
+    return this.openerDate(now) + ', ' + this.openerTime(now);
   }
   newOpener(text, options = {}) {
     if (this.meta?.purpose !== 'openers' || !text.trim()) return false;
-    const date = this.openerDate(),
-      day = this.dayKey(date),
-      heads = [...this.editor.children].filter((el) => this.isOpenerHeading(el));
-    const sameDay = heads.filter((el) => this.dayKey(el.textContent) === day);
-    // Oldest entry is I. Public anchors and shared fragment keys remain unchanged.
-    sameDay
-      .slice()
-      .reverse()
-      .forEach((el, i) => (el.textContent = date + ', ' + this.roman(i + 1)));
     const h = document.createElement('h3');
     h.id = 'opener-' + crypto.randomUUID();
-    h.textContent = date + (sameDay.length ? ', ' + this.roman(sameDay.length + 1) : '');
+    h.textContent = this.openerStamp();
     const paragraphs = text
       .trim()
       .split(/\n\s*\n/)
@@ -760,7 +734,7 @@ class FragmentEditor {
       holder.innerHTML = options.stub_html;
       context.push(...holder.children);
     }
-    const first = heads[0],
+    const first = [...this.editor.children].find((el) => this.isOpenerHeading(el)),
       content = [...context, ...paragraphs];
     if (first) first.before(h, ...content);
     else this.editor.append(h, ...content);

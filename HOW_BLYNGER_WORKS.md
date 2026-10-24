@@ -1,6 +1,6 @@
 # How Blynger Works
 
-**Current application release described here: 0.12.0.**
+**Current application release described here: 0.13.0.**
 
 Blynger is a local application for writing, maintaining, reading from, and publishing a static personal website.
 
@@ -128,7 +128,7 @@ last known-good copy.
 
 Saved is a local shelf of material retained from Reader.
 
-Saved and Like state belong to the user, locally. Five additional emoji responses—mind blown, eye roll, thumbs down, laugh, and question—are local too. They are not public reactions and are not published as Blyg metadata.
+Saved and Like state belong to the user, locally. Nine additional emoji responses—mind blown, eye roll, thumbs down, laugh, question, thought, mute, quieter, and louder—are local too. They are not public reactions and are not published as Blyg metadata.
 
 Saved also contains a private activity history. It records changes to Saved,
 Like, and emoji responses, plus remote quotations, Stubs, and forks once those
@@ -170,7 +170,7 @@ The existence of two feeds is deliberate. **A human subscribing to the website a
 
 Saving a draft is not publishing.
 
-Blynger has a **Queue** operation that saves work privately for a later publication and a separate **Review & publish** process for examining what would actually change on the website.
+Blynger separates **Save** from **Stage**. Save keeps writing privately in Drafts, including moving staged writing back to Drafts. Stage also saves it and explicitly includes it in the next **Review & publish** operation. Unstaged drafts are invisible to publication; required homepage, feed, Blyg, and Series files follow staged writing automatically.
 
 Publication is Git-based.
 

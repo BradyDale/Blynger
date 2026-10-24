@@ -17,9 +17,12 @@ def valid_date(value):
         return value
     except (ValueError,AttributeError): return None
 
-def discovery_markup(config,blyg=False,rss=False,item_json=None):
+def discovery_markup(config,blyg=False,rss=False,item_json=None,webmention=None):
     lines=[]
     if blyg:lines.append('<link rel="blyg" href="/blyg/">')
+    endpoint=config.get('webmentions',{}).get('receiver_endpoint')
+    if webmention is None:webmention=blyg
+    if webmention and endpoint:lines.append('<link rel="webmention" href="'+html.escape(endpoint,quote=True)+'">')
     if rss:lines.append('<link rel="alternate" type="application/rss+xml" title="'+html.escape(config['blyg_title'],quote=True)+'" href="/feed.xml">')
     if item_json:lines.append('<link rel="alternate" type="application/json" href="'+html.escape(item_json,quote=True)+'">')
     return '\n'.join(lines)
@@ -27,12 +30,26 @@ def discovery_markup(config,blyg=False,rss=False,item_json=None):
 def favicon_markup(config):
     return '<link rel="icon" type="image/png" href="'+html.escape(config['favicon'],quote=True)+'">' if config.get('favicon') else ''
 
-def enrich(raw,name,root,published=None,modified=None,standalone=False,config=None,item_json=None,blyg_item=None,blyg_discovery=None,rss_discovery=None):
+def set_webmention_discovery(raw,endpoint):
+    """Manage only receiver discovery while preserving every other page byte."""
+    head=re.search(r'<head\b[^>]*>(.*?)</head\s*>',raw,re.I|re.S)
+    if not head:raise ValueError('HTML page is missing its head; Webmention discovery was not changed.')
+    old=head.group(1)
+    def remove_link(match):
+        node=BeautifulSoup(match.group(),'html.parser').find('link')
+        return '' if node and 'webmention' in node.get('rel',[]) else match.group()
+    old=re.sub(r'<link\b[^>]*>[ \t]*(?:\r?\n)?',remove_link,old,flags=re.I)
+    line='<link rel="webmention" href="'+html.escape(endpoint,quote=True)+'">' if endpoint else ''
+    updated=old.rstrip()+(('\n'+line) if line else '')+'\n'
+    return raw[:head.start(1)]+updated+raw[head.end(1):]
+
+def enrich(raw,name,root,published=None,modified=None,standalone=False,config=None,item_json=None,blyg_item=None,blyg_discovery=None,rss_discovery=None,webmention_discovery=None):
     config=config or DEFAULT_SETTINGS; site=config['site_url'].rstrip('/')+'/'; author=config['author_name']
     main_pages=set(config.get('main_pages',[]))
     if blyg_item is None:blyg_item=not standalone and name not in main_pages
     if blyg_discovery is None:blyg_discovery=blyg_item or name=='index.html'
     if rss_discovery is None:rss_discovery=not standalone
+    if webmention_discovery is None:webmention_discovery=blyg_discovery
     head=re.search(r'<head\b[^>]*>(.*?)</head\s*>',raw,re.I|re.S)
     if not head: raise ValueError(name+': missing HTML head; metadata was not changed.')
     soup=BeautifulSoup(raw,'html.parser'); tags={m.get('property') or m.get('name'):m.get('content','') for m in soup.find_all('meta')}
@@ -126,7 +143,7 @@ def enrich(raw,name,root,published=None,modified=None,standalone=False,config=No
     def remove_link(m):
         node=BeautifulSoup(m.group(),'html.parser').find('link'); rel=node.get('rel',[])
         managed_alternate='alternate' in rel and node.get('type') in ('application/rss+xml','application/json')
-        return '' if any(r in rel for r in ('canonical','blyg','icon')) or managed_alternate else m.group()
+        return '' if any(r in rel for r in ('canonical','blyg','webmention','icon')) or managed_alternate else m.group()
     oldhead=re.sub(r'<link\b[^>]*>[ \t]*(?:\r?\n)?',remove_link,oldhead,flags=re.I)
     oldhead=re.sub(r'<script\b[^>]*id=[\"\']blynger-structured-data[\"\'][^>]*>.*?</script\s*>[ \t]*(?:\r?\n)?','',oldhead,flags=re.I|re.S)
     oldhead=re.sub(r'(?:\r?\n)?<title\b[^>]*>.*?</title\s*>[ \t]*(?:\r?\n)?','',oldhead,flags=re.I|re.S)
@@ -134,7 +151,7 @@ def enrich(raw,name,root,published=None,modified=None,standalone=False,config=No
     if favicon_markup(config):lines.append(favicon_markup(config))
     lines += ['<meta '+kind+'="'+key+'" content="'+html.escape(str(value),quote=True)+'">' for kind,data in [('name',metas),('property',props)] for key,value in data.items()]
     lines += ['<link rel="canonical" href="'+canonical+'">']
-    links=discovery_markup(config,blyg_discovery,rss_discovery,item_json)
+    links=discovery_markup(config,blyg_discovery,rss_discovery,item_json,webmention_discovery)
     if links:lines.extend(links.splitlines())
     lines += ['<script type="application/ld+json" id="blynger-structured-data">'+json.dumps(schema,ensure_ascii=False).replace('<','\\u003c')+'</script>']
     return raw[:head.start(1)]+oldhead.rstrip()+'\n'+'\n'.join(lines)+'\n'+raw[head.end(1):]

@@ -51,6 +51,15 @@ class StudioTests(unittest.TestCase):
         reopened=Studio(self.root,self.studio.data)
         self.assertEqual(bad.read_text(),'{bad')
         self.assertEqual(reopened.studio_recovery_status()['invalid_public_items'],1)
+    def test_dataless_generated_item_does_not_block_startup_or_count_as_damage(self):
+        folder=self.root/'blyg/items'
+        folder.mkdir(parents=True)
+        offline=folder/'00000000000000000000000000.json'
+        offline.write_text(json.dumps({'id':'00000000000000000000000000','url':'2.html'}))
+        with patch('core.is_dataless',side_effect=lambda path:path.name==offline.name):
+            reopened=Studio(self.root,self.studio.data)
+        self.assertNotIn('2.html',reopened.state['ids'])
+        self.assertIsNone(reopened.studio_recovery_status())
     def test_verified_studio_backup_can_be_restored_without_losing_replaced_state(self):
         first=self.studio.create('First protected draft')
         self.studio.save_draft(first)
@@ -143,6 +152,22 @@ class StudioTests(unittest.TestCase):
         d=self.studio.page('1.html'); before=(self.root/'1.html').read_bytes(); d['raw']=d['raw'].replace('Original','Edited'); self.studio.save_draft(d); self.assertEqual(before,(self.root/'1.html').read_bytes())
         (self.root/'1.html').write_text('External change')
         with self.assertRaises(ValueError): self.studio.prepare()
+    def test_pages_inventory_exposes_every_kind_of_saved_draft(self):
+        post=self.studio.create('Unpublished post')
+        opener=self.studio.page('openers.html');opener['raw']=opener['raw'].replace('An opening thought.','A saved opening thought.');self.studio.save_draft(opener)
+        listed={item['name']:item for item in self.studio.pages()}
+        self.assertTrue(listed[post['name']]['draft'])
+        self.assertEqual(listed[post['name']]['draft_state'],'new')
+        self.assertTrue(listed['openers.html']['draft'])
+        self.assertEqual(listed['openers.html']['draft_state'],'saved changes')
+        self.assertFalse(listed['1.html']['draft'])
+    def test_interface_has_a_distinct_author_drafts_workspace(self):
+        base=Path(__file__).parent
+        html=(base/'static/index.html').read_text();script=(base/'static/app.js').read_text()
+        self.assertIn('data-workspace="drafts"',html)
+        self.assertIn("p.draft && !p.deleted",script)
+        self.assertIn('No saved drafts.',script)
+        self.assertIn("'Discard draft'",script)
     def test_numbered_posts_preserve_existing_and_reserve_drafts(self):
         (self.root/'42.html').write_text(new_page('Existing','Keep me'))
         (self.root/'2026-09-25-new-post.html').write_text(new_page('Recent','Keep this too'))
@@ -180,6 +205,18 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.studio.state['ids']['3.html'],iid)
         self.assertEqual(self.studio.state['series']['test']['members'][0]['name'],'3.html')
         self.assertIn('https://example.com/3.html',self.studio.state['drafts']['3.html']['raw'])
+
+    def test_new_draft_can_change_number_after_review_was_prepared(self):
+        draft=self.studio.create('Change my number');old=draft['name']
+        self.studio.prepare()
+        self.assertTrue(self.studio.state['drafts'][old]['new'])
+        self.assertTrue((self.root/old).exists())
+        changed=self.studio.renumber_post(old,3)
+        self.assertEqual(changed['name'],'3.html')
+        self.assertNotIn(old,self.studio.state['drafts'])
+        self.assertFalse((self.root/old).exists())
+        self.assertIsNone(self.studio.state['drafts']['3.html']['base'])
+        self.assertNotIn('prepared_publication',self.studio.state)
 
     def test_post_renumber_rejects_every_reserved_or_published_number(self):
         draft=self.studio.create('New draft')
@@ -328,7 +365,7 @@ class StudioTests(unittest.TestCase):
         obsolete.unlink()
         remote=self.base/'removal-remote.git';subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True)
         self.studio.git('remote','add','website',str(remote))
-        self.assertTrue(self.studio.publication_status()['ready'])
+        self.assertFalse(self.studio.publication_status()['ready'])
         review=self.studio.review();change=next(c for c in review['changes'] if c['path']=='obsolete.html')
         self.assertTrue(change['deleted']);self.assertEqual(change['bytes'],0);self.assertIn('Removed obsolete.html',review['commit_message'])
         self.studio.publish(review['signature'])
@@ -340,7 +377,7 @@ class StudioTests(unittest.TestCase):
         self.assertTrue(self.studio.publication_status()['ready']);self.assertEqual(self.studio.publication_status()['state'],'saved_locally')
         self.studio.discard('1.html');self.assertFalse(self.studio.publication_status()['ready'])
         (self.root/'notes.private').write_text('not publishable');self.assertFalse(self.studio.publication_status()['ready'])
-        (self.root/'1.html').write_text(new_page('Changed','<p>Changed outside.</p>'));self.assertTrue(self.studio.publication_status()['ready']);self.assertEqual(self.studio.publication_status()['state'],'prepared_locally')
+        (self.root/'1.html').write_text(new_page('Changed','<p>Changed outside.</p>'));self.assertFalse(self.studio.publication_status()['ready'])
         self.studio.state['pending_publication']={'commit':'example'};status=self.studio.publication_status()
         self.assertEqual(status['state'],'uncertain');self.assertTrue(status['retryable'])
     def test_published_edit_announces_each_protocol_event_but_site_feed_stays_calm(self):
@@ -379,7 +416,7 @@ class StudioTests(unittest.TestCase):
         from PIL import Image
         html=(Path(__file__).parent/'static/index.html').read_text()
         compact_html=re.sub(r'\s+','',html)
-        for label in ('Posts','Openers','Pages','Images','Reader','Saved','Updated','Created','Alphabetical','Deleted'):
+        for label in ('Posts','Openers','Pages','Images','Reader','Saved','Thicket','Updated','Created','Alphabetical','Deleted'):
             self.assertIn('>'+label+'<',compact_html)
         self.assertIn('Blockquote</button>',compact_html)
         self.assertIn('id="imageUpload"',html)
@@ -388,7 +425,7 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn('✦ TK assistant',html)
         self.assertIn('id="help"',html)
         self.assertIn('id="recovery"',html)
-        static=Path(__file__).parent/'static';js=(static/'app.js').read_text()+(static/'reader-ui.js').read_text()
+        static=Path(__file__).parent/'static';js=(static/'app.js').read_text()+(static/'reader-ui.js').read_text();style=(static/'style.css').read_text()
         compact_js=re.sub(r'\s+','',js)
         def assert_compact(value):self.assertIn(re.sub(r'\s+','',value),compact_js)
         self.assertIn("['versions','mainFragment','transclude','respondStub','quote','tk','fragment','removeFragment'",compact_js)
@@ -399,6 +436,14 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn("+' took '+",js)
         assert_compact("workspace==='saved'?'saved'")
         self.assertIn('Saved before date tracking',js)
+        for value in ('thicketNav','thicketView','thicketOutCount','thicketInCount','thicketEntries','thicketStatusLight'):
+            self.assertIn('id="'+value+'"',html)
+        for value in ("api('webmentions-status')","api('inbound-webmentions-status')","api('inbound-webmentions-read',",'24 * 60 * 60 * 1000','entries.slice(0, 3)',"return 'STUB'",'navigator.clipboard.writeText(thicketReport(entry))','openExternal(source)'):
+            self.assertIn(value,js)
+        self.assertIn('/static/thicket-ui.js',html)
+        self.assertNotIn('BLOCK',html)
+        self.assertIn('.workspace-tabs button#thicketNav.has-unread',style)
+        self.assertIn('grid-template-columns: 1fr 1fr',style)
         assert_compact("savedView==='activity'?'Loading private activity…':'Loading saved posts…'")
         assert_compact("api('reader-react'")
         self.assertIn('Private activity</button>',html)

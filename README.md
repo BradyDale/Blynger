@@ -2,7 +2,7 @@
 
 **Blynger is a static personal website manager with Blygger interoperability built in.**
 
-Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.3 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, and separate ordinary/Blyg RSS feeds.
+Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.3 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, Webmention sending and receiving, a private activity view called Thicket, and separate ordinary/Blyg RSS feeds.
 
 For a fuller explanation of the static-first design and how its workspaces and
 Blyg features fit together, see [How Blynger Works](HOW_BLYNGER_WORKS.md).
@@ -26,7 +26,9 @@ The code distinguishes between two kinds of updates:
 
 ## Current status
 
-Blynger 0.12.0 is pre-1.0 software. It was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
+Blynger 0.13.0 is pre-1.0 software. This release adds background outbound Webmentions and verified incoming Webmentions in Thicket. The included inbound deployment helpers target the host layout documented under `deployment/nfs/`; review the security and receiver documents under `docs/` before enabling them on another installation.
+
+Blynger was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
 
 ## Requirements
 
@@ -55,6 +57,8 @@ and guided first-run setup are not yet provided.
 - Drafts, Reader state, settings, IDs, and history stay in the configured private
   data directory.
 - Publishing presents an explicit file review before committing or pushing.
+- Incoming Webmentions remain untrusted until bounded server-side verification;
+  only verified activity is synchronized into Thicket.
 - Tests use disposable sites and local bare Git repositories.
 - The server binds to `127.0.0.1` and uses a per-launch request token.
 - `settings.json`, private data, credentials, and website content do not belong

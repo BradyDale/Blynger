@@ -38,6 +38,7 @@ DEFAULT_SETTINGS = {
         "remote_path": "/home/public/.git",
         "hostname_suffix": ""
     },
+    "webmentions": {"inbound_sync_enabled": False, "receiver_endpoint": ""},
     "runtime": {"source": "", "python": "", "log": ""}
 }
 
@@ -65,6 +66,16 @@ def validate(values):
     if not cfg["site_label"]: cfg["site_label"]=parsed.hostname
     for key in ("main_pages","non_blyg_pages","local_hostnames","navigation","default_images"):
         if not isinstance(cfg[key],list): raise ValueError(key+" must be a list.")
+    if not isinstance(cfg["webmentions"],dict) or type(cfg["webmentions"].get("inbound_sync_enabled")) is not bool:
+        raise ValueError("webmentions.inbound_sync_enabled must be true or false.")
+    endpoint=cfg["webmentions"].get("receiver_endpoint","")
+    if not isinstance(endpoint,str): raise ValueError("webmentions.receiver_endpoint must be a URL or empty.")
+    endpoint=endpoint.strip()
+    if endpoint:
+        receiver=urlsplit(endpoint)
+        if receiver.scheme!="https" or receiver.hostname!=parsed.hostname or receiver.username or receiver.password or receiver.query or receiver.fragment:
+            raise ValueError("webmentions.receiver_endpoint must be an HTTPS URL on this site without credentials, query, or fragment.")
+    cfg["webmentions"]["receiver_endpoint"]=endpoint
     return cfg
 
 def load(path=None):

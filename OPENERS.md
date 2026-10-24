@@ -2,7 +2,7 @@
 
 ## Using it
 
-Open **Openers**, then **New opener**. Write the text and choose **Add opener**. Blynger inserts it at the top, dates it using the Mac’s local calendar, and saves a local draft. A second entry on the same date labels the first I and the second II; subsequent entries continue III, IV, etc. Existing same-day anchors and fragment identities remain stable. Other dates are unchanged. Cancel and blank submissions create nothing. Further editing uses the existing page editor and Save draft.
+Open **Openers**, then **New opener**. Write the text and choose **Add opener**. Blynger inserts it at the top with the date and Central Time, then saves a local draft. Existing date-only and same-day Roman-numeral headings remain unchanged; only new Openers use timestamps. Cancel and blank submissions create nothing. Further editing uses the editor’s Save and Stage controls.
 
 New Opener dialogs default **Pin this version when published** to checked. The
 choice is stored with the draft, appears in publication review, and produces

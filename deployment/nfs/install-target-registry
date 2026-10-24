@@ -1,0 +1,86 @@
+#!/usr/local/bin/python3
+"""Install one exact-commit receiver registry through the fixed SSH command."""
+
+import json
+import os
+import stat
+import subprocess
+import sys
+
+sys.path.insert(0, "/home/private/blynger-webmentions/current")
+
+from webmentions.inbound_registry import ARTIFACT_LIMIT, RegistryArtifactStore
+
+
+def require_directory(path, mode, *, group=None):
+    value = os.lstat(path)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != os.getuid()
+        or stat.S_IMODE(value.st_mode) != mode
+        or (group is not None and value.st_gid != group)
+    ):
+        raise ValueError("Unsafe inbound Webmention deployment boundary.")
+    return value
+
+
+def require_boundary():
+    require_directory("/home/private", 0o700)
+    require_directory("/home/private/blynger-webmentions", 0o700)
+    require_directory("/home/private/blynger-webmentions/current", 0o700)
+    require_directory("/home/private/blynger-webmentions/bin", 0o700)
+    protected = require_directory("/home/protected", 0o1770)
+    if protected.st_gid not in os.getgroups():
+        raise ValueError("Unsafe inbound Webmention deployment boundary.")
+    require_directory("/home/protected/webmentions", 0o750, group=protected.st_gid)
+    require_directory("/home/protected/webmentions/config", 0o2750, group=protected.st_gid)
+    for path in ("/home/public", "/home/public/.git"):
+        value = os.lstat(path)
+        if (
+            not stat.S_ISDIR(value.st_mode)
+            or value.st_uid != os.getuid()
+            or value.st_mode & stat.S_IWOTH
+            or (value.st_gid == protected.st_gid and value.st_mode & stat.S_IWGRP)
+        ):
+            raise ValueError("Unsafe inbound Webmention deployment boundary.")
+
+
+def is_ancestor(older, newer):
+    result = subprocess.run(
+        [
+            "git",
+            "--git-dir=/home/public/.git",
+            "merge-base",
+            "--is-ancestor",
+            older,
+            newer,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise ValueError("Could not confirm the hosted Git history.")
+    return result.returncode == 0
+
+
+def main():
+    require_boundary()
+    payload = sys.stdin.buffer.read(ARTIFACT_LIMIT + 1)
+    if not payload or len(payload) > ARTIFACT_LIMIT:
+        raise ValueError("Invalid inbound target registry payload.")
+    incoming = json.loads(payload)
+    receipt = RegistryArtifactStore(
+        "/home/protected/webmentions/config"
+    ).install(incoming, is_ancestor)
+    sys.stdout.write(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        sys.stderr.write("Inbound target registry installation failed.\n")
+        raise SystemExit(1)

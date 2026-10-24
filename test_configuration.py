@@ -25,6 +25,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);site=root/'site';data=root/'private';site.mkdir();(site/'images').mkdir()
             cfg=copy.deepcopy(DEFAULT_SETTINGS);cfg.update(site_root=str(site),data_root=str(data),site_url='https://writer.example/',site_label='writer.example',author_name='A Writer',author_signature='—A Writer',blyg_title="A Writer's blyg",feed_description='Notes by A Writer',local_hostnames=['writer.example'])
+            cfg['webmentions']['receiver_endpoint']='https://writer.example/webmention.cgi'
             (site/'index.html').write_text('<html><head></head><body><h1>Home</h1><h2>Posts</h2></body></html>')
             (site/'openers.html').write_text('<html><head></head><body><article><h1>Openers</h1></article></body></html>')
             import subprocess
@@ -34,6 +35,7 @@ class ConfigurationTests(unittest.TestCase):
             studio=Studio(site,data,cfg);draft=studio.create('Configured');self.assertIn('—A Writer',draft['raw']);studio.prepare()
             manifest=json.loads((site/'blyg/blyg.json').read_text());self.assertEqual(manifest['author']['name'],'A Writer');self.assertEqual(manifest['title'],"A Writer's blyg")
             self.assertEqual(BeautifulSoup((site/draft['name']).read_text(),'html.parser').find('link',rel='canonical')['href'],'https://writer.example/'+draft['name'])
+            self.assertEqual(BeautifulSoup((site/'openers.html').read_text(),'html.parser').find('link',rel='webmention')['href'],'https://writer.example/webmention.cgi')
 
     def test_settings_screen_view_never_contains_key_material(self):
         cfg=copy.deepcopy(DEFAULT_SETTINGS);cfg.update(site_root='/site',data_root='/private')
@@ -41,5 +43,20 @@ class ConfigurationTests(unittest.TestCase):
         view=public_view(update_from_public(cfg,{'author_name':'Someone'}))
         self.assertEqual(view['ssh_key'],'/keys/id_example');self.assertNotIn('private_key',view)
         self.assertEqual(view['tk_model'],'gpt-6.1-sol')
+
+    def test_inbound_sync_activation_must_be_boolean(self):
+        cfg=copy.deepcopy(DEFAULT_SETTINGS);cfg.update(site_root='/site',data_root='/private')
+        cfg['webmentions']['inbound_sync_enabled']='yes'
+        with self.assertRaisesRegex(ValueError,'true or false'):
+            validate(cfg)
+
+    def test_receiver_endpoint_is_same_site_https(self):
+        cfg=copy.deepcopy(DEFAULT_SETTINGS);cfg.update(site_root='/site',data_root='/private')
+        cfg['webmentions']['receiver_endpoint']='https://example.com/webmention.cgi'
+        self.assertEqual(validate(cfg)['webmentions']['receiver_endpoint'],'https://example.com/webmention.cgi')
+        for endpoint in ('http://example.com/webmention.cgi','https://other.example/webmention.cgi','https://example.com/webmention.cgi?secret=yes'):
+            cfg['webmentions']['receiver_endpoint']=endpoint
+            with self.assertRaisesRegex(ValueError,'HTTPS URL on this site'):
+                validate(cfg)
 
 if __name__=='__main__':unittest.main()

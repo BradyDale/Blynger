@@ -277,9 +277,9 @@ class ReaderTests(unittest.TestCase):
         reloaded=Reader(self.data,self.net,lambda:self.time);self.assertTrue(reloaded.item(key)['liked']);self.assertIsNone(reloaded.item(key)['reaction']);self.assertEqual(len(reloaded.interactions()),4)
     def test_private_response_allowlist_and_search(self):
         self.sub();key=self.r.key(ORIGIN,IID)
-        for reaction in ('🤯','🙄','👎','😂','❓'):self.r.react(key,reaction)
+        for reaction in ('🤯','🙄','👎','😂','❓','💭','🔇','🔉','🔊'):self.r.react(key,reaction)
         with self.assertRaisesRegex(ValueError,'Unknown private response'):self.r.react(key,'🔥')
-        self.assertEqual(self.r.item(key)['reaction'],'❓');self.assertEqual(len(self.r.interactions('remote words')),5)
+        self.assertEqual(self.r.item(key)['reaction'],'🔊');self.assertEqual(len(self.r.interactions('remote words')),9)
     def test_existing_markers_backfill_without_entering_item_document(self):
         self.sub();key=self.r.key(ORIGIN,IID);self.r.state['items'][key].update(saved=True,saved_at=self.time,liked=True,reaction='😂');self.r.state.pop('interaction_marker_backfill_v1',None);self.r.state['interactions']=[];self.r.state['interaction_seq']=0;self.r.save()
         reloaded=Reader(self.data,self.net,lambda:self.time);self.assertEqual({row['kind'] for row in reloaded.interactions()},{'save','like','reaction'});self.assertTrue(all(row['backfilled'] for row in reloaded.interactions()));self.assertNotIn('interactions',reloaded.item(key)['doc'])
