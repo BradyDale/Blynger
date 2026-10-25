@@ -1,44 +1,87 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
-  <rect width="1440" height="900" fill="#416b67"/>
-  <rect x="18" y="16" width="1404" height="866" fill="#d4d4cd" stroke="#fff" stroke-width="3"/>
-  <rect x="23" y="21" width="1394" height="42" fill="#183e43"/>
-  <rect x="31" y="26" width="32" height="32" rx="5" fill="#f5f1dc" stroke="#86a28e"/>
-  <text x="47" y="51" text-anchor="middle" fill="#174b47" font-family="Georgia,serif" font-size="27" font-weight="bold">B</text>
-  <text x="72" y="48" fill="#fff" font-family="Tahoma,Arial,sans-serif" font-size="17" font-weight="bold">Blynger — Personal Publisher</text>
-  <text x="1391" y="48" text-anchor="end" fill="#fff" font-family="monospace" font-size="18">_  ▢  ×</text>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="4" dy="5" stdDeviation="0" flood-color="#173a38" flood-opacity=".8"/>
+    </filter>
+    <pattern id="paper" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#f4f1e6"/>
+      <circle cx="1" cy="2" r=".45" fill="#d5d2c5"/>
+    </pattern>
+  </defs>
+  <rect width="1440" height="900" fill="#315f5a"/>
+  <rect x="14" y="14" width="1412" height="872" fill="#d7dbd5" stroke="#102f2e" stroke-width="4"/>
+  <rect x="18" y="18" width="1404" height="70" fill="#143e3d"/>
+  <image href="data:image/png;base64,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" x="27" y="25" width="56" height="56" preserveAspectRatio="xMidYMid slice"/>
+  <text x="96" y="51" fill="#fffdf1" font-family="Georgia,serif" font-size="25" font-weight="bold">Blynger</text>
+  <text x="96" y="73" fill="#a8c8bd" font-family="Courier New,monospace" font-size="13">example.com · local publishing desk</text>
+  <text x="1388" y="58" text-anchor="end" fill="#e9efe9" font-family="Courier New,monospace" font-size="16">PRIVATE · LOCAL</text>
 
-  <g font-family="Tahoma,Arial,sans-serif" font-size="16" font-weight="bold" text-anchor="middle" fill="#fff">
-    <rect x="30" y="72" width="224" height="58" fill="#285c43" stroke="#f5f5ec"/><text x="142" y="107">Posts</text>
-    <rect x="257" y="72" width="224" height="58" fill="#2d6953" stroke="#f5f5ec"/><text x="369" y="107">Openers</text>
-    <rect x="484" y="72" width="224" height="58" fill="#337463" stroke="#f5f5ec"/><text x="596" y="107">Pages</text>
-    <rect x="711" y="72" width="224" height="58" fill="#397a72" stroke="#f5f5ec"/><text x="823" y="107">Images</text>
-    <rect x="938" y="72" width="224" height="58" fill="#3e7280" stroke="#f5f5ec"/><text x="1050" y="107">Reader</text>
-    <rect x="1165" y="72" width="224" height="58" fill="#43688a" stroke="#f5f5ec"/><text x="1277" y="107">Saved</text>
+  <g font-family="Courier New,monospace" font-size="20" font-weight="bold" text-anchor="middle" fill="#163936">
+    <path d="M32 150V111H47V99H177V111H192V150Z" fill="#86bd91" stroke="#385f57" stroke-width="4"/><text x="112" y="133">Posts</text>
+    <path d="M198 150V111H213V99H343V111H358V150Z" fill="#72b7a0" stroke="#385f57" stroke-width="4"/><text x="278" y="133">Openers</text>
+    <path d="M364 150V111H379V99H509V111H524V150Z" fill="#69b6ad" stroke="#385f57" stroke-width="4"/><text x="444" y="133">Pages</text>
+    <path d="M530 155V105H545V93H695V105H710V155Z" fill="#75bdc7" stroke="#385f57" stroke-width="5"/><text x="620" y="130">Reader</text>
+    <path d="M716 150V111H731V99H861V111H876V150Z" fill="#899fca" stroke="#385f57" stroke-width="4"/><text x="796" y="133">Saved</text>
+    <path d="M882 150V111H897V99H1027V111H1042V150Z" fill="#a58fc0" stroke="#385f57" stroke-width="4"/><text x="962" y="133">Thicket</text>
+    <circle cx="1024" cy="106" r="14" fill="#fffdf1" stroke="#385f57" stroke-width="2"/><text x="1024" y="112" font-size="13">2</text>
   </g>
 
-  <rect x="30" y="140" width="1380" height="57" fill="#d4d4cd" stroke="#8d9189"/>
-  <g font-family="Tahoma,Arial,sans-serif" font-size="14" fill="#202322">
-    <g fill="#d4d4cd" stroke="#fff"><rect x="42" y="151" width="112" height="35"/><rect x="164" y="151" width="112" height="35"/><rect x="286" y="151" width="120" height="35"/><rect x="416" y="151" width="92" height="35"/><rect x="1106" y="151" width="97" height="35"/><rect x="1213" y="151" width="180" height="35" fill="#e9e7c7"/></g>
-    <text x="98" y="174" text-anchor="middle">New post</text><text x="220" y="174" text-anchor="middle">Save draft</text><text x="346" y="174" text-anchor="middle">Preview</text><text x="462" y="174" text-anchor="middle">Queue</text><text x="1154" y="174" text-anchor="middle">Images</text><text x="1303" y="174" text-anchor="middle" font-weight="bold">Review &amp; publish</text>
+  <rect x="30" y="150" width="1380" height="711" fill="#dff0ee" stroke="#75bdc7" stroke-width="8" filter="url(#shadow)"/>
+  <rect x="50" y="174" width="1340" height="58" fill="#f4f1e6" stroke="#385f57" stroke-width="2"/>
+  <text x="72" y="211" fill="#1d4440" font-family="Georgia,serif" font-size="25" font-weight="bold">Reader</text>
+  <g font-family="Courier New,monospace" font-size="15" fill="#173a38">
+    <rect x="970" y="187" width="98" height="32" fill="#f8f5ea" stroke="#385f57" stroke-width="2"/><text x="1019" y="208" text-anchor="middle">Newest</text>
+    <rect x="1076" y="187" width="134" height="32" fill="#75bdc7" stroke="#385f57" stroke-width="2"/><text x="1143" y="208" text-anchor="middle" font-weight="bold">AI sorted</text>
+    <rect x="1218" y="187" width="151" height="32" fill="#f8f5ea" stroke="#385f57" stroke-width="2"/><text x="1293" y="208" text-anchor="middle">Refresh / Sync</text>
   </g>
 
-  <rect x="30" y="205" width="1380" height="653" fill="#285c43"/>
-  <rect x="40" y="215" width="300" height="633" fill="#eeeee5" stroke="#858982"/>
-  <text x="62" y="250" fill="#536459" font-family="Tahoma,Arial,sans-serif" font-size="13" font-weight="bold" letter-spacing="2">POSTS</text>
-  <rect x="58" y="269" width="264" height="43" fill="#fff" stroke="#858982"/><text x="75" y="296" fill="#80847d" font-family="Tahoma,Arial,sans-serif" font-size="14">⌕  Search posts…</text>
-  <g font-family="Tahoma,Arial,sans-serif" font-size="13" text-anchor="middle"><rect x="58" y="325" width="84" height="34" fill="#214e51"/><rect x="146" y="325" width="84" height="34" fill="#d4d4cd"/><rect x="234" y="325" width="88" height="34" fill="#d4d4cd"/><text x="100" y="347" fill="#fff">Updated</text><text x="188" y="347">Created</text><text x="278" y="347">Alphabetical</text></g>
-  <g font-family="Tahoma,Arial,sans-serif" fill="#202322"><text x="68" y="403" font-size="16">▤</text><text x="96" y="397" font-size="15">A small web, carefully tended</text><text x="96" y="418" font-size="11" fill="#73786f">3.html · updated Oct 4, 2026</text><text x="68" y="466" font-size="16">▤</text><text x="96" y="460" font-size="15">Notes from the quiet web</text><text x="96" y="481" font-size="11" fill="#73786f">2.html · updated Oct 4, 2026</text><text x="68" y="529" font-size="16">▤</text><text x="96" y="523" font-size="15">Why keep a personal website?</text><text x="96" y="544" font-size="11" fill="#73786f">1.html · updated Oct 4, 2026</text></g>
+  <rect x="50" y="244" width="280" height="596" fill="#e9ece4" stroke="#385f57" stroke-width="3"/>
+  <text x="72" y="278" fill="#35635b" font-family="Courier New,monospace" font-size="14" font-weight="bold" letter-spacing="2">READING SOURCES</text>
+  <rect x="278" y="255" width="34" height="29" fill="#f8f5ea" stroke="#385f57" stroke-width="2"/>
+  <text x="295" y="276" text-anchor="middle" fill="#173a38" font-family="Courier New,monospace" font-size="18">◀</text>
+  <rect x="68" y="300" width="244" height="42" fill="#fffdf4" stroke="#7f9289" stroke-width="2"/>
+  <text x="84" y="326" fill="#7a827a" font-family="Courier New,monospace" font-size="15">Search Reader…</text>
+  <text x="71" y="378" fill="#173a38" font-family="Courier New,monospace" font-size="14" font-weight="bold">All subscriptions</text>
+  <text x="71" y="416" fill="#4b625d" font-family="Courier New,monospace" font-size="14">Blyg sources</text>
+  <text x="71" y="450" fill="#4b625d" font-family="Courier New,monospace" font-size="14">Web / RSS</text>
+  <line x1="68" y1="474" x2="312" y2="474" stroke="#9ca9a1"/>
+  <text x="71" y="510" fill="#35635b" font-family="Courier New,monospace" font-size="13" font-weight="bold">VIEW</text>
+  <rect x="68" y="526" width="116" height="34" fill="#75bdc7" stroke="#385f57" stroke-width="2"/>
+  <rect x="190" y="526" width="122" height="34" fill="#f8f5ea" stroke="#385f57" stroke-width="2"/>
+  <text x="126" y="549" text-anchor="middle" fill="#173a38" font-family="Courier New,monospace" font-size="14" font-weight="bold">Unread</text>
+  <text x="251" y="549" text-anchor="middle" fill="#173a38" font-family="Courier New,monospace" font-size="14">Everything</text>
+  <text x="70" y="812" fill="#61736b" font-family="Courier New,monospace" font-size="12">Last sync: just now</text>
 
-  <rect x="350" y="215" width="1050" height="633" fill="#fdfcf7" stroke="#858982"/>
-  <text x="390" y="260" fill="#708273" font-family="Tahoma,Arial,sans-serif" font-size="13" letter-spacing="2">PAGE EDITOR</text>
-  <text x="390" y="305" fill="#223c34" font-family="Georgia,serif" font-size="37">A small web, carefully tended</text>
-  <text x="390" y="335" fill="#8a8b7c" font-family="monospace" font-size="14">example.com / 3.html</text>
-  <rect x="380" y="360" width="92" height="43" fill="#fdfcf7" stroke="#c9cbbc"/><rect x="476" y="360" width="126" height="43" fill="#eeeee5" stroke="#c9cbbc"/><text x="426" y="387" text-anchor="middle" font-family="Tahoma,Arial,sans-serif" font-size="14" font-weight="bold">Write</text><text x="539" y="387" text-anchor="middle" font-family="Tahoma,Arial,sans-serif" font-size="14" fill="#6a7366">HTML source</text>
-  <line x1="350" y1="404" x2="1400" y2="404" stroke="#c9cbbc"/>
-  <rect x="351" y="405" width="1048" height="54" fill="#f5f5ec"/>
-  <g font-family="Tahoma,Arial,sans-serif" font-size="15" fill="#202322"><text x="390" y="438" font-weight="bold">B</text><text x="432" y="438" font-style="italic">I</text><text x="472" y="438">Link</text><text x="532" y="438">H2</text><text x="576" y="438">¶</text><text x="620" y="438">❞ Blockquote</text><text x="744" y="438">• List</text><text x="820" y="438">Image</text><text x="880" y="438">Fragment</text><text x="970" y="438">Versions</text></g>
-  <line x1="350" y1="460" x2="1400" y2="460" stroke="#e4e5da"/>
-  <g font-family="Georgia,serif" fill="#283129"><text x="408" y="526" font-size="24">Static pages can preserve the history of how a site was made.</text><text x="408" y="584" font-size="24">The tools should help without taking over the work.</text></g>
-  <line x1="350" y1="811" x2="1400" y2="811" stroke="#e1e3d7"/><text x="380" y="835" fill="#73786f" font-family="Tahoma,Arial,sans-serif" font-size="12">Changes stay on this Mac until you publish.</text>
-  <rect x="23" y="862" width="1394" height="15" fill="#d4d4cd"/>
+  <rect x="346" y="244" width="1044" height="596" fill="url(#paper)" stroke="#385f57" stroke-width="3"/>
+  <g font-family="Courier New,monospace" fill="#567069" font-size="13">
+    <text x="372" y="275">BLYG · Mina Example · smallweb.test · Oct 24</text>
+    <text x="372" y="353">WEB / RSS · Example Review · Oct 24</text>
+    <text x="372" y="802">BLYG · Jules Example · notes.test · Oct 23</text>
+  </g>
+  <g font-family="Georgia,serif" fill="#173a38" font-weight="bold">
+    <text x="372" y="305" font-size="21">A note about keeping useful friction</text>
+    <text x="372" y="385" font-size="23">The small web is a place, not a product</text>
+    <text x="372" y="832" font-size="21">What I found while reading slowly</text>
+  </g>
+  <line x1="366" y1="325" x2="1370" y2="325" stroke="#9aa8a1" stroke-dasharray="3 5"/>
+  <line x1="366" y1="779" x2="1370" y2="779" stroke="#9aa8a1" stroke-dasharray="3 5"/>
+
+  <rect x="367" y="404" width="1001" height="352" fill="#fffdf4" stroke="#385f57" stroke-width="4"/>
+  <rect x="385" y="423" width="966" height="40" fill="#e4eee6"/>
+  <rect x="399" y="431" width="220" height="24" fill="#f4f1e6" stroke="#82958a"/>
+  <text x="509" y="448" text-anchor="middle" fill="#173a38" font-family="Courier New,monospace" font-size="12">← Backward: Earlier note</text>
+  <rect x="1110" y="431" width="226" height="24" fill="#f4f1e6" stroke="#82958a"/>
+  <text x="1223" y="448" text-anchor="middle" fill="#173a38" font-family="Courier New,monospace" font-size="12">Forward: A response →</text>
+  <text x="407" y="505" fill="#243b34" font-family="Georgia,serif" font-size="20">A personal site can be useful precisely because it does not try</text>
+  <text x="407" y="540" fill="#243b34" font-family="Georgia,serif" font-size="20">to anticipate every desire. Its edges can remain visible, and its</text>
+  <text x="407" y="575" fill="#243b34" font-family="Georgia,serif" font-size="20">history can stay legible instead of being continuously flattened.</text>
+  <text x="407" y="625" fill="#5c6d66" font-family="Georgia,serif" font-size="17">The next post remains below. Opening it closes this card.</text>
+  <rect x="385" y="691" width="966" height="48" fill="#edf0e7" stroke="#9aa8a1"/>
+  <g font-family="Courier New,monospace" font-size="14" fill="#173a38">
+    <rect x="400" y="700" width="125" height="29" fill="#f8f5ea" stroke="#385f57"/><text x="462" y="720" text-anchor="middle">Open original</text>
+    <rect x="1087" y="700" width="73" height="29" fill="#f8f5ea" stroke="#385f57"/><text x="1123" y="720" text-anchor="middle">Fork</text>
+    <rect x="1168" y="700" width="78" height="29" fill="#f8f5ea" stroke="#385f57"/><text x="1207" y="720" text-anchor="middle">Quote</text>
+    <rect x="1254" y="700" width="82" height="29" fill="#c8d973" stroke="#385f57"/><text x="1295" y="720" text-anchor="middle" font-weight="bold">Stub</text>
+  </g>
+  <rect x="18" y="868" width="1404" height="14" fill="#143e3d"/>
 </svg>

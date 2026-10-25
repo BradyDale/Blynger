@@ -318,6 +318,11 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.reader_lock:source=studio.reader.fork_source(d['key'],d.get('version'))
                 with self.server.lock:result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'],generated=source.get('generated'),staged=False)
                 return self.send(result)
+            if p=='/api/local-fork':
+                with self.server.lock:
+                    source=studio.fork_local(d.get('id'),d.get('version'))
+                    result=studio.create(d.get('title') or source['title'],body=source['html'],forked_from=source['forked_from'],generated=source.get('generated'),staged=False)
+                return self.send(result)
             if p=='/api/import-item':
                 with self.server.reader_lock:result=studio.reader.import_item(d['url'])
                 return self.send(result)

@@ -266,6 +266,44 @@ aside {
   opacity: 0.6;
   font-size: 10px;
 }
+.local-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 190px;
+  max-width: 310px;
+  padding: 5px;
+  border: 1px solid #65766e;
+  background: #f5f3e9;
+  box-shadow: 5px 6px 0 rgba(31, 51, 48, 0.22);
+}
+.local-context-title {
+  overflow: hidden;
+  padding: 7px 9px;
+  color: #56645e;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.local-context-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.local-context-menu button:hover:not(:disabled),
+.local-context-menu button:focus-visible {
+  background: #214e51;
+  color: white;
+}
+.local-context-menu button:disabled {
+  color: #92978e;
+}
 .aside-bottom {
   border-top: 1px solid #c2c6b8;
   padding: 15px;
@@ -445,11 +483,13 @@ h1 {
   border-color: #63876b;
 }
 #stage {
-  background: #d5cb78;
-  border-color: #8e8644;
+  border: 2px solid #718424;
+  background: #c8dc50;
+  color: #17210d;
+  font-weight: 900;
 }
 #stage[aria-pressed='true'] {
-  background: #aaa13e;
+  background: #9eaf31;
   box-shadow: var(--inset);
   color: #11180f;
 }
@@ -1087,28 +1127,28 @@ button[aria-busy='true'] {
     inset -2px -2px #0006;
 }
 .workspace-tabs button:nth-child(1) {
-  background: #285c43;
+  background: #337d68;
 }
 .workspace-tabs button:nth-child(2) {
-  background: #2d6953;
+  background: #34857a;
 }
 .workspace-tabs button:nth-child(3) {
-  background: #337463;
+  background: #3c8a8e;
 }
 .workspace-tabs button:nth-child(4) {
-  background: #376f69;
+  background: #438497;
 }
 .workspace-tabs button:nth-child(5) {
-  background: #397a72;
+  background: #4d7da1;
 }
 .workspace-tabs button:nth-child(6) {
-  background: #3e7280;
+  background: #5877a8;
 }
 .workspace-tabs button:nth-child(7) {
-  background: #43688a;
+  background: #6872aa;
 }
 .workspace-tabs button:nth-child(8) {
-  background: #274c68;
+  background: #756cab;
 }
 .workspace-tabs button#thicketNav.has-unread {
   background: #17384f;
@@ -1124,6 +1164,22 @@ button[aria-busy='true'] {
   box-shadow:
     inset 2px 2px #ffffff88,
     inset -1px 0 #0005;
+}
+.tab-badge {
+  display: inline-grid;
+  min-width: 19px;
+  height: 19px;
+  margin-left: 4px;
+  place-items: center;
+  border: 1px solid #474b44;
+  border-radius: 50%;
+  background: #f7f2df;
+  color: #24352f;
+  font: bold 10px/1 Tahoma, sans-serif;
+  text-shadow: none;
+}
+.tab-badge[hidden] {
+  display: none;
 }
 .toolbar {
   border-bottom: 1px solid #8d9189;
@@ -1285,25 +1341,28 @@ button[aria-busy='true'] {
   gap: 8px;
 }
 .workspace.theme-posts {
-  background: #285c43;
+  background: #337d68;
 }
 .workspace.theme-openers {
-  background: #2d6953;
+  background: #34857a;
 }
 .workspace.theme-pages {
-  background: #337463;
+  background: #3c8a8e;
 }
 .workspace.theme-drafts {
-  background: #376f69;
+  background: #438497;
 }
 .workspace.theme-images {
-  background: #397a72;
+  background: #4d7da1;
 }
 .workspace.theme-reader {
-  background: #3e7280;
+  background: #5877a8;
 }
 .workspace.theme-saved {
-  background: #43688a;
+  background: #6872aa;
+}
+.workspace.theme-thicket {
+  background: #756cab;
 }
 .about-blynger {
   display: grid;
@@ -1370,6 +1429,455 @@ button[aria-busy='true'] {
 .reader-conversation-forward {
   margin: 12px 0 0 auto;
   text-align: right;
+}
+
+/* 0.14 index-card workspace.  Keep Blynger's deliberately physical,
+   old-software controls while giving each activity its own card. */
+:root {
+  --paper: #fffdf4;
+  --paper-soft: #efeee4;
+  --line: #687971;
+  --posts-card: #337d68;
+  --openers-card: #34857a;
+  --pages-card: #3c8a8e;
+  --reader-card: #5877a8;
+  --saved-card: #6872aa;
+  --thicket-card: #756cab;
+}
+body {
+  font-family: "Courier New", Courier, monospace;
+}
+.desktop {
+  padding: 7px 10px 13px;
+}
+.window {
+  min-height: calc(100vh - 20px);
+  padding: 0;
+  overflow: hidden;
+  border: 3px double #183e43;
+  background: var(--silver);
+}
+.titlebar {
+  min-height: 48px;
+  padding: 7px 12px;
+  border-bottom: 3px double #82aaa5;
+}
+.titlebar .app-logo {
+  width: 33px;
+  height: 33px;
+}
+.window-controls {
+  display: none;
+}
+.workspace-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: end;
+  gap: 5px;
+  padding: 12px 10px 0;
+  border-bottom: 0;
+  background: var(--silver);
+}
+#draftsNav,
+#imagesNav {
+  display: none;
+}
+.workspace-tabs button {
+  position: relative;
+  z-index: 1;
+  min-height: 51px;
+  padding: 10px 6px 13px;
+  border: 2px solid #435651;
+  border-bottom: 0;
+  color: #102b28;
+  font: bold 15px/1.1 Georgia, serif;
+  text-shadow: none;
+  transform: translateY(5px);
+}
+.workspace-tabs button::before {
+  content: '';
+  position: absolute;
+  top: -7px;
+  right: 11px;
+  left: 11px;
+  height: 7px;
+  border: 2px solid #435651;
+  border-bottom: 0;
+  background: inherit;
+}
+.workspace-tabs button.active {
+  z-index: 3;
+  top: 0;
+  min-height: 60px;
+  padding-top: 13px;
+  filter: brightness(1.05);
+  transform: translateY(3px);
+}
+.workspace-tabs button.active::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  bottom: -12px;
+  left: -2px;
+  height: 14px;
+  border-right: 2px solid #435651;
+  border-left: 2px solid #435651;
+  background: inherit;
+}
+#postsNav { background: var(--posts-card); }
+#openersNav { background: var(--openers-card); }
+#pagesNav { background: var(--pages-card); }
+#readerNav { background: var(--reader-card); }
+#savedNav { background: var(--saved-card); }
+#thicketNav { background: var(--thicket-card); }
+.workspace-tabs button#thicketNav.has-unread {
+  background: var(--thicket-card);
+  box-shadow: inset 2px 2px #ffffff88, inset -2px -2px #0008;
+}
+.toolbar {
+  position: relative;
+  z-index: 5;
+  min-height: 56px;
+  padding: 9px 12px;
+  border-bottom: 3px double var(--line);
+  background: var(--paper-soft);
+}
+.toolbar button,
+.tool-menu summary {
+  padding: 8px 11px;
+}
+.tool-menu {
+  position: relative;
+}
+.tool-menu summary {
+  list-style: none;
+  background: var(--silver);
+  box-shadow: var(--raised);
+  cursor: pointer;
+  user-select: none;
+}
+.tool-menu summary::-webkit-details-marker {
+  display: none;
+}
+.tool-menu[open] summary {
+  box-shadow: var(--inset);
+}
+.tool-menu-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  left: 0;
+  width: 235px;
+  padding: 5px;
+  border: 3px double #183e43;
+  background: #f7f1dc;
+  box-shadow: 5px 6px 0 #20333038;
+}
+.document-menu .tool-menu-panel {
+  width: 205px;
+}
+.tool-menu-panel > b {
+  display: block;
+  padding: 6px 8px;
+  border-bottom: 1px solid #8f9a91;
+  color: #596a63;
+  font-size: 9px;
+  letter-spacing: 0.8px;
+}
+.tool-menu-panel button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+.tool-menu-panel button:hover:not(:disabled) {
+  background: #d9e5dc;
+}
+.publish.ready {
+  background: #c4d6a3;
+}
+.workspace {
+  min-height: 0;
+  padding: 8px;
+  gap: 8px;
+  border: 0;
+  grid-template-columns: 255px minmax(0, 1fr);
+}
+.workspace.theme-posts { background: var(--posts-card); }
+.workspace.theme-openers { background: var(--openers-card); }
+.workspace.theme-pages { background: var(--pages-card); }
+.workspace.theme-drafts { background: #438497; }
+.workspace.theme-images { background: #4d7da1; }
+.workspace.theme-reader { background: var(--reader-card); }
+.workspace.theme-saved { background: var(--saved-card); }
+.workspace.theme-thicket { background: var(--thicket-card); }
+#libraryPane,
+.reader-sidebar {
+  border-right: 1px solid var(--line);
+  background: #e8e9e1;
+  box-shadow: var(--inset);
+}
+.aside-head {
+  display: flex;
+  align-items: center;
+  min-height: 43px;
+  padding: 11px 9px 7px;
+}
+.collapse-pane {
+  margin-left: auto;
+  padding: 3px 7px;
+}
+.library-collapsed #workspace:not(.wide) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.library-collapsed #workspace:not(.wide) #libraryPane {
+  display: none;
+}
+.document,
+.reader-view,
+.library-view,
+.thicket-view {
+  background: var(--paper);
+  box-shadow: var(--inset);
+}
+.document-heading {
+  padding: 20px 28px 12px;
+  border-bottom: 1px solid #bdc3b8;
+}
+.document-heading h1,
+.reader-view h1 {
+  font-size: 28px;
+}
+#editor {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  padding: 28px 48px 60px;
+  font-size: 18px;
+  line-height: 1.7;
+}
+.formatbar {
+  padding: 8px 27px;
+  background: var(--paper-soft);
+}
+.document-foot {
+  padding: 13px 22px;
+  border-top: 1px dotted var(--line);
+  background: #faf8ee;
+}
+#save {
+  border: 2px solid #52775f;
+  background: #76b68d;
+  font-weight: 900;
+}
+#stage {
+  border: 2px solid #718424;
+  background: #c8dc50;
+  font-weight: 900;
+}
+.reader-view {
+  padding: 0;
+}
+.reader-view > .document-heading {
+  padding-bottom: 10px;
+}
+.reader-view > .reader-controls {
+  padding: 9px 12px;
+  border-bottom: 3px double var(--line);
+  background: var(--paper-soft);
+}
+.reader-work {
+  display: grid;
+  grid-template-columns: 255px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.reader-sidebar {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: auto;
+}
+.reader-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 9px 12px;
+  padding: 0 7px;
+  background: #fff;
+  box-shadow: var(--inset);
+}
+.reader-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 0;
+  background: transparent;
+  box-shadow: none;
+}
+.reader-field {
+  display: grid;
+  gap: 4px;
+  padding: 7px 10px;
+  color: #5b6b64;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.reader-field select {
+  width: 100%;
+  max-width: none;
+  padding: 7px;
+  border: 1px solid #92998f;
+  background: #f8f7ef;
+  font: 11px "Courier New", monospace;
+}
+.reader-feed-pane {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+.reader-sidebar-collapsed .reader-work {
+  grid-template-columns: minmax(0, 1fr);
+}
+.reader-sidebar-collapsed .reader-sidebar {
+  display: none;
+}
+.restore-pane {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  left: 8px;
+  padding: 4px 7px;
+}
+#readerStatus {
+  margin: 13px 20px 5px;
+}
+#readerItems {
+  padding: 4px 20px 18px;
+}
+.reader-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  padding: 15px 5px;
+  border: 0;
+  border-bottom: 1px dotted var(--line);
+  background: transparent !important;
+}
+.reader-row h2 {
+  margin: 4px 0;
+  font: bold 19px/1.25 Georgia, serif;
+}
+.reader-row p {
+  color: #5f6d66;
+}
+.reader-row.reader-expanded {
+  padding: 15px 5px 18px;
+  background: #eef2e8 !important;
+}
+.reader-inline-open {
+  margin-top: 12px;
+  padding: 14px;
+  border: 3px double var(--line);
+  background: #f7f4e8;
+  box-shadow: var(--inset);
+}
+.reader-inline-open .reader-opened {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.reader-inline-open .preview-frame {
+  min-height: 55vh;
+}
+.reader-inline-open .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 9px;
+  border-top: 1px solid var(--line);
+  background: #f7f4e8;
+}
+.reader-conversation-insert {
+  border: 2px dashed var(--line) !important;
+  padding: 15px !important;
+}
+.reader-source-badge {
+  color: #3e6f7e;
+}
+.saved-views {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-soft);
+}
+.thicket-view {
+  padding: 0;
+}
+.thicket-view > .document-heading {
+  padding: 18px 22px 10px;
+}
+.thicket-dashboard {
+  margin: 0;
+  border-right: 0;
+  border-left: 0;
+  border-bottom: 3px double var(--line);
+  background: var(--paper-soft);
+}
+.thicket-dashboard section {
+  padding: 13px 18px;
+}
+.thicket-entry {
+  min-height: 73px;
+  padding: 12px 18px;
+  border-bottom: 1px dotted var(--line);
+}
+.thicket-main {
+  font-size: 18px;
+}
+.thicket-site {
+  padding-left: 42px;
+  font: 11px/1.3 "Courier New", monospace;
+}
+.thicket-ledger {
+  border: 0;
+  background: var(--paper);
+}
+.thicket-ledger-head {
+  padding: 10px 18px;
+  border-bottom: 3px double var(--line);
+}
+.statusbar {
+  border-top: 3px double #818a83;
+  background: var(--silver);
+}
+@media (max-width: 820px) {
+  .workspace-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .workspace-tabs button {
+    min-height: 43px;
+  }
+  .workspace-tabs button.active {
+    min-height: 48px;
+  }
+  .workspace,
+  .reader-work {
+    grid-template-columns: 205px minmax(0, 1fr);
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  #editor {
+    padding: 22px 26px 45px;
+  }
 }
 .reader-conversation-back b,
 .reader-conversation-forward b {
@@ -1881,4 +2389,65 @@ button[aria-busy='true'] {
 .reader-generated p {
   font-size: 11px;
   margin: 5px 0;
+}
+
+/* These components have older compatibility rules above; keep the card
+   layout as the final visual authority. */
+.reader-row,
+.reader-row.reader-native,
+.reader-row.reader-web,
+.reader-row.reader-native.reader-revisions-1,
+.reader-row.reader-native.reader-revisions-2,
+.reader-row.reader-native.reader-revisions-3,
+.reader-row.reader-native.reader-revisions-4,
+.reader-row.reader-native.reader-revisions-5 {
+  margin: 0;
+  padding: 15px 5px;
+  border: 0;
+  border-bottom: 1px dotted var(--line);
+  background: transparent;
+}
+.reader-row h2 {
+  margin: 4px 0;
+  font: bold 19px/1.25 Georgia, serif;
+}
+.reader-row p {
+  color: #5f6d66;
+}
+.thicket-view {
+  padding: 0;
+  background: var(--paper);
+}
+.thicket-view > .document-heading {
+  padding: 18px 22px 10px;
+}
+.thicket-dashboard {
+  margin: 0;
+  border-right: 0;
+  border-left: 0;
+  border-bottom: 3px double var(--line);
+  background: var(--paper-soft);
+}
+.thicket-dashboard section {
+  padding: 13px 18px;
+}
+.thicket-ledger {
+  border: 0;
+  background: var(--paper);
+}
+.thicket-ledger-head {
+  padding: 10px 18px;
+  border-bottom: 3px double var(--line);
+}
+.thicket-entry {
+  min-height: 73px;
+  padding: 12px 18px;
+  border-bottom: 1px dotted var(--line);
+}
+.thicket-main {
+  font-size: 18px;
+}
+.thicket-site {
+  padding-left: 42px;
+  font: 11px/1.3 "Courier New", monospace;
 }

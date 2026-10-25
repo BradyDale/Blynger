@@ -35,31 +35,52 @@
           <button id="imagesNav" data-workspace="images">Images</button>
           <button id="readerNav" data-workspace="reader">Reader</button>
           <button id="savedNav" data-workspace="saved">Saved</button>
-          <button id="thicketNav" data-workspace="thicket">Thicket</button>
+          <button id="thicketNav" data-workspace="thicket"
+            >Thicket <span id="thicketUnreadBadge" class="tab-badge" hidden></span
+          ></button>
         </nav>
         <div class="toolbar" id="authorToolbar">
           <button id="new">▤ New post</button
           ><button id="newOpener" hidden>New opener</button
           ><button id="newPage">▣ New page</button><i></i>
-          <button id="preview">◉ Preview</button><button id="images">▧ Insert image</button
-          ><button id="versions">◷ Versions</button
-          ><button
-            id="mainFragment"
-            title="Publish this section as a reusable fragment · Control+Shift+F"
-          >
-            Reusable fragment</button
-          ><button id="transclude">Transclude</button
-          ><button id="respondStub">Respond / Stub</button
-          ><button id="quote">❞ Quote post</button
-          ><button id="tk">
-            <span class="tk-robot" aria-hidden="true"></span>TK assistant
-          </button>
+          <button id="preview">◉ Preview</button>
+          <details class="tool-menu" id="insertMenu">
+            <summary>Insert ▾</summary>
+            <div class="tool-menu-panel">
+              <b>INSERT INTO THIS DOCUMENT</b>
+              <button id="images">▧ Image…</button
+              ><button id="quote">❞ Quotation…</button
+              ><button id="transclude">Transclusion…</button
+              ><button id="respondStub">Response / Stub…</button
+              ><button
+                id="mainFragment"
+                title="Publish this section as a reusable fragment · Control+Shift+F"
+              >
+                Reusable fragment</button
+              ><button id="tk">
+                <span class="tk-robot" aria-hidden="true"></span>TK passage…
+              </button>
+            </div>
+          </details>
+          <details class="tool-menu document-menu" id="documentMenu">
+            <summary>Document ▾</summary>
+            <div class="tool-menu-panel">
+              <b>THIS DOCUMENT</b>
+              <button id="versions">◷ Versions…</button
+              ><button id="editHeadline" hidden>Edit headline…</button
+              ><button id="renumberPost" hidden>Change number…</button
+              ><button id="deletePost" hidden>Delete post…</button>
+            </div>
+          </details>
           <div class="spacer"></div>
           <button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
         </div>
         <div class="workspace" id="workspace">
           <aside id="libraryPane">
-            <div class="aside-head" id="libraryTitle">POSTS</div>
+            <div class="aside-head"
+              ><span id="libraryTitle">POSTS</span
+              ><button id="libraryCollapse" class="collapse-pane" aria-label="Collapse library" title="Collapse library">◀</button></div
+            >
             <label class="search"
               ><span>⌕</span
               ><input id="search" placeholder="Search posts…" aria-label="Search posts"
@@ -92,10 +113,7 @@
                 </div>
               </div>
               <div>
-                <span id="draftBadge" class="badge">LOCAL</span
-                ><button id="editHeadline" hidden>Edit headline</button
-                ><button id="renumberPost" hidden>Change number…</button
-                ><button id="deletePost" hidden>Delete post…</button>
+                <span id="draftBadge" class="badge">LOCAL</span>
               </div>
             </div>
             <div class="tabs">
@@ -139,7 +157,7 @@
               hidden
             ></textarea>
             <div class="document-foot">
-              <div class="draft-actions"><button id="save">Save</button><button id="stage" aria-pressed="false">Stage</button></div
+              <div class="draft-actions"><button id="save">SAVE</button><button id="stage" aria-pressed="false">STAGE</button></div
               ><span>✎ Drafts stay on this Mac until staged and published.</span
               ><label id="pinPlan" class="pin-plan" hidden
                 ><input id="pinOnPublish" type="checkbox" /> Pin this version when
@@ -188,27 +206,47 @@
               <button data-saved-view="saved" class="active">Saved posts</button
               ><button data-saved-view="activity">Private activity</button>
             </div>
-            <div class="reader-controls">
-              <select id="readerSource" aria-label="Subscribed Blyg">
-                <option value="">All subscriptions</option></select
-              ><select id="readerViewFilter" aria-label="Reader view">
-                <option value="all">All posts</option>
-                <option value="saved">Saved posts</option>
-                <option value="liked">Liked posts</option></select
-              ><select id="readerOrder" aria-label="Reader order">
-                <option value="newest">Newest</option>
-                <option value="pace">Pace-layered</option></select
-              ><input
-                id="readerSearch"
-                placeholder="Search text or author"
-                aria-label="Search imported items"
-              />
-            </div>
-            <p id="readerStatus" class="hint" role="status"></p>
-            <div id="readerItems"></div>
-            <div class="reader-foot">
-              Reader responses and activity stay in private support data on this Mac. They
-              are never added to the website, feeds, or public source export.
+            <div class="reader-work">
+              <aside class="reader-sidebar">
+                <div class="aside-head"
+                  ><span>SUBSCRIPTIONS &amp; FILTERS</span
+                  ><button id="readerSidebarCollapse" class="collapse-pane" aria-label="Collapse Reader sidebar" title="Collapse Reader sidebar">◀</button></div
+                >
+                <label class="reader-search"
+                  ><span>⌕</span
+                  ><input
+                    id="readerSearch"
+                    placeholder="Search Reader…"
+                    aria-label="Search imported items"
+                /></label>
+                <label class="reader-field">SOURCE
+                  <select id="readerSource" aria-label="Subscribed Blyg">
+                    <option value="">All subscriptions</option>
+                  </select>
+                </label>
+                <label class="reader-field">SHOW
+                  <select id="readerViewFilter" aria-label="Reader view">
+                    <option value="all">All posts</option>
+                    <option value="saved">Saved posts</option>
+                    <option value="liked">Liked posts</option>
+                  </select>
+                </label>
+                <label class="reader-field">ORDER
+                  <select id="readerOrder" aria-label="Reader order">
+                    <option value="newest">Newest</option>
+                    <option value="pace">Pace-layered</option>
+                  </select>
+                </label>
+              </aside>
+              <div class="reader-feed-pane">
+                <button id="readerSidebarRestore" class="restore-pane" hidden aria-label="Show Reader sidebar" title="Show subscriptions and search">▶</button>
+                <p id="readerStatus" class="hint" role="status"></p>
+                <div id="readerItems"></div>
+                <div class="reader-foot">
+                  Reader responses and activity stay in private support data on this Mac.
+                  They are never added to the website, feeds, or public source export.
+                </div>
+              </div>
             </div>
           </section>
           <section id="thicketView" class="thicket-view" hidden>

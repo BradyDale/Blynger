@@ -64,6 +64,51 @@ def clean(text):
     for node in soup(['script','style','iframe','object','embed']): node.decompose()
     return nh3.clean(str(soup),tags=TAGS,attributes=ATTR,url_schemes={'http','https','mailto'},link_rel=None)
 
+def fork_copy(source,origin,sanitizer=clean):
+    """Make one pinned document editable without inheriting verification claims."""
+    soup=BeautifulSoup(sanitizer(source.get('content_html','')),'html.parser')
+    for quote in list(soup.select('blockquote.blyg-transclusion')):
+        cited_origin=quote.get('data-blyg-origin');iid=quote.get('data-blyg-id')
+        classes=[name for name in quote.get('class',[]) if name not in ('blyg-transclusion','blyg-partial')]
+        if classes:quote['class']=classes
+        elif quote.has_attr('class'):del quote['class']
+        for attr in list(quote.attrs):
+            if attr.startswith('data-blyg-') or attr.startswith('data-blynger-'):del quote[attr]
+        if isinstance(cited_origin,str) and isinstance(iid,str):
+            attribution=soup.new_tag('p');attribution['class']='blynger-fork-attribution'
+            link=soup.new_tag('a',href=urljoin(cited_origin,'items/'+iid+'.json'))
+            link.string='Quoted from '+urlsplit(cited_origin).netloc+' · '+iid
+            attribution.append(link);quote.insert_after(attribution)
+    for node in soup.find_all(True):
+        for attr in ('href','src','poster'):
+            value=node.get(attr)
+            if not isinstance(value,str) or not value or value.startswith('#'):continue
+            resolved=urljoin(origin,value)
+            if urlsplit(resolved).scheme in ('http','https','mailto'):node[attr]=resolved
+    present={node.get('src') for node in soup.find_all(src=True)}
+    for media in source.get('media',[]):
+        if not isinstance(media,dict) or not isinstance(media.get('url'),str):continue
+        url=urljoin(origin,media['url']);mime=str(media.get('mime',''))
+        if url in present or urlsplit(url).scheme not in ('http','https'):continue
+        tag='img' if mime.startswith('image/') else 'video' if mime.startswith('video/') else 'audio' if mime.startswith('audio/') else None
+        if not tag:continue
+        node=soup.new_tag(tag);node['src']=url
+        if tag=='img':node['alt']=str(media.get('alt',''))
+        else:node['controls']=''
+        soup.append(node);present.add(url)
+    markup=str(soup)
+    title=re.sub(r'\s+',' ',BeautifulSoup(markup,'html.parser').get_text(' ',strip=True)).strip()
+    inherited=[]
+    if 'blyg-tk-gen' in markup:
+        for entry in source.get('generated',[]):
+            if not isinstance(entry,dict):continue
+            disclosed={'sources':[]}
+            for field in ('model','at'):
+                if isinstance(entry.get(field),str):disclosed[field]=entry[field]
+            if disclosed not in inherited:inherited.append(disclosed)
+        if not inherited:inherited=[{'sources':[]}]
+    return {'title':title[:90] or 'Fork','html':markup,'generated':inherited}
+
 def normalize_authored_quotes(markup):
     """Use straight quotes in authored prose while leaving quoted sources exact."""
     if not any(char in markup for char in '“”‘’'):return markup
@@ -445,7 +490,8 @@ class Studio:
             try: raw=draft['raw'] if draft else self.read(name)
             except UnicodeDecodeError: continue  # Signed binary artifact, not editable HTML.
             kind='main' if name in priority else 'page' if name in self.state['standalone_pages'] else 'post'
-            out.append({'name':name,'title':title_of(raw,name),'draft':bool(draft),'draft_state':draft_state,'main':name in priority,'kind':kind,'created':created,'updated':updated})
+            item=self.local_item_summary(published) if kind=='post' and published else None
+            out.append({'name':name,'title':title_of(raw,name),'draft':bool(draft),'draft_state':draft_state,'main':name in priority,'kind':kind,'created':created,'updated':updated,'item':item})
         return out
     def migrate_openers(self):
         """Add private fragment designations, preserving the public page byte-for-byte."""
@@ -482,7 +528,7 @@ class Studio:
             legacy=r['key'] in set(self.state.get('opener_rss_legacy_keys',[]))
             discardable=name=='openers.html' and name in self.state['drafts'] and not published and not legacy
             removable=name=='openers.html' and (bool(published) or legacy)
-            result.append({'reference':{'page':name,'key':r['key']},'kind':published.get('kind','fragment') if published else ('thread' if r.get('stub_of') else 'fragment'),'html':body,'date_label':r.get('date_label'),'legacy_anchor':r.get('legacy_anchor'),'id':iid if published else None,'version':published['version'] if published else None,'published':bool(published),'discardable':discardable,'removable':removable,'url':self.permalink(published) if published else None})
+            result.append({'reference':{'page':name,'key':r['key']},'kind':published.get('kind','fragment') if published else ('thread' if r.get('stub_of') else 'fragment'),'html':body,'date_label':r.get('date_label'),'legacy_anchor':r.get('legacy_anchor'),'id':iid if published else None,'version':published['version'] if published else None,'title':self.item_title(published) if published else None,'pinned_versions':self.pinned_versions(published) if published else [],'published':bool(published),'discardable':discardable,'removable':removable,'url':self.permalink(published) if published else None})
         return result
     def discard_opener(self,key):
         return self._remove_opener(key,False)
@@ -1205,7 +1251,29 @@ class Studio:
         if source=='remote':return self.reader.snapshot(key,selection,self) if selection is not None else self.reader.quote(key,self)
         doc=self.state['published'].get(key)
         if not doc or doc['kind'] not in ('fragment','thread'):raise ValueError('This item is not available to quote.')
-        return {'html':'<p>![['+key+']]</p>','id':key,'origin':self.origin,'version':doc['version'],'kind':doc['kind'],'title':self.item_title(doc),'stub_of':{'id':key,'version':doc['version'],'origin':self.origin}}
+        title=self.item_title(doc);url=self.permalink(doc)
+        label='<p class="blynger-stub-label"><strong>Stubbing:</strong> <a href="'+html.escape(url,quote=True)+'">'+html.escape(title)+'</a></p>'
+        return {'html':'<p>![['+key+']]</p>','id':key,'origin':self.origin,'version':doc['version'],'kind':doc['kind'],'title':title,'stub_label_html':label,'stub_of':{'id':key,'version':doc['version'],'origin':self.origin}}
+
+    @staticmethod
+    def pinned_versions(doc):
+        if not isinstance(doc,dict):return []
+        return [entry['version'] for entry in doc.get('changelog',[]) if isinstance(entry,dict) and entry.get('pinned') and isinstance(entry.get('version'),int)]
+
+    def local_item_summary(self,doc):
+        return {'id':doc['id'],'title':self.item_title(doc),'version':doc['version'],'kind':doc['kind'],'origin':self.origin,'source':'local','pinned_versions':self.pinned_versions(doc)}
+
+    def fork_local(self,iid,version=None):
+        if not isinstance(iid,str) or not re.fullmatch(r'[0-7][0-9a-hjkmnp-tv-z]{25}',iid):raise ValueError('Choose a published local Blyg item.')
+        current=self.state.get('published',{}).get(iid)
+        if not current or current.get('kind') not in ('fragment','thread'):raise ValueError('That local item is no longer published.')
+        try:version=int(version or 0)
+        except (TypeError,ValueError):raise ValueError('Choose a pinned version to fork.')
+        if version not in self.pinned_versions(current):raise ValueError('That version is not pinned, so the Blyg protocol does not permit a fork from it.')
+        source=current if version==current.get('version') else self.state.get('history',{}).get(iid,{}).get(str(version))
+        if not source or source.get('kind')=='withdrawn':raise ValueError('That pinned version is unavailable on this Mac.')
+        copied=fork_copy(source,self.origin)
+        return {**copied,'forked_from':{'id':iid,'version':version,'origin':self.origin}}
     def quote_source(self,iid,own_id,docs,files,origin=None):
         source=None if origin and origin!=self.origin else docs.get(iid) if iid not in self.state['ids'].values() else self.state['published'].get(iid)
         if source:

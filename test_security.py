@@ -70,6 +70,7 @@ class ReaderSecurityTests(unittest.TestCase):
         self.assertNotIn("X-Blynger-Token",frame+bridge)
         self.assertIn('openExternal(data.href)',app)
         self.assertIn('window.webkit?.messageHandlers?.openExternal',app)
+        self.assertIn('native.postMessage(url)',app)
         self.assertNotIn("link:data=>{if(/^https?:/i.test(data.href))readerOperation('reader-open'",compact_app)
 
     def test_native_external_link_bridge_is_main_frame_only_and_scheme_bounded(self):

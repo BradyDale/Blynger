@@ -232,6 +232,7 @@ class InboundQueueTests(unittest.TestCase):
             claim(1), peer="198.51.100.1", source_group="writer1.example", published_targets={TARGET}
         )
         queue.set_status(first["key"], "verified")
+        self.clock.advance(1)
         second = queue.accept(
             claim(2), peer="198.51.100.2", source_group="writer2.example", published_targets={TARGET}
         )

@@ -9,7 +9,7 @@ from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 from bs4 import BeautifulSoup
 import nh3
-from core import atomic, clean, digest, now
+from core import atomic, clean, digest, fork_copy, now
 import interactions as interaction_log
 from reader_network import fetch, normalized, public_url, request_once
 
@@ -765,54 +765,10 @@ class Reader:
         if version!=doc.get('version'):
             final,body,_,_=self.fetch(item['origin']+'items/'+doc['id']+'/v'+str(version)+'.json');source=json.loads(body)
             if source.get('id')!=doc['id'] or source.get('version')!=version or not source.get('pinned'):raise ValueError('The remote pinned version did not validate.')
-        # A fork becomes authored website content, so remote markup must cross the
-        # same sanitizing boundary as Reader display before it enters a draft.
-        # It also leaves Reader's base URL behind: make addresses permanent here
-        # so a later preview or publication cannot reinterpret them as local URLs.
-        soup=BeautifulSoup(clean(source.get('content_html','')),'html.parser')
-        # A fork copies a pinned document but does not inherit the source's
-        # verification claims. Flatten every baked transclusion to an ordinary
-        # editable quotation and retain a visible route back to its provenance.
-        for quote in list(soup.select('blockquote.blyg-transclusion')):
-            origin=quote.get('data-blyg-origin');iid=quote.get('data-blyg-id')
-            classes=[name for name in quote.get('class',[]) if name not in ('blyg-transclusion','blyg-partial')]
-            if classes:quote['class']=classes
-            elif quote.has_attr('class'):del quote['class']
-            for attr in list(quote.attrs):
-                if attr.startswith('data-blyg-') or attr.startswith('data-blynger-'):del quote[attr]
-            if isinstance(origin,str) and isinstance(iid,str):
-                attribution=soup.new_tag('p');attribution['class']='blynger-fork-attribution'
-                link=soup.new_tag('a',href=urljoin(origin,'items/'+iid+'.json'));link.string='Quoted from '+urlsplit(origin).netloc+' · '+iid
-                attribution.append(link);quote.insert_after(attribution)
-        for node in soup.find_all(True):
-            for attr in ('href','src','poster'):
-                value=node.get(attr)
-                if not isinstance(value,str) or not value or value.startswith('#'):continue
-                resolved=urljoin(item['origin'],value)
-                if urlsplit(resolved).scheme in ('http','https','mailto'):node[attr]=resolved
-        present={node.get('src') for node in soup.find_all(src=True)}
-        for media in source.get('media',[]):
-            if not isinstance(media,dict) or not isinstance(media.get('url'),str):continue
-            url=urljoin(item['origin'],media['url']);mime=str(media.get('mime',''))
-            if url in present or urlsplit(url).scheme not in ('http','https'):continue
-            tag='img' if mime.startswith('image/') else 'video' if mime.startswith('video/') else 'audio' if mime.startswith('audio/') else None
-            if not tag:continue
-            node=soup.new_tag(tag);node['src']=url
-            if tag=='img':node['alt']=str(media.get('alt',''))
-            else:node['controls']=''
-            soup.append(node);present.add(url)
-        markup=str(soup)
-        title=re.sub(r'\s+',' ',BeautifulSoup(markup,'html.parser').get_text(' ',strip=True)).strip()
-        inherited=[]
-        if 'blyg-tk-gen' in markup:
-            for entry in source.get('generated',[]):
-                if not isinstance(entry,dict):continue
-                disclosed={'sources':[]}
-                for field in ('model','at'):
-                    if isinstance(entry.get(field),str):disclosed[field]=entry[field]
-                if disclosed not in inherited:inherited.append(disclosed)
-            if not inherited:inherited=[{'sources':[]}]
-        return {'title':title[:90] or 'Fork','html':markup,'generated':inherited,'forked_from':{'id':doc['id'],'version':version,'origin':item['origin']}}
+        # A fork becomes authored website content. Sanitize it, make relative
+        # addresses permanent, and flatten inherited verification claims.
+        copied=fork_copy(source,item['origin'],clean_reader)
+        return {**copied,'forked_from':{'id':doc['id'],'version':version,'origin':item['origin']}}
     def item(self,key):
         if key not in self.state['items']:raise ValueError('That item is no longer cached. Sync its Blyg to download it again.')
         return copy.deepcopy(self.state['items'][key])

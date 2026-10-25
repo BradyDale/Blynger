@@ -1,6 +1,6 @@
 # How Blynger Works
 
-**Current application release described here: 0.13.0.**
+**Current application release described here: 0.14.0.**
 
 Blynger is a local application for writing, maintaining, reading from, and publishing a static personal website.
 
@@ -55,9 +55,11 @@ Thus an old Post can show, literally, what its author's little neighborhood of t
 
 Blynger could eventually offer an explicit command for people who prefer the opposite philosophy—apply the current design or site furniture to the whole archive—but that should be an intentional bulk operation rather than an incidental consequence of publishing something new.
 
-## The six workspaces
+## The six tabbed workspaces
 
-Blynger's interface currently has six primary workspaces.
+Blynger's interface currently has six primary tabbed workspaces: Posts,
+Openers, Pages, Reader, Saved and Thicket. Drafts and Images remain available
+from the native Mac menus without taking permanent space from the tab row.
 
 ### Posts
 
@@ -101,9 +103,12 @@ the coordination record in private state. The selector and detail are saved as
 ordinary draft metadata; the coordinated static HTML is generated only during
 Review & publish and appears in the author's normal publication review.
 
-### Images
+### Drafts and Images
 
-Images is the site's asset workspace.
+Drafts gathers locally saved writing that has not been staged for publication.
+It is a private working shelf, not a public status.
+
+Images is the site's asset library.
 
 It shows the site's images, their dimensions and which HTML pages currently use them. Images can also be uploaded directly into the library without first opening a draft.
 
@@ -136,6 +141,17 @@ acts have actually been published. The mechanism is part of Blynger; the
 owner's log remains exclusively in the configured private-data directory and
 does not belong in either the website or the public source repository.
 
+### Thicket
+
+Thicket is Blynger's private activity view for Webmentions. Incoming entries
+identify who responded to the author; outgoing entries identify the other
+person the author responded to. In both directions, the person is primary and
+the piece of writing involved remains visible as context.
+
+New verified incoming activity appears as a numbered badge on the Thicket tab.
+Opening Thicket marks that batch as seen. Reverification of the same unchanged
+relationship does not manufacture another unread notification.
+
 ## Reader is part of the writing system
 
 Blynger's Reader is not merely a separate feed reader bolted onto the editor.
@@ -165,6 +181,41 @@ This keeps the site's public RSS feed relatively quiet.
 Blygger has its own separate protocol notification feed, discussed later.
 
 The existence of two feeds is deliberate. **A human subscribing to the website and a Blyg client synchronizing protocol events are doing different things.**
+
+## Webmentions connect static posts without turning the site into an application
+
+Webmention is the notification layer around Blynger's published links. When a
+successfully hosted publication contains a supported response relationship,
+Blynger can notify the referenced site in the background. The work is derived
+from the exact Git commit that reached the host, stored durably, and retried
+independently. A slow or unavailable recipient cannot turn a successful site
+publication into a failed one.
+
+Receiving follows a longer trust path. Published pages advertise a small public
+endpoint, but a submission to that endpoint is only a claim. The host accepts
+bounded queue data; a scheduled verifier then fetches the claimed public source,
+checks that it really links to an exact published target, and records only a
+small validated result. Blynger synchronizes that protected result back to the
+Mac and presents verified activity in Thicket.
+
+This separation is intentional:
+
+- the public endpoint cannot read drafts, Reader state or local settings;
+- unverified remote fields never become application HTML, commands or paths;
+- incoming activity cannot create a draft, subscription or publication action;
+- target registration follows successful hosted commits and is durable across
+  crashes or SSH failures;
+- withdrawals and meaningful relationship changes can update an existing
+  mention without treating routine reverification as new activity; and
+- receiving, verification and synchronization may be disabled while the static
+  website and Git publication continue normally.
+
+The receiver is therefore a narrow dynamic edge around a static site, not a new
+public content-management system. Deployment details and the full threat model
+live in `docs/WEBMENTIONS_RECEIVER_CONTRACT.md`,
+`docs/WEBMENTIONS_SECURITY_REVIEW.md` and
+`docs/WEBMENTIONS_SECURITY_GATE.md`. Agents implementing the same feature in
+another Blygger client should also read `docs/WEBMENTIONS_AGENT_GUIDE.md`.
 
 ## Publication is an explicit operation
 

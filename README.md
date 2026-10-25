@@ -30,7 +30,16 @@ The code distinguishes between two kinds of updates:
 
 ## Current status
 
-Blynger 0.13.0 is pre-1.0 software. This release adds background outbound Webmentions and verified incoming Webmentions in Thicket. The included inbound deployment helpers target the host layout documented under `deployment/nfs/`; review the security and receiver documents under `docs/` before enabling them on another installation.
+Blynger 0.14.0 is pre-1.0 software. It gives the application a physical
+index-card workspace design, adds inline one-at-a-time Reader expansion,
+clarifies participants and unread activity in Thicket, refreshes Reader sources
+quietly in the background, and adds local right-click shortcuts for starting a
+Stub, Transclusion, or eligible Fork from existing writing.
+
+The preceding 0.13.0 release added background outbound Webmentions and verified
+incoming Webmentions in Thicket. The included inbound deployment helpers target
+the host layout documented under `deployment/nfs/`; review the security and
+receiver documents under `docs/` before enabling them on another installation.
 
 Blynger was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
 

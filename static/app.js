@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id),
   token = document.querySelector('meta[name="blynger-token"]').content;
 let page = null,
   pages = [],
+  openerItems = [],
   seriesList = [],
   dirty = false,
   mode = 'visual',
@@ -42,10 +43,9 @@ async function api(path, data) {
 async function openExternal(url) {
   const native = window.webkit?.messageHandlers?.openExternal;
   if (native) {
-    // A custom navigation also reaches WKNavigationDelegate when WebKit's
-    // script-message bridge is present but silently drops a message. The
-    // native app cancels this navigation and opens the validated destination.
-    location.href = 'blynger-external://open?url=' + encodeURIComponent(url);
+    // Send the destination from Blynger's main frame through the native,
+    // scheme-bounded bridge. Reader content itself remains sandboxed.
+    native.postMessage(url);
     return { message: 'Opened in your browser.' };
   }
   return api('open-external', { url });
@@ -543,6 +543,33 @@ function shortDate(value) {
 }
 function renderPages() {
   const q = $('search').value.toLowerCase();
+  if (currentWorkspace === 'openers') {
+    $('pages').replaceChildren();
+    for (const item of openerItems.filter((entry) => entry.published)) {
+      if (!((item.title || '') + ' ' + (item.date_label || '')).toLowerCase().includes(q))
+        continue;
+      const b = document.createElement('button');
+      b.className = 'page-item';
+      b.innerHTML =
+        '<span class="icon">◌</span><span class="name">' +
+        esc(item.title || 'Opener') +
+        '<small>' +
+        esc(item.date_label || 'Published Opener') +
+        '</small></span>';
+      b.onclick = () =>
+        run(async () => {
+          await openPage('openers.html');
+          document.getElementById(item.legacy_anchor)?.scrollIntoView({ block: 'center' });
+        });
+      b.oncontextmenu = (event) => {
+        event.preventDefault();
+        showLocalActions(item, event.clientX, event.clientY);
+      };
+      $('pages').append(b);
+    }
+    if (!$('pages').children.length) $('pages').textContent = 'No matching published Openers.';
+    return;
+  }
   let shown = pages.filter((p) =>
     currentWorkspace === 'posts'
       ? !p.main && p.kind === 'post' && (postSort === 'deleted' ? p.deleted : !p.deleted)
@@ -602,6 +629,11 @@ function renderPages() {
       esc(date) +
       '</small></span>';
     b.onclick = () => run(() => openPage(p.name));
+    if (p.item)
+      b.oncontextmenu = (event) => {
+        event.preventDefault();
+        showLocalActions(p.item, event.clientX, event.clientY);
+      };
     $('pages').append(b);
   }
   if (!$('pages').children.length)
@@ -614,7 +646,12 @@ function renderPages() {
 }
 async function refresh() {
   const request = ++refreshRevision,
-    result = await Promise.all([api('pages'), api('settings'), api('series')]);
+    result = await Promise.all([
+      api('pages'),
+      api('settings'),
+      api('series'),
+      api('fragment-objects?name=openers.html'),
+    ]);
   if (request !== refreshRevision) return;
   pages = result[0];
   const draftCount = pages.filter((p) => p.draft && !p.deleted).length;
@@ -622,6 +659,7 @@ async function refresh() {
   const s = result[1];
   siteOrigin = s.site;
   seriesList = result[2];
+  openerItems = result[3];
   renderPages();
   syncPublishButton();
   // A cloud-synced Git folder can be cold. Publication detection must never
@@ -641,6 +679,84 @@ function responseLabel(stub) {
     source = cited.source || cited.author || stub.origin;
   return 'RESPONSE TO · ' + source + ' · v' + stub.version;
 }
+function closeLocalActions() {
+  document.querySelector('.local-context-menu')?.remove();
+}
+function showLocalActions(item, x, y) {
+  closeLocalActions();
+  const menu = document.createElement('div');
+  menu.className = 'local-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Use published writing');
+  const label = document.createElement('div');
+  label.className = 'local-context-title';
+  label.textContent = item.title || 'Published writing';
+  menu.append(label);
+  const action = (name, callback, disabled = false, hint = '') => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'menuitem');
+    button.textContent = name;
+    button.disabled = disabled;
+    if (hint) button.title = hint;
+    button.onclick = () => {
+      closeLocalActions();
+      callback();
+    };
+    menu.append(button);
+  };
+  action('Stub', () =>
+    run(async () => {
+      const quoted = await api('quote-item', { source: 'local', key: item.id });
+      chooseStub(item, quoted);
+    }),
+  );
+  action('Transclude', () =>
+    run(async () => {
+      const quoted = await api('quote-item', { source: 'local', key: item.id });
+      chooseLocalTransclusion(item, quoted);
+    }),
+  );
+  const pins = item.pinned_versions || [];
+  action(
+    'Fork',
+    () => openLocalFork(item),
+    !pins.length,
+    pins.length ? '' : 'Fork requires a pinned version',
+  );
+  document.body.append(menu);
+  const box = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x || 8, innerWidth - box.width - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y || 8, innerHeight - box.height - 8)) + 'px';
+  menu.querySelector('button:not(:disabled)')?.focus();
+}
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest?.('.local-context-menu')) closeLocalActions();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeLocalActions();
+});
+window.addEventListener('blur', closeLocalActions);
+
+$('editor').addEventListener('contextmenu', (event) => {
+  let item = null;
+  if (page?.name === 'openers.html') {
+    let block = event.target;
+    while (block && block.parentElement !== $('editor')) block = block.parentElement;
+    let heading = block;
+    while (heading && !fragmentEditor.isOpenerHeading(heading))
+      heading = heading.previousElementSibling;
+    if (heading)
+      item = openerItems.find(
+        (entry) => entry.published && entry.legacy_anchor === heading.id,
+      );
+  } else if (page?.kind === 'post' && !page.deleted) {
+    item = pages.find((candidate) => candidate.name === page.name)?.item;
+  }
+  if (!item) return;
+  event.preventDefault();
+  showLocalActions(item, event.clientX, event.clientY);
+});
 async function openPage(name) {
   if (
     dirty &&
@@ -1535,13 +1651,6 @@ $('publish').onclick = () =>
     if (page) page = await api('page?name=' + encodeURIComponent(page.name));
     await refresh();
   });
-setInterval(
-  () => {
-    if (readerActive && !readerBusy) readerOperation('reader-sync', { subscription: null });
-  },
-  90 * 60 * 1000,
-);
-
 $('revert').onclick = () =>
   run(async () => {
     if (
@@ -1844,7 +1953,21 @@ $('newOpener').onclick = () => {
 
 let readerActive = false,
   publishing = false,
-  readerSubscriptions = [];
+  readerSubscriptions = [],
+  readerOpenedBridge = null,
+  readerOpenedKey = null,
+  readerOpenRevision = 0;
+function closeReaderOpened() {
+  readerOpenRevision += 1;
+  if (readerOpenedBridge) readerOpenedBridge.close();
+  readerOpenedBridge = null;
+  readerOpenedKey = null;
+  for (const row of document.querySelectorAll('.reader-row.reader-expanded')) {
+    row.classList.remove('reader-expanded');
+    row.querySelector('.reader-inline-open')?.remove();
+    if (row.classList.contains('reader-conversation-insert')) row.remove();
+  }
+}
 function setPublishBusy(busy, label = 'Preparing…') {
   $('publish').textContent = busy ? label : '↑ Review & publish';
   $('publish').setAttribute('aria-busy', String(busy));
@@ -1908,6 +2031,45 @@ function setWorkspaceChrome(name, wide = false) {
   $('postSort').hidden = name !== 'posts';
   renderPages();
 }
+let libraryCollapsed = false;
+function applyLibraryCollapse() {
+  document.body.classList.toggle('library-collapsed', libraryCollapsed);
+  $('libraryCollapse').textContent = libraryCollapsed ? '▶' : '◀';
+  $('libraryCollapse').setAttribute('aria-label', libraryCollapsed ? 'Show library' : 'Collapse library');
+  $('libraryCollapse').title = libraryCollapsed ? 'Show library' : 'Collapse library';
+}
+$('libraryCollapse').onclick = () => {
+  libraryCollapsed = !libraryCollapsed;
+  applyLibraryCollapse();
+};
+let readerSidebarCollapsed = false;
+function applyReaderSidebarCollapse() {
+  $('readerView').classList.toggle('reader-sidebar-collapsed', readerSidebarCollapsed);
+  $('readerSidebarRestore').hidden = !readerSidebarCollapsed;
+  $('readerSidebarCollapse').textContent = readerSidebarCollapsed ? '▶' : '◀';
+}
+$('readerSidebarCollapse').onclick = () => {
+  readerSidebarCollapsed = true;
+  applyReaderSidebarCollapse();
+};
+$('readerSidebarRestore').onclick = () => {
+  readerSidebarCollapsed = false;
+  applyReaderSidebarCollapse();
+};
+for (const menu of document.querySelectorAll('.tool-menu')) {
+  menu.addEventListener('toggle', () => {
+    if (!menu.open) return;
+    for (const other of document.querySelectorAll('.tool-menu'))
+      if (other !== menu) other.open = false;
+  });
+  menu.addEventListener('click', (event) => {
+    if (event.target.closest('button')) menu.open = false;
+  });
+}
+document.addEventListener('click', (event) => {
+  if (event.target.closest('.tool-menu')) return;
+  for (const menu of document.querySelectorAll('.tool-menu')) menu.open = false;
+});
 function showWriting() {
   readerActive = false;
   if (['images', 'reader', 'saved', 'thicket'].includes(currentWorkspace) && page)
@@ -1938,6 +2100,7 @@ function readerMessage(text) {
 let savedView = 'saved';
 async function showReader(sync = true) {
   capture();
+  closeReaderOpened();
   readerActive = true;
   $('newOpener').hidden = true;
   $('documentView').hidden = true;
@@ -1998,7 +2161,9 @@ let thicketExpanded = false,
   thicketFilter = 'all',
   thicketSnapshot = null,
   thicketIncoming = null,
-  thicketPolicy = null;
+  thicketPolicy = null,
+  thicketReaderItems = [],
+  thicketSeenActivity = new Set();
 function thicketTime(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf())) return 'Time unavailable';
@@ -2017,6 +2182,31 @@ function thicketHost(value) {
   } catch (_) {
     return 'destination unavailable';
   }
+}
+function thicketActivityKey(entry) {
+  return String(entry.key || '') + ':' + String(entry.fingerprint || '');
+}
+function updateThicketBadge() {
+  const unseen = (thicketIncoming?.activities || []).filter(
+    (entry) => entry.unread && !thicketSeenActivity.has(thicketActivityKey(entry)),
+  ).length;
+  const badge = $('thicketUnreadBadge');
+  badge.textContent = String(unseen);
+  badge.hidden = unseen < 1 || currentWorkspace === 'thicket';
+  $('thicketNav').classList.toggle('has-unread', unseen > 0 && currentWorkspace !== 'thicket');
+}
+function thicketOutgoingPerson(entry) {
+  const target = BlyngerThicketUI.safeHttpUrl(entry.target),
+    match = thicketReaderItems.find(
+      (item) =>
+        (entry.target_id &&
+          entry.target_origin &&
+          item.id === entry.target_id &&
+          item.origin === entry.target_origin) ||
+        (target && BlyngerThicketUI.samePage(item.url, target)),
+    ),
+    site = thicketHost(entry.target_origin || entry.target);
+  return match?.author ? String(match.author).slice(0, 200) + ' · ' + site : site;
 }
 function thicketType(entry) {
   if (entry.withdrawal) return 'WITHDRAWAL';
@@ -2108,10 +2298,6 @@ function renderThicketEntries() {
     row.className =
       'thicket-entry ' +
       (incoming ? 'incoming' + (entry.unread ? ' unread' : '') : 'outgoing');
-    main.append(
-      thicketCell('thicket-direction', item.direction + ':'),
-      document.createTextNode(title),
-    );
     row.append(main);
     if (incoming) {
       const source = BlyngerThicketUI.safeHttpUrl(entry.source_page),
@@ -2125,7 +2311,11 @@ function renderThicketEntries() {
         acknowledgement = document.createElement('button');
       const siteCell = thicketCell(
         'thicket-site',
-        '— From: ' + BlyngerThicketUI.incomingSite(entry),
+        '— On: ' + title,
+      );
+      main.append(
+        thicketCell('thicket-direction', item.direction + ':'),
+        document.createTextNode(BlyngerThicketUI.incomingSite(entry)),
       );
       if (thicketPolicy?.mode === 'denylist' && entry.source_origin) {
         const block = document.createElement('span');
@@ -2190,10 +2380,14 @@ function renderThicketEntries() {
             await navigator.clipboard.writeText(thicketReport(entry));
             status('Webmention report copied.');
           });
+      main.append(
+        thicketCell('thicket-direction', item.direction + ':'),
+        document.createTextNode(thicketOutgoingPerson(entry)),
+      );
       row.append(
         thicketCell(
           'thicket-site',
-          '— To: ' + thicketHost(entry.target_origin || entry.target),
+          '— Responding to: ' + title,
         ),
         thicketCell('thicket-time', thicketTime(entry.updated_at)),
         thicketCell('thicket-type', thicketType(entry)),
@@ -2219,11 +2413,17 @@ async function showThicket() {
   $('imagesView').hidden = true;
   $('thicketView').hidden = false;
   setWorkspaceChrome('thicket', true);
-  [thicketSnapshot, thicketIncoming, thicketPolicy] = await Promise.all([
+  let readerSnapshot;
+  [thicketSnapshot, thicketIncoming, thicketPolicy, readerSnapshot] = await Promise.all([
     api('webmentions-status'),
     api('inbound-webmentions-status'),
     api('inbound-webmentions-policy').catch(() => null),
+    api('reader').catch(() => ({ items: [] })),
   ]);
+  thicketReaderItems = readerSnapshot.items || [];
+  for (const entry of thicketIncoming.activities || [])
+    if (entry.unread) thicketSeenActivity.add(thicketActivityKey(entry));
+  updateThicketBadge();
   renderThicketSnapshot(true);
 }
 function renderThicketSnapshot(reset = false) {
@@ -2247,7 +2447,7 @@ function renderThicketSnapshot(reset = false) {
     ? incomingRecent.length
     : '—';
   $('thicketInCaption').textContent = BlyngerThicketUI.incomingCaption(thicketIncoming);
-  $('thicketNav').classList.toggle('has-unread', thicketIncoming.unread_count > 0);
+  updateThicketBadge();
   const inboundProblem = thicketIncoming.availability === 'unavailable',
     outgoingProblem = !thicketSnapshot.running || thicketSnapshot.last_error;
   $('thicketStatusLight').className =
@@ -2296,7 +2496,10 @@ $('thicketMore').onclick = () => {
 };
 async function refreshThicketUnread() {
   thicketIncoming = await api('inbound-webmentions-status');
-  $('thicketNav').classList.toggle('has-unread', thicketIncoming.unread_count > 0);
+  if (currentWorkspace === 'thicket')
+    for (const entry of thicketIncoming.activities || [])
+      if (entry.unread) thicketSeenActivity.add(thicketActivityKey(entry));
+  updateThicketBadge();
   if (currentWorkspace === 'thicket' && thicketSnapshot) renderThicketSnapshot();
 }
 setInterval(() => run(refreshThicketUnread), 60 * 1000);
@@ -2374,6 +2577,7 @@ $('imageUploadFile').onchange = () =>
     status('Image uploaded. It will be included with your next publication.');
   });
 async function loadReader() {
+  closeReaderOpened();
   const request = ++readerLoadRevision,
     workspace = currentWorkspace,
     source = $('readerSource').value,
@@ -2566,6 +2770,8 @@ function openSubscriptionManager() {
 }
 $('readerManage').onclick = openSubscriptionManager;
 let readerBusy = false;
+const READER_BACKGROUND_INTERVAL = 20 * 60 * 1000;
+let lastReaderBackgroundSync = 0;
 async function readerOperation(path, data) {
   if (readerBusy) return;
   readerBusy = true;
@@ -2576,6 +2782,7 @@ async function readerOperation(path, data) {
   if (currentWorkspace === 'reader') readerMessage('Checking subscriptions…');
   try {
     const result = await api(path, data);
+    if (path === 'reader-sync') lastReaderBackgroundSync = Date.now();
     if (path === 'reader-subscribe' || path === 'reader-open') $('dialog').close();
     await loadReader();
     if (result.selected) {
@@ -2598,6 +2805,31 @@ async function readerOperation(path, data) {
     $('readerSync').textContent = 'Refresh / Sync';
   }
 }
+async function backgroundReaderSync() {
+  if (readerBusy || Date.now() - lastReaderBackgroundSync < READER_BACKGROUND_INTERVAL)
+    return;
+  readerBusy = true;
+  lastReaderBackgroundSync = Date.now();
+  try {
+    await api('reader-sync', { subscription: null });
+    if (
+      !readerOpenedBridge &&
+      (currentWorkspace === 'reader' || currentWorkspace === 'saved')
+    )
+      await loadReader();
+  } catch (e) {
+    // A quiet refresh must never interrupt writing or publishing. Surface the
+    // failure when the Reader is visible; its durable subscription state is
+    // otherwise left intact for the next manual or scheduled attempt.
+    if (currentWorkspace === 'reader') readerMessage(e.message);
+  } finally {
+    readerBusy = false;
+  }
+}
+setInterval(() => run(backgroundReaderSync), READER_BACKGROUND_INTERVAL);
+window.addEventListener('focus', () => {
+  if (!readerBusy) run(backgroundReaderSync);
+});
 $('readerAdd').onclick = () => {
   modal(
     'Add Blyg',
@@ -2629,13 +2861,39 @@ $('readerOpen').onclick = () => {
     });
 };
 async function readItem(item) {
+  if (readerOpenedKey === item.key) {
+    closeReaderOpened();
+    return;
+  }
+  const prior = document.querySelector('.reader-row.reader-expanded');
+  closeReaderOpened();
+  const request = readerOpenRevision;
   const d = await api('reader-item?key=' + item.key);
+  if (request !== readerOpenRevision) return;
   let choice = { mode: 'whole' },
     active = null;
   const opened = BlyngerReaderUI.openedItem(item, d, esc, shortDate),
     native = opened.native,
     pins = opened.pins;
-  modal(item.title, opened.html);
+  let row = [...document.querySelectorAll('.reader-row')].find(
+    (candidate) => candidate.dataset.readerKey === item.key,
+  );
+  if (!row) {
+    row = document.createElement('article');
+    row.className = 'reader-row reader-conversation-insert';
+    row.dataset.readerKey = item.key;
+    row.innerHTML =
+      '<small>' + esc(item.author + ' · ' + item.site) + '</small><h2>' + esc(item.title) + '</h2>';
+    if (prior?.isConnected) prior.after(row);
+    if (!row.isConnected) $('readerItems').append(row);
+  }
+  const expansion = document.createElement('div');
+  expansion.className = 'reader-inline-open';
+  expansion.innerHTML = opened.html;
+  row.append(expansion);
+  row.classList.add('reader-expanded');
+  readerOpenedKey = item.key;
+  row.scrollIntoView({ block: 'nearest' });
   const frame = $('readerFrame'),
     button = $('quoteReading');
   button.onmousedown = (e) => e.preventDefault();
@@ -2679,7 +2937,7 @@ async function readItem(item) {
       else run(() => openExternal(data.href));
     },
   });
-  $('dialog').addEventListener('close', () => bridge.close(), { once: true });
+  readerOpenedBridge = bridge;
   const choices = $('readerFragmentChoices');
   for (const f of d.fragments || []) {
     if (!choices) break;
@@ -2883,6 +3141,80 @@ async function chooseQuote(item, newPost) {
   }
   $('dialog').close();
   await addQuote();
+}
+function chooseLocalTransclusion(item, quoted) {
+  modal(
+    'Transclude — ' + item.title,
+    '<p class="hint">Starts new local writing with this exact published item embedded. Nothing is published until you stage and review it.</p>' +
+      '<label>Post headline<input id="localTransclusionTitle" value="' +
+      esc('Revisiting ' + item.title) +
+      '"></label><label>Optional Opener note<textarea id="localTransclusionOpener" placeholder="Add a thought, or leave blank to transclude by itself."></textarea></label>' +
+      '<div class="dialog-actions"><button id="transcludeToOpener">New Opener</button><button id="transcludeToPost">New Post</button></div>',
+  );
+  $('transcludeToPost').onclick = () =>
+    run(async () => {
+      if (dirty) await save();
+      const created = await api('new', { title: $('localTransclusionTitle').value });
+      $('dialog').close();
+      await refresh();
+      await openPage(created.name);
+      const first = $('editor').querySelector('p');
+      if (!first) throw Error('New post body is missing.');
+      const holder = document.createElement('div');
+      holder.innerHTML = localImages('<p><br></p>' + quoted.html + '<p><br></p>');
+      first.replaceWith(...holder.childNodes);
+      selection = null;
+      mark();
+      await save();
+      status('Transclusion saved in a new Post draft.');
+    });
+  $('transcludeToOpener').onclick = () =>
+    run(async () => {
+      const note = $('localTransclusionOpener').value;
+      if (dirty) await save();
+      $('dialog').close();
+      await openPage('openers.html');
+      const opener = fragmentEditor.newOpener(note, {
+        context_html: localImages(quoted.html),
+        pin_on_publish: true,
+      });
+      if (!opener) throw Error('Could not add the transclusion Opener.');
+      capture();
+      await save();
+      status('Transclusion saved in a new Opener draft.');
+    });
+}
+
+function openLocalFork(item) {
+  const pins = item.pinned_versions || [];
+  if (!pins.length) {
+    status('Fork requires a pinned source version. Stub or Transclude still work here.');
+    return;
+  }
+  modal(
+    'Fork — ' + item.title,
+    '<p class="hint">A Fork is an editable copy with permanent lineage. It starts as an unstaged Post draft.</p><label>Post headline<input id="localForkTitle" value="' +
+      esc('Fork of ' + item.title) +
+      '"></label><div id="localForkVersions" class="dialog-actions"></div>',
+  );
+  for (const version of pins) {
+    const button = document.createElement('button');
+    button.textContent = 'Fork version ' + version;
+    button.onclick = () =>
+      run(async () => {
+        button.disabled = true;
+        const forked = await api('local-fork', {
+          id: item.id,
+          version,
+          title: $('localForkTitle').value,
+        });
+        $('dialog').close();
+        await refresh();
+        await openPage(forked.name);
+        status('Pinned local writing copied into a new Fork draft.');
+      });
+    $('localForkVersions').append(button);
+  }
 }
 function chooseStub(item, quoted, destination = null) {
   const native = !quoted.stub_of.url,

@@ -66,3 +66,8 @@ Before changing Blynger's Webmention system, read
 the architectural assumptions that failed during implementation, the security
 boundaries that survived review, and a recommended build and activation order
 for other Blygger-compatible clients.
+
+The proposed local Reader-analysis routine is intentionally not implemented.
+Its scope, network-isolation requirement, ranking behavior, and staged review
+plan are recorded in
+[`docs/LOCAL_READER_AI_PLAN.md`](docs/LOCAL_READER_AI_PLAN.md).

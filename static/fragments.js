@@ -713,25 +713,32 @@ class FragmentEditor {
     return this.openerDate(now) + ', ' + this.openerTime(now);
   }
   newOpener(text, options = {}) {
-    if (this.meta?.purpose !== 'openers' || !text.trim()) return false;
+    if (
+      this.meta?.purpose !== 'openers' ||
+      (!text.trim() && !options.stub_html && !options.context_html)
+    )
+      return false;
     const h = document.createElement('h3');
     h.id = 'opener-' + crypto.randomUUID();
     h.textContent = this.openerStamp();
-    const paragraphs = text
-      .trim()
-      .split(/\n\s*\n/)
-      .map((part) => {
-        const p = document.createElement('p');
-        part.split('\n').forEach((line, i) => {
-          if (i) p.append(document.createElement('br'));
-          p.append(document.createTextNode(line));
-        });
-        return p;
-      });
+    const paragraphs = text.trim()
+      ? text
+          .trim()
+          .split(/\n\s*\n/)
+          .map((part) => {
+            const p = document.createElement('p');
+            part.split('\n').forEach((line, i) => {
+              if (i) p.append(document.createElement('br'));
+              p.append(document.createTextNode(line));
+            });
+            return p;
+          })
+      : [document.createElement('p')];
+    if (!text.trim()) paragraphs[0].append(document.createElement('br'));
     const context = [];
-    if (options.stub_html) {
+    if (options.stub_html || options.context_html) {
       const holder = document.createElement('div');
-      holder.innerHTML = options.stub_html;
+      holder.innerHTML = options.stub_html || options.context_html;
       context.push(...holder.children);
     }
     const first = [...this.editor.children].find((el) => this.isOpenerHeading(el)),

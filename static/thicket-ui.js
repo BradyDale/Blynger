@@ -15,6 +15,19 @@
     return safe ? new URL(safe).hostname.replace(/^www\./, '') : 'source unavailable';
   }
 
+  function samePage(left, right) {
+    const first = safeHttpUrl(left);
+    const second = safeHttpUrl(right);
+    if (!first || !second) return false;
+    const normalize = (value) => {
+      const parsed = new URL(value);
+      parsed.hash = '';
+      parsed.pathname = parsed.pathname.replace(/\/$/, '') || '/';
+      return parsed.href;
+    };
+    return normalize(first) === normalize(second);
+  }
+
   function incomingType(entry) {
     if (entry.kind === 'withdrawal' || entry.status === 'gone') return 'WITHDRAWAL';
     if (entry.relation === 'stub') return 'STUB';
@@ -60,6 +73,7 @@
 
   root.BlyngerThicketUI = {
     safeHttpUrl,
+    samePage,
     host,
     incomingType,
     incomingSite,

@@ -63,6 +63,7 @@
     for (const item of items) {
       const native = item.source_type !== 'l0' && item.source_type !== 'web';
       const row = document.createElement('div');
+      row.dataset.readerKey = item.key;
       const stub = item.stub_target
         ? '<p class="reader-stub-summary"><b>Stub of:</b> ' +
           esc(item.stub_target.label) +
@@ -126,6 +127,7 @@
       row.tabIndex = 0;
       row.title = 'Open ' + item.title;
       row.onclick = (event) => {
+        if (event.target.closest?.('.reader-inline-open')) return;
         if (event.target.closest?.('button,a,input,select,textarea')) return;
         if (global.getSelection?.().toString().trim()) return;
         actions.read(item);

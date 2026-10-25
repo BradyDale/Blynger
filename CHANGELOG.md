@@ -1,3 +1,21 @@
+## 0.14.0 — Index-card workspaces
+
+- Refresh Reader subscriptions quietly every twenty minutes while Blynger is
+  open, without overlapping a manual refresh or delaying publication, and send
+  opened Reader links through the validated native Mac browser bridge.
+- Make Thicket lead with the other participant for both incoming and outgoing
+  activity, retain the engaged-with post as secondary context, and show new
+  incoming activity as a numbered badge until Thicket is opened.
+- Use a complementary green-to-blue-to-purple tab range, retain the original
+  Blynger logo and native Mac menus, and make **SAVE** and the bolder
+  yellow-green **STAGE** control visually unambiguous.
+- Give the writing and reading workspaces a physical index-card layout with
+  contextual Insert and Document controls, collapsible sidebars, and Reader
+  posts that expand one at a time inside the continuing feed.
+- Let authors right-click a published Post or Opener to begin a local Stub or
+  Transclusion in a new Post or Opener, or Fork an eligible pinned version.
+  These shortcuts create private, unstaged drafts and never publish by themselves.
+
 ## 0.13.0 — Webmentions
 
 - Send Webmentions in the background after a successful publication and show delivery results in **Thicket** without delaying writing or publishing.

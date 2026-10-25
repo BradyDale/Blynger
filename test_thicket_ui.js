@@ -14,6 +14,14 @@ assert.strictEqual(
   'https://writer.example/post',
 );
 assert.strictEqual(
+  ui.samePage('https://writer.example/post/#section', 'https://writer.example/post'),
+  true,
+);
+assert.strictEqual(
+  ui.samePage('https://writer.example/post', 'https://other.example/post'),
+  false,
+);
+assert.strictEqual(
   ui.incomingType({ relation: 'stub', kind: 'new', status: 'verified' }),
   'STUB',
 );
