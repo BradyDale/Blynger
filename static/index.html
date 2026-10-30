@@ -59,6 +59,9 @@
                 Reusable fragment</button
               ><button id="tk">
                 <span class="tk-robot" aria-hidden="true"></span>TK passage…
+              </button
+              ><button id="chatDialogue">
+                <span class="tk-robot" aria-hidden="true"></span>ChatGPT dialogue…
               </button>
             </div>
           </details>
@@ -67,13 +70,12 @@
             <div class="tool-menu-panel">
               <b>THIS DOCUMENT</b>
               <button id="versions">◷ Versions…</button
-              ><button id="editHeadline" hidden>Edit headline…</button
               ><button id="renumberPost" hidden>Change number…</button
               ><button id="deletePost" hidden>Delete post…</button>
             </div>
           </details>
           <div class="spacer"></div>
-          <button id="publish" class="publish" disabled>↑ Review &amp; publish</button>
+          <button id="publish" class="publish" disabled title="Click to publish · Right-click to review every change">↑ PUBLISH…</button>
         </div>
         <div class="workspace" id="workspace">
           <aside id="libraryPane">
@@ -112,8 +114,9 @@
                   /></label>
                 </div>
               </div>
-              <div>
+              <div class="document-heading-actions">
                 <span id="draftBadge" class="badge">LOCAL</span>
+                <button id="editHeadline" hidden>Edit headline…</button>
               </div>
             </div>
             <div class="tabs">
@@ -318,10 +321,12 @@
       <div id="dialogBody"></div>
     </dialog>
     <script src="/static/fragments.js"></script>
+    <script src="/static/dialogue.js"></script>
     <script src="/static/editor-safety.js"></script>
-    <script src="/static/reader-frame.js"></script>
+    <script src="/static/reader-content.js"></script>
     <script src="/static/reader-ui.js"></script>
     <script src="/static/thicket-ui.js"></script>
+    <script src="/static/background-job.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

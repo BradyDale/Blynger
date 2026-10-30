@@ -1,6 +1,6 @@
 # Reader quoting and response stubs — current behavior in Blynger 0.9.32
 
-The October 3, 2026 revision of the living Blyg 0.3 specification promoted partial transclusion into the normative protocol. Blynger still publishes a highlighted passage as an ordinary frozen citation: the private draft remembers the enclosing source and exact selection, but public item JSON carries no selector or transclusion reference, public Markdown carries no `![[id]]` directive, and the HTML does not claim `blyg-transclusion`. No selected passage receives a synthetic item ID. This remains an explicit interoperability limitation; it is separate from the whole-item Stub repair described below.
+The draft Blyg 0.4 specification retains the whole-item transclusion model used here. Blynger still publishes a highlighted passage as an ordinary frozen citation: the private draft remembers the enclosing source and exact selection, but public item JSON carries no selector or transclusion reference, public Markdown carries no `![[id]]` directive, and the HTML does not claim `blyg-transclusion`. No selected passage receives a synthetic item ID. This remains an explicit interoperability limitation; it is separate from the whole-item Stub repair described below.
 
 **Quote** is deliberately the lighter reference. Whether the Reader source is Blyg-native, RSS/Atom, or an ordinary page, it inserts an editable semantic blockquote headed **From:** followed by the linked page title. It keeps a private record of the source as initially inserted, but does not create `stub_of`, a `![[id]]` directive, or `transclusions[]`, and it never locks or silently restores the quoted prose in Write mode. Nested Blyg wrappers are flattened so the citation cannot accidentally claim protocol transclusion.
 
@@ -13,14 +13,14 @@ genuine whole-item transclusion when the target is a Blyg item. Write mode treat
 that source as one protected block: the author may delete the whole block but
 cannot casually edit the source's words. Publication re-resolves it from the
 local Reader snapshot, emits `![[id]]`, records the baked version in
-`transclusions[]`, and reconciles `stub_of.version` to that version as Blyg 0.3
+`transclusions[]`, and reconciles `stub_of.version` to that version as Blyg 0.4
 requires. Removing the transclusion does not clear `stub_of`; the relationship
 is metadata, not an inference from quoted HTML. A plain-web target has no
 versioned Blyg identity and therefore remains ordinary editable quoted context.
 The server repeats that enforcement when saving: protected blocks are restored
 from their private source record, while obsolete copied Blyg Stub context is
 upgraded from the exact cached Reader version. Publication strips every editor-
-only class and token and writes the bare Blyg 0.3 transclusion block to canonical
+only class and token and writes the bare Blyg 0.4 transclusion block to canonical
 JSON. Tests inspect those final JSON files rather than stopping at draft markup.
 
 Empty editable paragraphs are placed before and after a newly inserted quotation so the author can write on either side. They are removed from publication if left empty. The earlier automatic “respond here” sentence is gone. A composer Blockquote is independent authored HTML, optionally with `cite` and a visible `<cite>` link; it never becomes a transclusion merely because it is a quotation.
@@ -38,7 +38,7 @@ Open an item in Blyg reader. The existing Quote button follows the selection:
 - Highlight other text: Quote selection inserts only those words, with paragraph breaks and source attribution.
 - Ordinary RSS/Atom articles use the same flow and retain ordinary article attribution.
 
-The headline remains yours to edit and is website presentation, not a Blyg item title field. All quoted material and attribution stay inside the gray quotation while editing. Write normally before or after it. Highlighted excerpts and ordinary-web citations remain frozen. Genuine whole-item and genuine fragment transclusions are re-resolved from the latest locally cached snapshot whenever their containing thread is published, as Blyg 0.3 requires; publication still performs no network request.
+The headline remains yours to edit and is website presentation, not a Blyg item title field. All quoted material and attribution stay inside the gray quotation while editing. Write normally before or after it. Highlighted excerpts and ordinary-web citations remain frozen. Genuine whole-item and genuine fragment transclusions are re-resolved from the latest locally cached snapshot whenever their containing thread is published, as Blyg 0.4 requires; publication still performs no network request. Optional `![[id | label]]` labels are presentation metadata and remain attached to the baked transclusion wrapper.
 
 The remainder of this file is a historical implementation report. Where it describes selector-bearing public excerpts, frozen whole-item transclusions, or a title field, the current rules above supersede it.
 

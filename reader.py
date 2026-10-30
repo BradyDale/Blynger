@@ -26,7 +26,7 @@ MAX_ASSETS_PER_ITEM=16
 MAX_ASSET_BYTES=8*1024*1024
 MAX_ASSET_BYTES_PER_SYNC=64*1024*1024
 READER_TAGS={'a','abbr','b','blockquote','br','code','em','i','li','ol','strong','ul','p','div','span','hr','h1','h2','h3','h4','h5','h6','img','figure','figcaption','table','thead','tbody','tr','td','th','pre','audio','source','video','s','sub','sup','cite'}
-READER_ATTR={'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'cite','data-blyg-id','data-blyg-version','data-blyg-origin'}}
+READER_ATTR={'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'cite','data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label'}}
 READER_CLASSES={'div':{'blyg-tk-gen'},'p':{'blyg-tk-gen'},'span':{'blyg-tk-gen'},'blockquote':{'blyg-tk-gen','blyg-transclusion','blyg-partial'}}
 
 def clean_reader(text):
@@ -198,6 +198,38 @@ class Reader:
         self.state['comment_feed_cleanup_v1']=True
         self.save()
     def key(self,origin,iid):return digest(origin+'\0'+iid)
+    def surface_url(self,sub,name,**variables):
+        """Expand a 0.4 manifest surface, retaining 0.3 defaults."""
+        defaults={'feed':'feed.xml','items':'items/index.json','item':'items/{id}.json','pin':'items/{id}/v{n}.json'}
+        if name not in defaults:raise ValueError('Unknown Blyg surface.')
+        manifest=sub.get('manifest',{}) if isinstance(sub,dict) else {}
+        value=manifest.get(name,defaults[name])
+        if not isinstance(value,str) or not value:raise ValueError('Invalid '+name+' surface in Blyg manifest.')
+        expected={'feed':set(),'items':set(),'item':{'id'},'pin':{'id','n'}}[name]
+        tokens=re.findall(r'\{([^{}]+)\}',value)
+        if set(tokens)!=expected or len(tokens)!=len(expected) or re.search(r'[{}]',re.sub(r'\{[^{}]+\}','',value)):
+            raise ValueError('Invalid '+name+' template in Blyg manifest.')
+        for token in expected:
+            replacement=str(variables.get(token,''))
+            if (token=='id' and not ID.fullmatch(replacement)) or (token=='n' and (not replacement.isdigit() or int(replacement)<1)):
+                raise ValueError('Invalid '+name+' template value.')
+            value=value.replace('{'+token+'}',replacement)
+        return normalized(urljoin(sub['origin'],value))
+    def fetch_surface(self,sub,name,**variables):
+        url=self.surface_url(sub,name,**variables)
+        result=self.fetch(url,limit=MAX_ITEM_BYTES if name in ('item','pin') else None)
+        final=result[0];expected=urlsplit(url);actual=urlsplit(final)
+        if (actual.scheme,actual.netloc)!=(expected.scheme,expected.netloc):
+            raise ValueError('Blyg surface redirected to a different origin.')
+        return result
+    @staticmethod
+    def _reaction_values(item):
+        """Return every selected private response, including legacy single values."""
+        raw=item.get('reactions')
+        values=list(raw) if isinstance(raw,list) else []
+        legacy=item.get('reaction')
+        if legacy in REACTIONS and legacy not in values:values.append(legacy)
+        return [reaction for index,reaction in enumerate(values) if reaction in REACTIONS and reaction not in values[:index]]
     def asset_path(self,name):
         if not ASSET.fullmatch(name):raise ValueError('Invalid managed media name.')
         p=self.assets/name
@@ -270,7 +302,9 @@ class Reader:
             except (ValueError,UnicodeDecodeError):pass
             soup=BeautifulSoup(body,'html.parser');rel=soup.find('link',rel=lambda v:v and 'blyg' in v)
             if rel and rel.get('href'):
-                hit=manifest(urljoin(final,rel['href']).rstrip('/')+'/blyg.json')
+                href=urljoin(final,rel['href'])
+                hit=manifest(href)
+                if not hit:hit=manifest(href.rstrip('/')+'/blyg.json')
                 if hit:return *hit,target
         if legacy and not tree.findall('.//{'+NS+'}id'):return legacy[0],{'type':'l0'},None
         u=urlsplit(original);root=urlunsplit((u.scheme,u.netloc,'/','',''))
@@ -295,8 +329,13 @@ class Reader:
         raise ValueError('No usable feed found. Enter a Blyg, RSS/Atom feed, or a page linking to a feed. Tried: '+', '.join(tried))
     @state_locked
     def subscribe(self,url,added_via='manual'):
-        origin,m,target=self.resolve(url);sid=digest(origin)
+        origin,m,target=self.resolve(url)
+        sid=next((key for key,record in self.state['subscriptions'].items() if record.get('origin')==origin),digest(origin))
         if self.own_origin and urlsplit(origin).netloc==urlsplit(self.own_origin).netloc:raise ValueError('Your own Blyg is already available in the writing archive and Quote post.')
+        if m.get('type')!='l0':
+            probe={'origin':origin,'manifest':m}
+            self.surface_url(probe,'feed');self.surface_url(probe,'items')
+            self.surface_url(probe,'item',id='0'*26);self.surface_url(probe,'pin',id='0'*26,n=1)
         old=self.state['subscriptions'].get(sid,{})
         warning='Manifest site differs from its fetched origin.' if isinstance(m.get('site'),str) and m['site'].rstrip('/')+'/'!=origin else ''
         self.state['subscriptions'][sid]={**old,'id':sid,'origin':origin,'title':m.get('title') if isinstance(m.get('title'),str) else origin,'author':m.get('author'),'manifest':m,'type':'l0' if m.get('type')=='l0' else 'blyg','warning':warning,'added_at':old.get('added_at',self.clock()),'added_via':old.get('added_via',added_via),'blogroll':old.get('blogroll',False),'active':True}
@@ -304,6 +343,38 @@ class Reader:
         if self.state['subscriptions'][sid].get('error') and not old:
             message=self.state['subscriptions'][sid]['error'];del self.state['subscriptions'][sid];self.save();raise ValueError(message)
         result['selected']=self.key(origin,target) if target else None;return result
+
+    @state_locked
+    def recheck_blyg(self,sid):
+        """Re-run discovery without downgrading or discarding a last-good source."""
+        if sid not in self.state['subscriptions']:raise ValueError('Unknown subscription.')
+        sub=self.state['subscriptions'][sid]
+        if sub.get('type')=='web':raise ValueError('An ordinary saved web page is not a feed subscription.')
+        origin,manifest,_=self.resolve(sub['origin'])
+        checked=self.clock();sub['last_blyg_check']=checked
+        if manifest.get('type')=='l0':
+            self.save()
+            if sub.get('type')=='blyg':
+                return {'message':'No Blyg manifest was found during this check. The last confirmed Blyg classification was kept.','classification':'blyg','subscription':sid}
+            return {'message':'Checked again: this source currently exposes an ordinary RSS/Atom feed, not a Blyg.','classification':'l0','subscription':sid}
+        conflict=next((key for key,record in self.state['subscriptions'].items() if key!=sid and record.get('origin')==origin and record.get('type')=='blyg'),None)
+        if conflict:
+            return {'message':'This source is a Blyg and is already followed as '+self.state['subscriptions'][conflict].get('title',origin)+'.','classification':'blyg','subscription':conflict}
+        previous_type=sub.get('type')
+        previous_origin=sub.get('origin')
+        warning='Manifest site differs from its fetched origin.' if isinstance(manifest.get('site'),str) and manifest['site'].rstrip('/')+'/'!=origin else ''
+        sub.update(origin=origin,title=manifest.get('title') if isinstance(manifest.get('title'),str) else sub.get('title',origin),author=manifest.get('author'),manifest=manifest,type='blyg',warning=warning,active=True,sync_pending=True,surfaces={})
+        sub.pop('feed_cache',None)
+        if previous_type=='l0' or previous_origin!=origin:
+            for item in self.state['items'].values():
+                if item.get('subscription')==sid and item.get('source_type')=='l0':item['reclassified_legacy']=True
+        self.save()
+        result=self.sync(sid)
+        if sub.get('error'):
+            message='Confirmed Blyg, but its first canonical sync did not finish: '+sub['error']+' The classification was saved; Refresh / Sync can retry it.'
+        else:message='Confirmed Blyg. Its canonical Blyg items are now used in Reader.'
+        result.update(message=message,classification='blyg',subscription=sid)
+        return result
 
     @state_locked
     def import_item(self,url):
@@ -321,8 +392,7 @@ class Reader:
                  'author':manifest.get('author'),'manifest':manifest,'type':'blyg','warning':'','added_at':self.clock(),
                  'added_via':'one-off authoring import','blogroll':False,'active':False}
             self.state['subscriptions'][sid]=sub
-        final,raw,_,_=self.fetch(origin+'items/'+target+'.json',limit=MAX_ITEM_BYTES)
-        if not final.startswith(origin+'items/'):raise ValueError('Item redirected outside its Blyg origin.')
+        final,raw,_,_=self.fetch_surface(sub,'item',id=target)
         doc=json.loads(raw)
         if not isinstance(doc,dict) or doc.get('id')!=target:raise ValueError('Item identity does not match its permalink.')
         if doc.get('kind') not in ('fragment','thread'):raise ValueError('That Blyg item is not currently available for transclusion.')
@@ -345,7 +415,7 @@ class Reader:
         self.state['items'][key]={'key':key,'subscription':sid,'origin':origin,'doc':doc,
             'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),
             'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),
-            'liked':old.get('liked',False),'reaction':old.get('reaction')}
+            'liked':old.get('liked',False),'reaction':old.get('reaction'),'reactions':self._reaction_values(old)}
         sub.update(last_sync=self.clock(),error='',warnings=warnings)
         self.save()
         return {'selected':key,'title':self.display_title(self.state['items'][key]),'message':'Blyg item imported for this draft without subscribing.'}
@@ -429,7 +499,7 @@ class Reader:
                 continue
             assets,visual,issues=self.download_assets(doc,url,previous,asset_budget)
             sync_warnings.extend(issues)
-            self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':sub['origin'],'source_type':'l0','feed_identity':identity,'feed_entry_hash':entry_hash,'feed_content_hash':doc_hash,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction')}
+            self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':sub['origin'],'source_type':'l0','feed_identity':identity,'feed_entry_hash':entry_hash,'feed_content_hash':doc_hash,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction'),'reactions':self._reaction_values(previous)}
             count+=1
         sub['_pending_warnings']=sync_warnings
         return count
@@ -472,17 +542,18 @@ class Reader:
                 used[url]=name;visual=visual or meaningful
             except (OSError,ValueError) as e:warnings.append(str(e))
         return used,visual,warnings
-    def surface(self,sub,path,with_status=False,force=False):
-        cache=sub.setdefault('surfaces',{});old=cache.get(path,{});headers={}
+    def surface(self,sub,name,with_status=False,force=False):
+        url=self.surface_url(sub,name);cache=sub.setdefault('surfaces',{});old=cache.get(url,{});headers={}
         if not force and old.get('etag'):headers['If-None-Match']=old['etag']
         if not force and old.get('modified'):headers['If-Modified-Since']=old['modified']
-        final,body,response,status=self.fetch(sub['origin']+path,headers=headers)
-        if not final.startswith(sub['origin']):raise ValueError('Subscription moved to a different origin; add the new origin explicitly.')
+        final,body,response,status=self.fetch(url,headers=headers)
+        expected=urlsplit(url);actual=urlsplit(final)
+        if (actual.scheme,actual.netloc)!=(expected.scheme,expected.netloc):raise ValueError('Blyg surface redirected to a different origin.')
         if status==304:
             if 'body' not in old:raise ValueError('Unexpected empty conditional response.')
             return (old['body'],False) if with_status else old['body']
         text=body.decode('utf-8');lower={k.lower():v for k,v in response.items()};changed=force or old.get('body')!=text
-        cache[path]={'body':text,'etag':lower.get('etag'),'modified':lower.get('last-modified')}
+        cache[url]={'body':text,'etag':lower.get('etag'),'modified':lower.get('last-modified')}
         return (text,changed) if with_status else text
     def _sync_subscription(self,sub):
         sub_started=time.monotonic();origin=sub['origin'];warnings=[];checked=0;downloaded=0
@@ -494,14 +565,14 @@ class Reader:
             # RSS is the notification plane; canonical documents alone advance state.
             feed_ids=[];feed_changed=True
             try:
-                xml,feed_changed=self.surface(sub,'feed.xml',with_status=True);tree=ET.fromstring(xml)
+                xml,feed_changed=self.surface(sub,'feed',with_status=True);tree=ET.fromstring(xml)
                 feed_ids=[n.text for n in tree.findall('.//{'+NS+'}id') if n.text and ID.fullmatch(n.text)]
             except (ValueError,ET.ParseError,DefusedXmlException):pass
             last_heal=sub.get('last_archive_heal');heal_due=not last_heal or timestamp(self.clock())-timestamp(last_heal)>=timedelta(days=1)
             if not feed_changed and not heal_due and not sub.get('sync_pending'):
                 sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=warnings;sub['last_result']='unchanged';return 0
             try:
-                index_text,index_changed=self.surface(sub,'items/index.json',with_status=True,force=heal_due)
+                index_text,index_changed=self.surface(sub,'items',with_status=True,force=heal_due)
                 index=json.loads(index_text)
                 if heal_due:sub['last_archive_heal']=self.clock()
             except ValueError:
@@ -520,7 +591,7 @@ class Reader:
             sub['sync_pending']=bool(remaining)
             if remaining:warnings.append(f'{remaining} changed items remain for the next sync.')
             def fetch_item(row):
-                iid=row['id'];return iid,self.fetch(origin+'items/'+iid+'.json',limit=MAX_ITEM_BYTES)
+                iid=row['id'];return iid,self.fetch_surface(sub,'item',id=iid)
             fetched=[]
             with ThreadPoolExecutor(max_workers=4) as pool:
                 futures=[pool.submit(fetch_item,row) for row in rows]
@@ -532,7 +603,6 @@ class Reader:
             for iid,(final,raw,_,_) in fetched:
                 try:
                     doc=json.loads(raw)
-                    if not final.startswith(origin+'items/'):raise ValueError('Item redirected outside its subscription origin.')
                     if not isinstance(doc,dict) or doc.get('id')!=iid:raise ValueError('Item identity does not match its endpoint.')
                     if doc.get('kind') not in ('fragment','thread','withdrawn'):continue
                     v=doc.get('version')
@@ -552,7 +622,7 @@ class Reader:
                     self.state['watermarks'][key]={'version':v,'hash':actual}
                     if doc['kind']=='withdrawn':self.state['items'].pop(key,None);continue
                     assets,visual,issues=self.download_assets(doc,origin,old,asset_budget);warnings.extend(issues)
-                    self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':origin,'doc':doc,'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock() if v!=water.get('version') else old.get('observed_at',self.clock()),'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),'liked':old.get('liked',False),'reaction':old.get('reaction')}
+                    self.state['items'][key]={'key':key,'subscription':sub['id'],'origin':origin,'doc':doc,'first_downloaded_at':old.get('first_downloaded_at',self.clock()),'observed_at':self.clock() if v!=water.get('version') else old.get('observed_at',self.clock()),'assets':assets,'has_visual_media':visual,'saved':old.get('saved',False),'saved_at':old.get('saved_at'),'liked':old.get('liked',False),'reaction':old.get('reaction'),'reactions':self._reaction_values(old)}
                     downloaded+=1
                 except (ValueError,TypeError,AttributeError) as e:warnings.append(str(e))
             sub['last_sync']=self.clock();sub['error']='';sub['error_kind']='';sub['warnings']=warnings;sub['last_result']='updated' if downloaded else 'unchanged';return downloaded
@@ -616,6 +686,7 @@ class Reader:
             if subscription and item['subscription']!=subscription:continue
             if view=='saved' and not item.get('saved'):continue
             if view=='liked' and not item.get('liked'):continue
+            if view=='all' and item.get('reclassified_legacy'):continue
             d=item['doc'];sub=self.state['subscriptions'][item['subscription']]
             if not sub.get('active',True) and view=='all':continue
             author=d.get('author')
@@ -634,7 +705,7 @@ class Reader:
                     for change in changes:timestamp(change['at'])
                 except ValueError:malformed=True;changes=[]
             pins=sum(bool(change.get('pinned')) for change in changes if isinstance(change,dict))
-            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'updated':d.get('updated') or published,'sort':min(published,first_seen),'title':title,'excerpt':excerpt[:280],'url':self.page_url(item),'stub_target':self.stub_target(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction'),'revision_count':max(0,len(changes)-1),'pin_count':pins,'pace_warning':'This cached item has a malformed changelog. Use Newest ordering or skip this item.' if malformed and order=='pace' else None,'_changes':changes})
+            out.append({'key':key,'origin':item['origin'],'subscription':item['subscription'],'author':name,'site':sub['title'],'id':d.get('id'),'kind':d.get('kind','article'),'version':d.get('version'),'source_type':item.get('source_type','blyg'),'date':published,'updated':d.get('updated') or published,'sort':min(published,first_seen),'title':title,'excerpt':excerpt[:280],'url':self.page_url(item),'stub_target':self.stub_target(item),'saved':bool(item.get('saved')),'saved_at':item.get('saved_at'),'liked':bool(item.get('liked')),'reaction':item.get('reaction'),'reactions':self._reaction_values(item),'revision_count':max(0,len(changes)-1),'pin_count':pins,'pace_warning':'This cached item has a malformed changelog. Use Newest ordering or skip this item.' if malformed and order=='pace' else None,'_changes':changes})
         newest=sorted(out,key=lambda i:(i['sort'],i['key']),reverse=True)
         if order!='pace':
             for row in newest:row.pop('_changes',None)
@@ -674,11 +745,18 @@ class Reader:
     def react(self,key,reaction):
         if key not in self.state['items']:raise ValueError('That Reader item is no longer available.')
         if reaction is not None and reaction not in REACTIONS:raise ValueError('Unknown private response.')
-        item=self.state['items'][key];previous=item.get('reaction')
-        value=None if reaction==previous else reaction
-        item['reaction']=value
-        interaction_log.reaction(self.state,item,value,self.clock(),self.display_title(item),previous)
-        self.save();return {'message':'Private response saved.' if value else 'Private response cleared.','reaction':value}
+        item=self.state['items'][key];selected=self._reaction_values(item)
+        if reaction is None:
+            previous=list(selected);item['reactions']=[];item['reaction']=None
+            for value in previous:interaction_log.reaction(self.state,item,None,self.clock(),self.display_title(item),value)
+            self.save();return {'message':'Private responses cleared.','reaction':None,'reactions':[]}
+        enabled=reaction not in selected
+        if enabled:selected.append(reaction)
+        else:selected.remove(reaction)
+        item['reactions']=selected
+        item['reaction']=selected[-1] if selected else None
+        interaction_log.reaction(self.state,item,reaction if enabled else None,self.clock(),self.display_title(item),None if enabled else reaction)
+        self.save();return {'message':'Private response saved.' if enabled else 'Private response cleared.','reaction':item['reaction'],'reactions':selected}
     @state_locked
     def interactions(self,query=''):
         return interaction_log.view(self.state.get('interactions',[]),query)
@@ -706,8 +784,7 @@ class Reader:
                 interaction_log.marker(self.state,item,'saved',True,item.get('saved_at') or self.clock(),label,True)
             if item.get('liked'):
                 interaction_log.marker(self.state,item,'liked',True,self.clock(),label,True)
-            reaction=item.get('reaction')
-            if reaction in REACTIONS:
+            for reaction in self._reaction_values(item):
                 interaction_log.reaction(self.state,item,reaction,self.clock(),label,None,True)
         self.state['interaction_marker_backfill_v1']=True;self.save()
     @state_locked
@@ -753,7 +830,7 @@ class Reader:
             self.state['subscriptions'].setdefault(sid,{'id':sid,'origin':url,'title':urlsplit(final).netloc,'type':'web','added_at':self.clock(),'blogroll':False,'active':True})
             doc={'title':title,'url':final,'author':{},'created':previous.get('doc',{}).get('created',self.clock()),'updated':self.clock(),'content_html':markup,'content_md':BeautifulSoup(markup,'html.parser').get_text(' ',strip=True),'media':[]}
             assets,visual,warnings=self.download_assets(doc,final,previous)
-            self.state['items'][key]={'key':key,'subscription':sid,'origin':url,'source_type':'web','feed_identity':url,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction')}
+            self.state['items'][key]={'key':key,'subscription':sid,'origin':url,'source_type':'web','feed_identity':url,'doc':doc,'first_downloaded_at':previous.get('first_downloaded_at',self.clock()),'observed_at':self.clock(),'assets':assets,'has_visual_media':visual,'saved':previous.get('saved',False),'saved_at':previous.get('saved_at'),'liked':previous.get('liked',False),'reaction':previous.get('reaction'),'reactions':self._reaction_values(previous)}
             self.state['subscriptions'][sid].update(last_sync=self.clock(),error='',warnings=warnings)
             self.save();return {'message':'Opened a sanitized web page in Reader.','selected':key,'subscriptions':list(self.state['subscriptions'].values())}
     def fork_source(self,key,version=None):
@@ -763,7 +840,8 @@ class Reader:
         if not entry or not entry.get('pinned'):raise ValueError('That version is not pinned, so the Blyg protocol does not permit a fork from it.')
         source=doc
         if version!=doc.get('version'):
-            final,body,_,_=self.fetch(item['origin']+'items/'+doc['id']+'/v'+str(version)+'.json');source=json.loads(body)
+            sub=self.state['subscriptions'][item['subscription']]
+            final,body,_,_=self.fetch_surface(sub,'pin',id=doc['id'],n=version);source=json.loads(body)
             if source.get('id')!=doc['id'] or source.get('version')!=version or not source.get('pinned'):raise ValueError('The remote pinned version did not validate.')
         # A fork becomes authored website content. Sanitize it, make relative
         # addresses permanent, and flatten inherited verification claims.
@@ -884,10 +962,10 @@ class Reader:
         label=label if isinstance(label,str) else self.state['subscriptions'][item['subscription']]['title']
         return {'html':'<p>![['+doc['id']+']]</p>','origin':item['origin'],'id':doc['id'],'version':doc['version'],'kind':doc['kind'],'title':self.display_title(item),'stub_of':{'id':doc['id'],'version':doc['version'],'origin':item['origin']}}
 
-    def source_fragments(self,key):
+    def source_fragments(self,key,rendered_html=None):
         item=self.item(key)
         if item.get('source_type') in ('l0','web'):return []
-        doc=item['doc'];out=[];soup=BeautifulSoup(self.rendered(key),'html.parser')
+        doc=item['doc'];out=[];soup=BeautifulSoup(rendered_html if rendered_html is not None else self.rendered(key),'html.parser')
         references=doc.get('transclusions',[])
         for index,node in enumerate(soup.select('blockquote.blyg-transclusion[data-blyg-id]')):
             iid=node.get('data-blyg-id');origin=node.get('data-blyg-origin') or item['origin']
@@ -955,7 +1033,7 @@ class Reader:
             quoted_body=BeautifulSoup(body,'html.parser')
             for nested in quoted_body.select('blockquote.blyg-transclusion'):
                 nested['class']=[value for value in nested.get('class',[]) if value not in ('blyg-transclusion','blyg-partial')]
-                for key in ('data-blyg-id','data-blyg-version','data-blyg-origin'):nested.attrs.pop(key,None)
+                for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label'):nested.attrs.pop(key,None)
             body=str(quoted_body)
         native=not plain and transclude and mode in ('whole','fragment')
         attrs=(' data-blyg-id="'+source['id']+'" data-blyg-version="'+str(source['version'])+'" data-blyg-origin="'+html.escape(source['origin'],quote=True)+'"') if native else ''

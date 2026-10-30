@@ -111,6 +111,8 @@ def relation_document(name):
         return source_document(forked_from=reference)
     if name == "source":
         return source_document(generated=[{"sources": [reference]}])
+    if name == "link":
+        return source_document(links=[{"origin": OWN, "id": TARGET_ID}])
     raise AssertionError(name)
 
 
@@ -127,14 +129,18 @@ class StructuralVerifierTests(unittest.TestCase):
         row = {"source": source, "target": target}
         return StructuralVerifier(registry(), fetcher, Clock()), row, fetcher
 
-    def test_recognizes_all_four_relations_and_priority(self):
-        for name in ("stub", "transclusion", "fork", "source"):
+    def test_recognizes_all_five_relations_and_priority(self):
+        for name in ("stub", "transclusion", "fork", "source", "link"):
             with self.subTest(name=name):
                 verifier, row, fetcher = self.verifier(relation_document(name))
                 result = verifier.verify(row)
                 self.assertEqual(result["relation"], name)
                 self.assertEqual(result["source_item_id"], SOURCE_ID)
                 self.assertEqual(result["source_page"], SOURCE_PAGE)
+                self.assertEqual(
+                    result["mention_class"],
+                    "notice" if name == "link" else "response",
+                )
                 self.assertEqual(len(fetcher.calls), 2)
                 for _, options in fetcher.calls:
                     self.assertEqual(
@@ -145,6 +151,25 @@ class StructuralVerifierTests(unittest.TestCase):
         document["stub_of"] = {"origin": OWN, "id": TARGET_ID, "version": 1}
         verifier, row, _ = self.verifier(document)
         self.assertEqual(verifier.verify(row)["relation"], "stub")
+
+    def test_content_free_stub_and_transclusion_are_repost_notices(self):
+        reference = {"origin": OWN, "id": TARGET_ID, "version": 1}
+        cases = (
+            source_document(stub_of=reference, content_md="![[" + TARGET_ID + "]]"),
+            source_document(transclusions=[reference], content_md="![[" + TARGET_ID + "]]\n\n> selected words"),
+        )
+        for document in cases:
+            verifier, row, _ = self.verifier(document)
+            self.assertEqual(verifier.verify(row)["mention_class"], "notice")
+
+    def test_own_words_make_stub_or_transclusion_a_response(self):
+        reference = {"origin": OWN, "id": TARGET_ID, "version": 1}
+        document = source_document(
+            stub_of=reference,
+            content_md="My own response.\n\n![[" + TARGET_ID + "]]",
+        )
+        verifier, row, _ = self.verifier(document)
+        self.assertEqual(verifier.verify(row)["mention_class"], "response")
 
     def test_generation_source_relation_requires_blyg_04(self):
         document = relation_document("source")
@@ -197,6 +222,17 @@ class StructuralVerifierTests(unittest.TestCase):
         with self.assertRaises(VerificationFailure) as caught:
             verifier.verify(row)
         self.assertEqual(caught.exception.code, "unpublished_fork")
+
+    def test_pinned_document_and_page_are_valid_targets(self):
+        targets = (
+            OWN + "items/" + TARGET_ID + "/v1.json",
+            TARGET_PAGE + "v1/",
+        )
+        for target in targets:
+            with self.subTest(target=target):
+                verifier, row, _ = self.verifier(relation_document("stub"), target=target)
+                result = verifier.verify(row)
+                self.assertEqual(result["relation"], "stub")
 
     def test_malformed_duplicate_json_html_without_alternate_and_oversize_author_fail(self):
         fixtures = []
@@ -725,8 +761,8 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.worker(deleted).run(), 1)
         record = VerificationStore(self.root / "verified").read(row["key"])
         self.assertEqual(
-            (record["status"], record["error"], self.queue.entries()[0]["status"]),
-            ("gone", "source_gone", "gone"),
+            (record["status"], record["error"], record["mention_class"], self.queue.entries()[0]["status"]),
+            ("gone", "source_gone", "response", "gone"),
         )
 
     def test_transient_retry_survives_restart_and_does_not_block_later_work(self):

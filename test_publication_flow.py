@@ -3,6 +3,8 @@ from pathlib import Path
 
 from app import PublicationJob, ReviewJob
 from core import Studio, new_page
+from reader_refresh import ReaderRefreshJob
+from test_reader import Net, ORIGIN
 
 
 class BackgroundPublicationTests(unittest.TestCase):
@@ -18,9 +20,49 @@ class BackgroundPublicationTests(unittest.TestCase):
         subprocess.run(['git','commit','-qm','Initial'],cwd=self.root,check=True)
         self.remote=self.base/'remote.git';subprocess.run(['git','init','--bare',str(self.remote)],capture_output=True,check=True)
         self.studio=Studio(self.root,self.base/'private');self.studio.git('remote','add','website',str(self.remote))
-        self.server=types.SimpleNamespace(studio=self.studio,lock=threading.RLock(),reader_lock=threading.RLock())
+        self.server=types.SimpleNamespace(studio=self.studio,lock=threading.RLock(),reader_lock=threading.RLock(),publication_gate=threading.RLock())
         self.job=PublicationJob(self.server)
     def tearDown(self):self.tmp.cleanup()
+    def test_opener_publishes_while_reader_network_is_stalled(self):
+        self.studio.git('push', 'website', 'master')
+        net = Net()
+        net.add()
+        self.studio.reader.fetch = net
+        self.studio.reader.subscribe(ORIGIN)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def stalled_fetch(*args, **kwargs):
+            entered.set()
+            if not release.wait(15):
+                raise ValueError('Test feed was not released')
+            return net(*args, **kwargs)
+
+        self.studio.reader.fetch = stalled_fetch
+        refresh = ReaderRefreshJob(self.server)
+        refresh.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            self.studio.migrate_openers()
+            draft = self.studio.page('openers.html')
+            draft['raw'] = draft['raw'].replace('Thought.', 'An updated opening thought.')
+            draft.pop('fragments', None)
+            self.studio.save_draft(draft)
+            self.job.start_quick()
+            self.wait_for('succeeded', timeout=10)
+            published = subprocess.run(
+                ['git', '--git-dir', str(self.remote), 'show', 'master:openers.html'],
+                text=True, capture_output=True, check=True,
+            ).stdout
+            self.assertIn('An updated opening thought.', published)
+            self.assertEqual(refresh.status()['state'], 'running')
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            deadline = time.monotonic() + 10
+            while refresh.status()['state'] == 'running' and time.monotonic() < deadline:
+                time.sleep(.01)
+        self.assertEqual(refresh.status()['state'], 'succeeded')
     def wait_for(self,state,timeout=5):
         limit=time.monotonic()+timeout
         while time.monotonic()<limit:
@@ -57,6 +99,29 @@ class BackgroundPublicationTests(unittest.TestCase):
         self.assertIn('pending_publication',self.studio.state);self.assertTrue(entered.wait(2))
         release.set();self.wait_for('succeeded')
         self.assertNotIn('pending_publication',self.studio.state)
+    def test_quick_publish_prepares_and_returns_before_slow_work(self):
+        self.studio.git('push','website','master')
+        self.studio.create('Quick background post')
+        entered=threading.Event();release=threading.Event();original=self.studio.prepare
+        def delayed_prepare(review=True):
+            entered.set();self.assertTrue(release.wait(5));return original(review=review)
+        self.studio.prepare=delayed_prepare
+        started=time.monotonic();result=self.job.start_quick('A quick note');elapsed=time.monotonic()-started
+        self.assertLess(elapsed,1);self.assertEqual(result['state'],'queued');self.assertTrue(entered.wait(2))
+        release.set();status=self.wait_for('succeeded',timeout=8)
+        self.assertEqual(status['state'],'succeeded')
+        subject=subprocess.run(['git','--git-dir',str(self.remote),'log','-1','--format=%s'],text=True,capture_output=True,check=True).stdout.strip()
+        self.assertTrue(subject.startswith('A quick note; Created '),subject)
+    def test_quick_publish_and_full_review_cannot_overlap(self):
+        review_job=ReviewJob(self.server)
+        self.server.publication_job=self.job;self.server.review_job=review_job
+        review_job.job={'id':'reviewing','state':'running','message':'Preparing'}
+        with self.assertRaisesRegex(ValueError,'review is already being prepared'):
+            self.job.start_quick()
+        review_job.job={'state':'idle','message':''}
+        self.job.job={'id':'publishing','state':'queued','message':'Preparing','retryable':False}
+        with self.assertRaisesRegex(ValueError,'already being prepared or sent'):
+            review_job.start()
     def test_unavailable_initial_connection_is_reported_as_background_failure(self):
         self.studio.create('Unavailable server post');review=self.studio.prepare()
         entered=threading.Event()
@@ -165,6 +230,61 @@ class BackgroundPublicationTests(unittest.TestCase):
         self.assertEqual(self.studio.state['drafts']['unrelated.html'],unrelated)
         self.assertEqual(self.studio.state['pins']['uncommitted-pin'],['7'])
 
+    def publish_review(self):
+        review=self.studio.prepare()
+        self.studio.push_publication(self.studio.begin_publication(review['signature']))
+        return review
+    def test_ordinary_post_leaves_old_items_and_pins_byte_for_byte(self):
+        first=self.studio.create('Already published')
+        first['raw']=first['raw'].replace('Start writing here.','Stable words.')
+        self.studio.save_draft(first)
+        self.publish_review()
+        iid=self.studio.state['ids'][first['name']]
+        self.studio.pin(first['name'],1)
+        self.publish_review()
+        before={}
+        for path in self.root.rglob('*'):
+            if not path.is_file() or '.git' in path.parts:continue
+            before[path.relative_to(self.root).as_posix()]=path.read_bytes()
+        old_item=f'blyg/items/{iid}.json'
+        old_pin=f'blyg/items/{iid}/v1.json'
+        self.assertIn(old_item,before)
+        self.assertIn(old_pin,before)
+        second=self.studio.create('Ordinary post')
+        second['raw']=second['raw'].replace('Start writing here.','New words only.')
+        self.studio.save_draft(second)
+        draft=self.studio.state['drafts'][second['name']]
+        self.assertFalse(draft.get('fragments'))
+        self.assertFalse(draft.get('series_id'))
+        review=self.studio.prepare()
+        paths={change['path'] for change in review['changes']}
+        new_id=self.studio.state['ids'][second['name']]
+        allowed={
+            second['name'],
+            'index.html',
+            'feed.xml',
+            'sitemap.xml',
+            'blyg/feed.xml',
+            'blyg/blyg.json',
+            'blyg/index.html',
+            'blyg/items/index.json',
+            'blyg/.htaccess',
+            f'blyg/items/{new_id}.json',
+        }
+        self.assertIn(second['name'],paths)
+        self.assertNotIn(old_item,paths)
+        self.assertNotIn(old_pin,paths)
+        self.assertNotIn(first['name'],paths)
+        unexpected=paths-allowed
+        self.assertEqual(unexpected,set(),sorted(unexpected))
+        changed=[
+            rel for rel,raw in before.items()
+            if rel not in allowed and (self.root/rel).read_bytes()!=raw
+        ]
+        self.assertEqual(changed,[])
+        self.assertEqual((self.root/old_item).read_bytes(),before[old_item])
+        self.assertEqual((self.root/old_pin).read_bytes(),before[old_pin])
+        self.assertEqual((self.root/first['name']).read_bytes(),before[first['name']])
     def test_success_retires_exact_approved_draft_when_page_bytes_were_already_current(self):
         post=self.studio.create('Already current');first=self.studio.prepare()
         self.studio.push_publication(self.studio.begin_publication(first['signature']))

@@ -96,6 +96,15 @@ const assert = require('node:assert/strict');
       for (const key of keys)
         if (!marked.includes(`data-blynger-fragment="${key}"`))
           throw Error('Moved fragment lost its durable identity');
+      at(editor.children[1]);
+      const dialogue = f.insertDialogue(
+        '<p>Imported author turn.</p><div class="blyg-tk-gen"><p>Imported assistant turn.</p></div><p>Imported follow-up.</p>',
+        getSelection().getRangeAt(0),
+      );
+      if (dialogue.length !== 1 || dialogue[0].textContent !== 'Imported assistant turn.')
+        throw Error('Dialogue assistant treatment was not preserved');
+      if (!f.html().includes('Imported author turn.') || !f.html().includes('Imported follow-up.'))
+        throw Error('Dialogue author turns were not inserted as ordinary prose');
       editor.innerHTML = '<h3>October 23, 2026, 2:35 PM</h3><p>Earlier opener.</p>';
       f.meta = { purpose: 'openers', blocks: [], ranges: [], dividers: [], ordinary: [] };
       f.assign();

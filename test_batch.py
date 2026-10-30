@@ -135,7 +135,7 @@ class StudioBatchTests(unittest.TestCase):
         page=self.s.create('Local source',body='<p>Published local words.</p>');draft=self.s.page(page['name']);draft['pin_on_publish']=True;self.s.save_draft(draft);self.s.prepare();iid=self.s.state['ids'][page['name']];self.s.state['published'][iid]=json.loads((self.s.root/f'blyg/items/{iid}.json').read_text())
         listed=next(row for row in self.s.pages() if row['name']==page['name'])['item']
         self.assertEqual(listed['id'],iid);self.assertEqual(listed['pinned_versions'],[1])
-        quoted=self.s.quote_item('local',iid);self.assertIn('![['+iid+']]',quoted['html']);self.assertIn('Stubbing:',quoted['stub_label_html']);self.assertEqual(quoted['stub_of'],{'id':iid,'version':1,'origin':self.s.origin})
+        quoted=self.s.quote_item('local',iid);self.assertIn('![['+iid+']]',quoted['html']);self.assertIn('Published local words.',quoted['authoring_html']);self.assertIn('blynger-citation blyg-transclusion',quoted['authoring_html']);self.assertIn('Stubbing:',quoted['stub_label_html']);self.assertEqual(quoted['stub_of'],{'id':iid,'version':1,'origin':self.s.origin})
         fork=self.s.fork_local(iid,1);self.assertIn('Published local words.',fork['html']);self.assertEqual(fork['forked_from'],{'id':iid,'version':1,'origin':self.s.origin})
         self.s.state['published'][iid]['changelog'][0].pop('pinned')
         with self.assertRaisesRegex(ValueError,'not pinned'):self.s.fork_local(iid,1)
@@ -163,7 +163,7 @@ class StudioBatchTests(unittest.TestCase):
         compact=re.sub(r'\s+','',app);compact_fragments=re.sub(r'\s+','',fragments)
         def assert_compact(*values):
             for value in values:self.assertIn(re.sub(r'\s+','',value),compact)
-        assert_compact('reader-open','Open original','20*60*1000','Publishing… You can keep writing.','Published successfully.','sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft','run(updatePublicationState)',"api('stage',{name:page.name,staged:false})","api('stage',{name:page.name,staged:true})",'showLocalActions','chooseLocalTransclusion','openLocalFork',"api('local-fork'",'contextmenu')
+        assert_compact('reader-open','Open original','20*60*1000','Publishing… You can keep writing.','Published successfully.','sourceFind','visualFind','defaultParagraphSeparator','image-url','reader-unsubscribe','d.original_url','readerFragmentChoices','fragmentEditor.replace','blynger-blockquote-source','pasteQuoteText','aria-pressed','chooseStub','Stub to Opener','Stub to post','stub_label_html','authoring_html','lockTransclusions','pin_on_publish','clearBrokenFragments','Remove all fragments and save draft','run(updatePublicationState)',"api('stage',{name:page.name,staged:false})","api('stage',{name:page.name,staged:true})",'showLocalActions','chooseLocalTransclusion','openLocalFork',"api('local-fork'",'contextmenu')
         for identifier in ('readerViewFilter','readerBlogroll','readerManage','removeFragment','blockquote','sourceFindText','save','stage','pinOnPublish','responseMarker'):self.assertIn('id="'+identifier+'"',html)
         assert_compact("modal('Manage subscriptions'","api('reader-blogroll'",'Saved and Liked posts are kept','includes it in the next publication')
         assert_compact("modal('Add link'",'year-2018.html',"$('dialog').close();$('editor').focus();restoreSelection();if(!document.execCommand('createLink'",'reader-source-badge','reader-generated','What the author disclosed','fingerprint:d.fingerprint,transclude:true')
@@ -181,6 +181,9 @@ class StudioBatchTests(unittest.TestCase):
         compact=re.sub(r'\s+','',source)
         self.assertIn('retireOwnedServers()',compact)
         self.assertIn('foroldPortin[port,8765]',compact)
+        self.assertIn('Date().addingTimeInterval(120)',compact)
+        self.assertIn('ifDate()>=deadline',compact)
+        self.assertNotIn('waitForServer(60)',compact)
         self.assertIn('"-tiTCP:\\(oldPort)"',source)
         self.assertIn('Recovery…',source)
         self.assertIn('showThicket',source)

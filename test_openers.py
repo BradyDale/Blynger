@@ -19,6 +19,48 @@ class OpenerTests(unittest.TestCase):
         self.studio.git('remote','add','website',str(remote))
     def publish(self):
         review=self.studio.prepare();self.studio.publish(review['signature'])
+    def test_linked_source_credit_survives_save_reopen_and_prepare(self):
+        credit = '<p style="text-align:right"><a href="https://frontstageexit.com/">—frontstageexit.com</a></p>'
+        raw = new_page('Openers', '<h3>October 25, 2026, 1:29 PM</h3><p>Consider this possibility.</p>' + credit)
+        (self.root / 'openers.html').write_text(raw)
+        self.studio.migrate_openers()
+        draft = self.studio.page('openers.html')
+        identity = draft['fragments']['ranges'][0]['key']
+        self.studio.save_draft(draft)
+        reopened = Studio(self.root, self.studio.data).page('openers.html')
+        self.assertIn('frontstageexit.com', reopened['body'])
+        self.assertEqual(reopened['fragments']['ranges'][0]['key'], identity)
+        self.studio.prepare()
+
+    def test_source_credit_exception_keeps_byline_and_date_exclusions(self):
+        from fragments import excluded
+        self.assertTrue(excluded('<p>—Example Author</p>'))
+        self.assertTrue(excluded('<p>By Example Author</p>'))
+        self.assertTrue(excluded('<p>—<a href="https://example.com/">Example Author</a></p>'))
+        self.assertTrue(excluded('<h1>Title</h1>'))
+        self.assertTrue(excluded('<p>October 25, 2026</p>'))
+        self.assertTrue(excluded('<p>—<a href="https://elsewhere.com/">frontstageexit.com</a></p>'))
+        self.assertFalse(excluded('<p>—<a href="https://www.frontstageexit.com/post">frontstageexit.com</a></p>'))
+
+    def test_list_inside_paragraph_saves_trailing_text_as_block(self):
+        self.seed()
+        self.studio.migrate_openers()
+        draft = self.studio.page('openers.html')
+        identities = [row['key'] for row in draft['fragments']['ranges']]
+        draft['raw'] = draft['raw'].replace(
+            'First opener.',
+            '<ul><li>Twine</li><li><b>Blygger</b></li></ul>What do folks think?',
+        )
+        self.studio.save_draft(draft)
+        reopened = Studio(self.root, self.studio.data).page('openers.html')
+        self.assertEqual([row['key'] for row in reopened['fragments']['ranges']], identities)
+        body = BeautifulSoup(self.studio.state['drafts']['openers.html']['raw'], 'html.parser')
+        trailing = body.find('p', string='What do folks think?')
+        self.assertIsNotNone(trailing)
+        self.assertTrue(trailing.get('data-blynger-block'))
+        self.assertEqual([li.get_text() for li in body.select('ul li')], ['Twine', 'Blygger'])
+        self.studio.prepare()
+
     def test_additive_idempotent_migration_preserves_page_and_dates(self):
         raw=self.seed();published=copy.deepcopy(self.studio.state['published']);r=self.studio.migrate_openers()
         self.assertEqual(r['count'],3);self.assertTrue(r['changed']);self.assertEqual(raw,(self.root/'openers.html').read_text())
@@ -225,6 +267,31 @@ class OpenerTests(unittest.TestCase):
         self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['stub_of'],quoted['stub_of'])
         self.assertEqual(doc['transclusions'],[{'id':source_id,'version':1}])
         self.assertIn('![[%s]]'%source_id,doc['content_md']);self.assertIn('blyg-transclusion',doc['content_html'])
+
+    def test_self_stub_opener_shows_snapshot_after_save_and_reopen(self):
+        self.seed();self.studio.migrate();self.studio.state['published']={p.stem:json.loads(p.read_text()) for p in (self.root/'blyg/items').glob('*.json') if p.name!='index.json'};self.studio.migrate_openers()
+        source_id=self.studio.state['ids']['1.html'];quoted=self.studio.quote_item('local',source_id);d=self.studio.page('openers.html')
+        source=quoted['stub_label_html']+quoted['authoring_html']+'<p>A self-response.</p>'
+        d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 26, 2026, 8:26 PM</h3>'+source+'<h3 id="same">',1)
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments']);d['fragments']['ranges'][0]['stub_of']=quoted['stub_of']
+        self.studio.save_draft(d)
+        reopened=Studio(self.root,self.studio.data).page('openers.html')
+        self.assertIn('blynger-citation blyg-transclusion',reopened['body'])
+        self.assertIn('Original',reopened['body'])
+        self.assertNotIn('![[%s]]'%source_id,reopened['body'])
+        self.studio.prepare();reply=d['fragments']['ranges'][0];iid=self.studio.state['fragment_ids']['openers.html'][reply['key']]
+        doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
+        self.assertEqual(doc['stub_of'],quoted['stub_of']);self.assertEqual(doc['transclusions'],[{'id':source_id,'version':1}])
+        self.assertIn('![[%s]]'%source_id,doc['content_md']);self.assertNotIn('blynger-citation',doc['content_html'])
+
+    def test_existing_self_stub_directive_is_repaired_for_visual_editing(self):
+        self.seed();self.studio.migrate();self.studio.state['published']={p.stem:json.loads(p.read_text()) for p in (self.root/'blyg/items').glob('*.json') if p.name!='index.json'};self.studio.migrate_openers()
+        source_id=self.studio.state['ids']['1.html'];quoted=self.studio.quote_item('local',source_id);d=self.studio.page('openers.html')
+        source=quoted['stub_label_html']+'<p>![['+source_id+']]</p><p>Existing self-response.</p>'
+        d['raw']=d['raw'].replace('<h3 id="same">','<h3 id="reply">October 26, 2026, 8:26 PM</h3>'+source+'<h3 id="same">',1)
+        a,b=region(d['raw']);d['fragments']=openers_metadata(clean(d['raw'][a:b]),d['fragments']);d['fragments']['ranges'][0]['stub_of']=quoted['stub_of'];self.studio.save_draft(d)
+        reopened=Studio(self.root,self.studio.data).page('openers.html')
+        self.assertIn('blynger-citation blyg-transclusion',reopened['body']);self.assertIn('Original',reopened['body']);self.assertNotIn('![[%s]]'%source_id,reopened['body'])
 
     def test_existing_opener_keeps_its_fragment_permalink_when_it_becomes_a_stub(self):
         self.seed();self.studio.migrate_openers();self.connect();self.publish();d=self.studio.page('openers.html');reply=d['fragments']['ranges'][0];iid=self.studio.state['fragment_ids']['openers.html'][reply['key']]

@@ -1,6 +1,6 @@
 # Reader — current behavior in Blynger 0.9.34
 
-The protocol source of truth for this release was the live [Blyg 0.3 specification](https://blygger.org/spec/0.3/), checked against official specification source commit `fde93b694a401d3c458b34dfac84fc833ba861dd`. Human Blyg pages advertise their origin base with `rel="blyg"`; readers resolve that link and probe the fixed `blyg.json` manifest. Older implementation reports below are retained as history, not as the current feature boundary.
+The protocol source of truth for this release is the draft [Blyg 0.4 specification](https://blygger.org/spec/0.4/). Human Blyg pages advertise their origin base with `rel="blyg"`; readers resolve that link, read `blyg.json`, and use the feed, archive, current-item and pin surfaces located by that manifest. Older implementation reports below are retained as history, not as the current feature boundary.
 
 ## Imported-content security boundary
 

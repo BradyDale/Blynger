@@ -202,6 +202,22 @@ class FragmentTests(unittest.TestCase):
         with self.assertRaises(FragmentFileConflict) as problem:self.studio.page('1.html')
         self.assertFalse(problem.exception.can_accept)
         with self.assertRaises(FragmentFileConflict):self.studio.accept_fragment_files(['1.html'])
+    def test_public_local_urls_and_identical_media_are_safe_differences(self):
+        filename = 'a' * 64 + '.jpg'
+        original = self.root / 'images' / 'blynger' / filename
+        mirror = self.root / 'blyg' / 'media' / filename
+        original.parent.mkdir(parents=True)
+        mirror.parent.mkdir(parents=True)
+        original.write_bytes(b'exact same image')
+        mirror.write_bytes(original.read_bytes())
+        private = new_page('Title', '<p><a href="/2.html">Next</a><img src="/images/blynger/' + filename + '"></p>')
+        public = private.replace('href="/2.html"', 'href="https://example.com/2.html"').replace('/images/blynger/', 'https://example.com/blyg/media/')
+        self.assertEqual(self.studio.fragment_file_signature(private), self.studio.fragment_file_signature(public))
+        mirror.write_bytes(b'different image')
+        self.assertNotEqual(self.studio.fragment_file_signature(private), self.studio.fragment_file_signature(public))
+        self.assertNotEqual(self.studio.fragment_file_signature(private), self.studio.fragment_file_signature(private.replace('/2.html', 'https://elsewhere.example/2.html')))
+        self.assertNotEqual(self.studio.fragment_file_signature(private), self.studio.fragment_file_signature(private.replace('/2.html', '/3.html')))
+
     def test_public_quote_expansion_is_a_safe_file_difference(self):
         iid='0123456789abcdefghjkmnpqr'
         private=new_page('Quoted','<p>![[%s]]</p><p>Own writing.</p>'%iid)

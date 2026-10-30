@@ -2,7 +2,7 @@
 
 **Blynger is a static personal website manager with Blygger interoperability built in.**
 
-Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.3 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, Webmention sending and receiving, a private activity view called Thicket, and separate ordinary/Blyg RSS feeds.
+Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.4 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, Webmention sending and receiving, a private activity view called Thicket, and separate ordinary/Blyg RSS feeds.
 
 For a fuller explanation of the static-first design and how its workspaces and
 Blyg features fit together, see [How Blynger Works](HOW_BLYNGER_WORKS.md).
@@ -30,11 +30,16 @@ The code distinguishes between two kinds of updates:
 
 ## Current status
 
-Blynger 0.14.0 is pre-1.0 software. It gives the application a physical
-index-card workspace design, adds inline one-at-a-time Reader expansion,
-clarifies participants and unread activity in Thicket, refreshes Reader sources
-quietly in the background, and adds local right-click shortcuts for starting a
-Stub, Transclusion, or eligible Fork from existing writing.
+Blynger 0.15.7 is pre-1.0 software. It publishes Blyg 0.4, leaves an
+already-valid archive byte for byte during an ordinary publication, and uses
+one shared start-then-poll loop so publication review and Reader refresh
+survive dropped browser requests.
+
+The 0.14.0 release gave the application a physical index-card workspace
+design, inline one-at-a-time Reader expansion, clearer participants and unread
+activity in Thicket, quiet background Reader refresh, and local right-click
+shortcuts for starting a Stub, Transclusion, or eligible Fork from existing
+writing.
 
 The preceding 0.13.0 release added background outbound Webmentions and verified
 incoming Webmentions in Thicket. The included inbound deployment helpers target
@@ -79,8 +84,8 @@ and guided first-run setup are not yet provided.
 
 ## Blygger
 
-Blynger targets the living Blyg 0.3 Level 2 specification. See
-<https://blygger.org/spec/0.3/> and the local interoperability notes in
+Blynger targets the living Blyg 0.4 Level 2 specification. See
+<https://blygger.org/spec/0.4/> and the local interoperability notes in
 `QUOTING.md`, `FRAGMENTS.md`, `OPENERS.md`, and `READER.md`.
 
 ## Acknowledgments

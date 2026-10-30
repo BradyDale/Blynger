@@ -23,9 +23,9 @@ def _canonical(value):
     ).encode()
 
 
-def build_registry_artifact(commit, previous_commit, origin, manifest, documents):
+def build_registry_artifact(commit, previous_commit, origin, manifest, documents, pinned_documents=None):
     """Build a registry identified by the exact hosted Git commit it describes."""
-    registry = build_target_registry(origin, manifest, documents)
+    registry = build_target_registry(origin, manifest, documents, pinned_documents)
     value = {
         "schema": 1,
         "commit": commit,

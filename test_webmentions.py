@@ -131,6 +131,21 @@ class MentionPlanningTests(unittest.TestCase):
         current["generated"] = [{"sources": [reference()]}]
         self.assertEqual(plan_mentions(None, current, OWN), {"events": [], "issues": []})
 
+    def test_04_structured_links_plan_notice_without_a_target_version(self):
+        current = document()
+        current["links"] = [{"origin": REMOTE, "id": TARGET_ID}]
+        result = plan_mentions(None, current, OWN)
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["relations"], ["link"])
+        self.assertEqual(result["events"][0]["target_versions"], {"link": None})
+
+    def test_03_links_field_is_ignored_and_html_is_never_scanned(self):
+        current = document(blyg="0.3")
+        current["links"] = [{"origin": REMOTE, "id": TARGET_ID}]
+        current["content_html"] = '<a href="https://remote.example/">ordinary link</a>'
+        self.assertEqual(plan_mentions(None, current, OWN), {"events": [], "issues": []})
+
     def test_unrelated_republication_is_silent_but_target_change_is_new(self):
         previous = document(version=1)
         previous["transclusions"] = [reference(version=2)]
@@ -338,7 +353,7 @@ class DiscoveryTests(unittest.TestCase):
             current["transclusions"] = [reference(url=target_url)]
         return plan_mentions(None, current, OWN)["events"][0]
 
-    def test_manifest_endpoint_and_custom_item_template_resolve_target(self):
+    def test_manifest_endpoint_targets_custom_item_document_when_page_is_unknown(self):
         net = Net()
         manifest = {
             "blyg": "0.4",
@@ -347,23 +362,13 @@ class DiscoveryTests(unittest.TestCase):
         }
         item_url = REMOTE + "api/items/" + TARGET_ID + "?format=blyg"
         net.add(REMOTE + "blyg.json", manifest)
-        net.add(
-            item_url,
-            {"id": TARGET_ID, "origin": REMOTE, "page": "essays/target/"},
-        )
         checked = []
         found = discover_endpoint(self.event(), net, lambda url: checked.append(url))
         self.assertEqual(found["endpoint"], REMOTE + "receive?channel=blyg")
-        self.assertEqual(found["target"], REMOTE + "essays/target/")
+        self.assertEqual(found["target"], item_url)
         self.assertEqual(found["method"], "manifest")
         self.assertEqual(checked, [found["endpoint"]])
-        self.assertEqual(
-            net.calls,
-            [
-                ("GET", REMOTE + "blyg.json", 256 * 1024),
-                ("GET", item_url, 1024 * 1024),
-            ],
-        )
+        self.assertEqual(net.calls, [("GET", REMOTE + "blyg.json", 256 * 1024)])
 
     def test_manifest_precedes_w3c_and_preserves_endpoint_query(self):
         target = REMOTE + "t/" + TARGET_ID + "/"
@@ -424,22 +429,27 @@ class DiscoveryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     discover_endpoint(self.event(target_url=target, plain=True), net, guard)
 
-    def test_bad_template_and_redirected_item_identity_are_rejected(self):
+    def test_bad_item_template_is_rejected(self):
         net = Net()
         net.add(REMOTE + "blyg.json", {"blyg": "0.4", "item": "api/{other}"})
         with self.assertRaisesRegex(ValueError, "template"):
             discover_endpoint(self.event(), net, lambda url: None)
 
+    def test_w3c_fallback_discovers_on_canonical_item_document(self):
         net = Net()
         item_url = REMOTE + "items/" + TARGET_ID + ".json"
         net.add(REMOTE + "blyg.json", {"blyg": "0.4"})
         net.add(
             item_url,
-            {"id": TARGET_ID, "origin": REMOTE, "page": "target/"},
-            final="https://evil.example/items/" + TARGET_ID + ".json",
+            headers={"Link": "</webmention>; rel=webmention"},
+            method="HEAD",
         )
-        with self.assertRaisesRegex(ValueError, "redirected"):
-            discover_endpoint(self.event(), net, lambda url: None)
+        found = discover_endpoint(self.event(), net, lambda url: None)
+        self.assertEqual(
+            found,
+            {"endpoint": "https://remote.example/webmention", "target": item_url, "method": "http-link"},
+        )
+        self.assertEqual([call[:2] for call in net.calls], [("GET", REMOTE + "blyg.json"), ("HEAD", item_url)])
 
     def test_default_transport_revalidates_redirect_and_honors_bound(self):
         responses = [

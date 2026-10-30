@@ -9,6 +9,7 @@ let page = null,
   mode = 'visual',
   selection = null,
   generated = [],
+  generatedByNode = new WeakMap(),
   publicationReady = false,
   siteOrigin = '',
   editRevision = 0,
@@ -49,6 +50,12 @@ async function openExternal(url) {
     return { message: 'Opened in your browser.' };
   }
   return api('open-external', { url });
+}
+async function copyMailLink(url) {
+  const address = decodeURIComponent(String(url).replace(/^mailto:/i, '').split('?')[0]).trim();
+  if (!address) throw Error('This email link has no address to copy.');
+  await navigator.clipboard.writeText(address);
+  status('Copied email address: ' + address);
 }
 function status(s) {
   $('status').textContent = s;
@@ -243,6 +250,27 @@ function prettySource(s) {
   return s.replace(/___BLYNGER_HELD_(\d+)___/g, (_, i) => held[Number(i)]);
 }
 const fragmentEditor = new FragmentEditor($('editor'), mark, status);
+function generatedNodes() {
+  return [...$('editor').querySelectorAll('.blyg-tk-gen')];
+}
+function bindGeneratedNodes(records = generated) {
+  const available = Array.isArray(records) ? records : [];
+  generatedByNode = new WeakMap();
+  for (const [index, node] of generatedNodes().entries())
+    generatedByNode.set(node, structuredClone(available[index] || { sources: [] }));
+  syncGeneratedNodes();
+}
+function syncGeneratedNodes() {
+  generated = generatedNodes().map((node, index) => {
+    let provenance = generatedByNode.get(node);
+    if (!provenance) {
+      provenance = structuredClone(generated[index] || { sources: [] });
+      generatedByNode.set(node, provenance);
+    }
+    return provenance;
+  });
+  return generated;
+}
 function raw() {
   if (mode === 'source') return $('source').value;
   return page.prefix + publicImages(fragmentEditor.html()) + page.suffix;
@@ -264,10 +292,12 @@ function sourceParts(value) {
 }
 function applySource() {
   if (mode !== 'source') return;
+  syncGeneratedNodes();
   const parts = sourceParts($('source').value);
   page.prefix = parts.prefix;
   page.suffix = parts.suffix;
   fragmentEditor.replace(localImages(parts.body));
+  bindGeneratedNodes(generated);
   mode = 'visual';
   fragmentEditor.layer.hidden = page.kind !== 'post' && page.name !== 'openers.html';
   $('source').hidden = true;
@@ -565,6 +595,7 @@ function renderPages() {
         event.preventDefault();
         showLocalActions(item, event.clientX, event.clientY);
       };
+      b.title = 'Right-click to Stub, Transclude, or Fork this published Opener';
       $('pages').append(b);
     }
     if (!$('pages').children.length) $('pages').textContent = 'No matching published Openers.';
@@ -634,6 +665,7 @@ function renderPages() {
         event.preventDefault();
         showLocalActions(p.item, event.clientX, event.clientY);
       };
+    if (p.item) b.title = 'Right-click to Stub, Transclude, or Fork this published Post';
     $('pages').append(b);
   }
   if (!$('pages').children.length)
@@ -730,6 +762,36 @@ function showLocalActions(item, x, y) {
   menu.style.top = Math.max(8, Math.min(y || 8, innerHeight - box.height - 8)) + 'px';
   menu.querySelector('button:not(:disabled)')?.focus();
 }
+function showReaderSourceActions(item, x, y) {
+  closeLocalActions();
+  const menu = document.createElement('div');
+  menu.className = 'local-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Reader source actions');
+  const label = document.createElement('div');
+  label.className = 'local-context-title';
+  label.textContent = item.site || item.title || 'Reader source';
+  const recheck = document.createElement('button');
+  recheck.type = 'button';
+  recheck.setAttribute('role', 'menuitem');
+  recheck.textContent = 'Recheck whether this is a Blyg';
+  recheck.onclick = () => {
+    closeLocalActions();
+    run(async () => {
+      const result = await api('reader-recheck-blyg', {
+        subscription: item.subscription,
+      });
+      await loadReader();
+      status(result.message);
+    });
+  };
+  menu.append(label, recheck);
+  document.body.append(menu);
+  const box = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x || 8, innerWidth - box.width - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y || 8, innerHeight - box.height - 8)) + 'px';
+  recheck.focus();
+}
 document.addEventListener('pointerdown', (event) => {
   if (!event.target.closest?.('.local-context-menu')) closeLocalActions();
 });
@@ -784,6 +846,7 @@ async function openPage(name) {
   generated = page.generated || [];
   quotes = page.quotes || {};
   $('editor').innerHTML = localImages(page.body);
+  bindGeneratedNodes(generated);
   const fragmentRepair = fragmentEditor.load(page.fragments);
   $('newOpener').hidden = page.name !== 'openers.html';
   $('editHeadline').hidden =
@@ -804,6 +867,7 @@ async function openPage(name) {
   for (const id of ['save', 'stage', 'preview', 'images', 'sourceTab'])
     $(id).disabled = !!page.deleted;
   $('tk').disabled = !!page.deleted || page.kind !== 'post';
+  $('chatDialogue').disabled = !!page.deleted || page.kind !== 'post';
   for (const id of [
     'versions',
     'mainFragment',
@@ -887,6 +951,7 @@ async function saveOnce(clearFragments = false, repairFragmentMarkers = false) {
   // same reconciliation pass. Otherwise a final boundary repair can make the
   // two halves of one save disagree.
   const serialized = fragmentEditor.serialize();
+  syncGeneratedNodes();
   const target = page,
     name = page.name,
     revision = editRevision,
@@ -1341,6 +1406,30 @@ $('images').onclick = () =>
         status('Image added to the draft.');
       });
   });
+function tkTranscript() {
+  const author = (
+      document.querySelector('meta[name="blynger-author"]')?.content || ''
+    ).trim(),
+    authorPattern =
+      author &&
+      new RegExp(
+        '^(?:[—–-]\\s*)?(?:By\\s+)?' +
+          author.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+          '\\b',
+        'i',
+      ),
+    furniture = (node) => {
+      const text = (node.innerText || node.textContent || '').trim();
+      return (
+        node.matches('h1,.blynger-series-title,.blynger-series-next') ||
+        !!authorPattern?.test(text) ||
+        /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}$/.test(
+          text,
+        )
+      );
+    };
+  return BlyngerDialogue.transcript($('editor'), furniture);
+}
 $('tk').onclick = () => {
   if (!page) return;
   if (page.kind !== 'post') {
@@ -1369,7 +1458,7 @@ $('tk').onclick = () => {
         const result = await api('tk', {
           name: page.name,
           instruction: $('instruction').value,
-          context: $('editor').innerText,
+          context: tkTranscript(),
         });
         modal(
           'Review TK text',
@@ -1388,11 +1477,8 @@ $('tk').onclick = () => {
           }
           const inserted = fragmentEditor.insertTK(result.html, selection);
           if (inserted) {
-            const index = [...$('editor').querySelectorAll('.blyg-tk-gen')].indexOf(
-              inserted,
-            );
-            while (generated.length < index) generated.push({ sources: [] });
-            generated.splice(index, 0, result.provenance);
+            generatedByNode.set(inserted, structuredClone(result.provenance));
+            syncGeneratedNodes();
             capture();
           }
         };
@@ -1401,6 +1487,152 @@ $('tk').onclick = () => {
         b.textContent = 'Generate text';
       }
     });
+};
+$('chatDialogue').onclick = () => {
+  if (!page || page.kind !== 'post' || page.deleted) {
+    status('ChatGPT dialogue can be inserted only in posts.');
+    return;
+  }
+  if (mode === 'source') {
+    status('Return to Write before inserting a dialogue.');
+    return;
+  }
+  capture();
+  let pastedRich = '',
+    pastedText = '',
+    turns = [],
+    dialogueModel = '',
+    shareURL = '';
+  try {
+    dialogueModel = localStorage.getItem('blynger-dialogue-model') || '';
+  } catch (_) {}
+  const pasteStep = () => {
+    modal(
+      'Insert ChatGPT dialogue',
+      '<p>Use a ChatGPT share link for a complete conversation with reliable speaker boundaries. Labeled copied text also works.</p>' +
+        '<label>Model used (self-reported)<input id="dialogueModel" maxlength="100" placeholder="For example: GPT-6.1 Sol" value="' +
+        esc(dialogueModel) +
+        '"></label>' +
+        '<label>ChatGPT share link<input id="dialogueShareURL" type="url" placeholder="https://chatgpt.com/share/…" value="' +
+        esc(shareURL) +
+        '"></label><p class="dialogue-or">— OR PASTE LABELED DIALOGUE —</p>' +
+        '<div id="dialoguePaste" class="dialogue-paste" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Paste dialogue containing You said: and ChatGPT said: labels…"></div>' +
+        '<p class="hint">The model name comes from you. A share link exposes only the conversation you chose to share; ordinary pasted text stays on this Mac. Nothing is sent to a model.</p><div id="dialogueProblem"></div>' +
+        '<div class="dialog-actions"><button id="previewDialogue">Preview speakers</button></div>',
+    );
+    const box = $('dialoguePaste');
+    if (pastedText) box.textContent = pastedText;
+    box.addEventListener('paste', (event) => {
+      event.preventDefault();
+      pastedText = event.clipboardData.getData('text/plain');
+      pastedRich = event.clipboardData.getData('text/html');
+      box.textContent = pastedText;
+    });
+    box.addEventListener('input', () => {
+      pastedText = box.innerText;
+      pastedRich = '';
+    });
+    box.focus();
+    $('previewDialogue').onclick = async () => {
+      const previewButton = $('previewDialogue');
+      dialogueModel = $('dialogueModel').value.trim();
+      shareURL = $('dialogueShareURL').value.trim();
+      try {
+        localStorage.setItem('blynger-dialogue-model', dialogueModel);
+      } catch (_) {}
+      try {
+        if (shareURL) {
+          previewButton.disabled = true;
+          previewButton.textContent = 'READING SHARED CHAT…';
+          turns = (await api('dialogue-share', { url: shareURL })).turns;
+        } else {
+          pastedText = box.innerText || pastedText;
+          turns = BlyngerDialogue.parseClipboard(pastedText, pastedRich);
+        }
+        if (!turns.length)
+          throw Error(
+            'Blynger cannot identify speakers in that clipboard text. Use a ChatGPT share link or include the “You said:” and “ChatGPT said:” labels.',
+          );
+        previewStep();
+      } catch (e) {
+        $('dialogueProblem').className = 'notice error';
+        $('dialogueProblem').textContent = e.message;
+        previewButton.disabled = false;
+        previewButton.textContent = 'TRY AGAIN';
+      }
+    };
+  };
+  const previewStep = () => {
+    modal(
+      'Check dialogue speakers',
+      '<p>Blynger found ' +
+        turns.length +
+        ' complete turns. Correct any speaker that is wrong before inserting.</p>' +
+        '<p class="hint">Model disclosure: <b>' +
+        esc(dialogueModel || 'not stated') +
+        '</b> · self-reported by you</p>' +
+        '<div class="dialogue-preview">' +
+        turns
+          .map(
+            (turn, index) =>
+              '<section class="dialogue-turn ' +
+              (turn.role === 'assistant' ? 'assistant' : 'author') +
+              '"><label>Speaker<select data-dialogue-role="' +
+              index +
+              '"><option value="author"' +
+              (turn.role === 'author' ? ' selected' : '') +
+              '>Brady</option><option value="assistant"' +
+              (turn.role === 'assistant' ? ' selected' : '') +
+              '>ChatGPT</option></select></label><div>' +
+              esc(turn.text) +
+              '</div></section>',
+          )
+          .join('') +
+        '</div><p class="hint">Every listed turn keeps its own message boundary.</p><div id="dialogueProblem"></div>' +
+        '<div class="dialog-actions"><button id="backDialogue">Back</button><button id="insertDialogue">Insert dialogue</button></div>',
+    );
+    for (const select of document.querySelectorAll('[data-dialogue-role]'))
+      select.onchange = () => {
+        const index = Number(select.dataset.dialogueRole);
+        turns[index].role = select.value;
+        select.closest('.dialogue-turn').className = 'dialogue-turn ' + select.value;
+      };
+    $('backDialogue').onclick = pasteStep;
+    $('insertDialogue').onclick = async () => {
+      const button = $('insertDialogue');
+      button.disabled = true;
+      button.textContent = 'INSERTING…';
+      try {
+        const result = await api('dialogue-import', { turns, model: dialogueModel });
+        const inserted = fragmentEditor.insertDialogue(result.html, selection);
+        if (!inserted) {
+          button.disabled = false;
+          button.textContent = 'INSERT DIALOGUE';
+          return;
+        }
+        inserted.forEach((node, offset) =>
+          generatedByNode.set(
+            node,
+            structuredClone(result.generated[offset] || { sources: [] }),
+          ),
+        );
+        syncGeneratedNodes();
+        $('dialog').close();
+        capture();
+        status(
+          'Inserted ' +
+            result.turns +
+            ' dialogue turns. ChatGPT passages use the TK treatment.',
+        );
+      } catch (e) {
+        $('dialogueProblem').className = 'notice error';
+        $('dialogueProblem').textContent = e.message;
+        button.disabled = false;
+        button.textContent = 'TRY AGAIN';
+      }
+    };
+  };
+  pasteStep();
 };
 $('migrate').onclick = () => {
   modal(
@@ -1530,49 +1762,38 @@ $('settings').onclick = () =>
   });
 async function waitForReview() {
   // Preparing the local files can take longer than WebKit will wait on one
-  // request. A dropped response is "Load failed"; the work continues, so ask again.
-  let sawRunning = false,
-    missed = 0;
-  try {
-    const started = await api('start-review', {});
-    sawRunning = started.state === 'running';
-  } catch (e) {
-    if (e.message !== 'Load failed') throw e;
-  }
-  while (true) {
-    let state;
-    try {
-      state = await api('review-status');
-      missed = 0;
-    } catch (e) {
-      if (e.message !== 'Load failed') throw e;
-      missed += 1;
-      if (!sawRunning && missed >= 3) throw e;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    if (!state.state || state.state === 'idle') {
-      await api('start-review', {});
-      continue;
-    }
-    if (state.state === 'running') {
-      sawRunning = true;
+  // request. The shared job loop remembers the previous review so an old
+  // ready result can never be mistaken for the review we just requested.
+  return BlyngerBackgroundJob.followBackgroundJob({
+    baseline: () => api('review-status'),
+    start: () => api('start-review', {}),
+    status: () => api('review-status'),
+    interval: 1000,
+    restartWhenIdle: true,
+    startFailureMessage:
+      'Could not start a fresh publication review. Right-click PUBLISH… and try again.',
+    onRunning(state) {
       status(state.message || 'Preparing local publication files…');
       setPublishBusy(true, 'Preparing…');
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    if (state.state === 'ready') return state.review;
-    const err = Error(state.message || 'Publication review could not be prepared.');
-    if (state.code) err.code = state.code;
-    if (state.files) err.files = state.files;
-    err.can_accept = !!state.can_accept;
-    if (state.page) err.page = state.page;
-    throw err;
-  }
+    },
+    settle(state, job) {
+      if (state.state === 'ready') {
+        const previousReviewId = job.previousId;
+        const isCurrent = job.currentId && state.id === job.currentId;
+        const isNew = job.baselineKnown && state.id && state.id !== previousReviewId;
+        if (isCurrent || isNew) return { action: 'return', value: state.review };
+        return { action: 'restart', delay: 250 };
+      }
+      const err = Error(state.message || 'Publication review could not be prepared.');
+      if (state.code) err.code = state.code;
+      if (state.files) err.files = state.files;
+      err.can_accept = !!state.can_accept;
+      if (state.page) err.page = state.page;
+      return { action: 'throw', error: err };
+    },
+  });
 }
-$('publish').onclick = () =>
-  publicationTask(async () => {
+async function reviewPublication() {
     if (dirty) await save();
     status('Preparing local publication files… This can take a minute.');
     const r = await waitForReview();
@@ -1650,7 +1871,47 @@ $('publish').onclick = () =>
     };
     if (page) page = await api('page?name=' + encodeURIComponent(page.name));
     await refresh();
-  });
+}
+function quickPublishDialog() {
+  modal(
+    'Publish to website',
+    '<p>Blynger will prepare, check, commit, and send the staged publication in the background.</p>' +
+      '<label>Optional note before the automatic change list<input id="quickPublicationNote" maxlength="800" placeholder="Leave blank for the automatic Git message"></label>' +
+      '<p class="hint">Right-click PUBLISH… when you want to inspect every changed file before sending.</p>' +
+      '<div id="publishResult"></div><div class="dialog-actions"><button id="cancelPublish">Cancel</button><button id="confirmPublish" class="publish">PUBLISH</button></div>',
+  );
+  $('cancelPublish').onclick = () => $('dialog').close();
+  $('confirmPublish').onclick = async () => {
+    if (publishing || publicationInFlight) return;
+    const b = $('confirmPublish');
+    b.disabled = true;
+    b.textContent = 'STARTING…';
+    try {
+      if (dirty) await save();
+      const result = await api('quick-publish', {
+        prefix: $('quickPublicationNote').value,
+      });
+      publicationInFlight = true;
+      lastPublicationJob = null;
+      $('dialog').close();
+      status(result.message || 'Preparing and publishing… You can keep writing.');
+      syncPublishButton();
+      watchPublication();
+    } catch (e) {
+      $('publishResult').className = 'notice error';
+      $('publishResult').textContent = e.message;
+      b.textContent = 'TRY AGAIN';
+      b.disabled = false;
+      status('Publication could not start: ' + e.message);
+    }
+  };
+  $('quickPublicationNote').focus();
+}
+$('publish').onclick = quickPublishDialog;
+$('publish').oncontextmenu = (event) => {
+  event.preventDefault();
+  publicationTask(reviewPublication);
+};
 $('revert').onclick = () =>
   run(async () => {
     if (
@@ -1954,13 +2215,13 @@ $('newOpener').onclick = () => {
 let readerActive = false,
   publishing = false,
   readerSubscriptions = [],
-  readerOpenedBridge = null,
+  readerOpenedContent = null,
   readerOpenedKey = null,
   readerOpenRevision = 0;
 function closeReaderOpened() {
   readerOpenRevision += 1;
-  if (readerOpenedBridge) readerOpenedBridge.close();
-  readerOpenedBridge = null;
+  if (readerOpenedContent) readerOpenedContent.close();
+  readerOpenedContent = null;
   readerOpenedKey = null;
   for (const row of document.querySelectorAll('.reader-row.reader-expanded')) {
     row.classList.remove('reader-expanded');
@@ -1969,7 +2230,7 @@ function closeReaderOpened() {
   }
 }
 function setPublishBusy(busy, label = 'Preparing…') {
-  $('publish').textContent = busy ? label : '↑ Review & publish';
+  $('publish').textContent = busy ? label : '↑ PUBLISH…';
   $('publish').setAttribute('aria-busy', String(busy));
   syncPublishButton();
 }
@@ -2015,6 +2276,7 @@ function setWorkspaceChrome(name, wide = false) {
     'respondStub',
     'quote',
     'tk',
+    'chatDialogue',
     'fragment',
     'removeFragment',
   ])
@@ -2084,12 +2346,14 @@ function showWriting() {
     nonPost = page && page.kind !== 'post';
   for (const id of ['save', 'stage', 'preview', 'images']) $(id).disabled = unavailable;
   $('tk').disabled = unavailable || nonPost;
+  $('chatDialogue').disabled = unavailable || nonPost;
   for (const id of [
     'versions',
     'mainFragment',
     'transclude',
     'respondStub',
     'quote',
+    'chatDialogue',
     'fragment',
   ])
     $(id).disabled = unavailable || nonPost;
@@ -2112,7 +2376,16 @@ async function showReader(sync = true) {
   $('savedViews').hidden = currentWorkspace !== 'saved';
   $('readerViewFilter').hidden = currentWorkspace === 'saved';
   $('readerOrder').hidden = currentWorkspace === 'saved';
-  for (const id of ['save', 'stage', 'preview', 'images', 'versions', 'tk', 'mainFragment'])
+  for (const id of [
+    'save',
+    'stage',
+    'preview',
+    'images',
+    'versions',
+    'tk',
+    'chatDialogue',
+    'mainFragment',
+  ])
     $(id).disabled = true;
   $('readerItems').replaceChildren();
   readerMessage(
@@ -2188,7 +2461,10 @@ function thicketActivityKey(entry) {
 }
 function updateThicketBadge() {
   const unseen = (thicketIncoming?.activities || []).filter(
-    (entry) => entry.unread && !thicketSeenActivity.has(thicketActivityKey(entry)),
+    (entry) =>
+      entry.mention_class !== 'notice' &&
+      entry.unread &&
+      !thicketSeenActivity.has(thicketActivityKey(entry)),
   ).length;
   const badge = $('thicketUnreadBadge');
   badge.textContent = String(unseen);
@@ -2270,7 +2546,9 @@ function renderThicketEntries() {
   const holder = $('thicketEntries');
   holder.replaceChildren();
   if (!thicketSnapshot || !thicketIncoming) return;
-  const all = BlyngerThicketUI.combined(thicketSnapshot, thicketIncoming),
+  const primary = BlyngerThicketUI.combined(thicketSnapshot, thicketIncoming),
+    noticeRows = BlyngerThicketUI.noticeRows(thicketIncoming),
+    all = primary.concat(noticeRows),
     entries =
       thicketFilter === 'failed'
         ? all.filter(
@@ -2279,7 +2557,11 @@ function renderThicketEntries() {
               !['delivered', 'pending', 'retrying'].includes(entry.status),
           )
         : all,
-    shown = thicketExpanded ? entries : entries.slice(0, 3);
+    shown = thicketExpanded
+      ? entries
+      : thicketFilter === 'failed'
+        ? entries.slice(0, 3)
+        : primary.slice(0, 3).concat(noticeRows.slice(0, 3));
   if (!shown.length) {
     const empty = document.createElement('p');
     empty.className = 'thicket-empty';
@@ -2289,7 +2571,15 @@ function renderThicketEntries() {
         : 'No Webmention activity yet.';
     holder.append(empty);
   }
+  let noticeStarted = false;
   for (const item of shown) {
+    if (item.notice && !noticeStarted) {
+      noticeStarted = true;
+      const heading = document.createElement('h3');
+      heading.className = 'thicket-notice-heading';
+      heading.textContent = 'Notices · links and content-free reposts';
+      holder.append(heading);
+    }
     const entry = item.entry,
       incoming = item.direction === 'IN',
       row = document.createElement('div'),
@@ -2297,7 +2587,7 @@ function renderThicketEntries() {
       main = thicketCell('thicket-main', '');
     row.className =
       'thicket-entry ' +
-      (incoming ? 'incoming' + (entry.unread ? ' unread' : '') : 'outgoing');
+      (incoming ? 'incoming' + (entry.unread ? ' unread' : '') + (item.notice ? ' notice' : '') : 'outgoing');
     row.append(main);
     if (incoming) {
       const source = BlyngerThicketUI.safeHttpUrl(entry.source_page),
@@ -2431,7 +2721,7 @@ function renderThicketSnapshot(reset = false) {
     recent = (thicketSnapshot.entries || []).filter(
       (entry) => Date.parse(entry.updated_at) >= dayAgo,
     ),
-    incomingRecent = (thicketIncoming.activities || []).filter(
+    incomingRecent = BlyngerThicketUI.responses(thicketIncoming).filter(
       (entry) => Date.parse(entry.at) >= dayAgo,
     ),
     delivered = recent.filter((entry) => entry.status === 'delivered').length,
@@ -2687,6 +2977,7 @@ async function loadReader() {
         await api('reader-isolate', { key: item.key });
         await loadReader();
       }),
+    context: (item, x, y) => showReaderSourceActions(item, x, y),
   });
 }
 $('readerSource').onchange = () => run(loadReader);
@@ -2771,7 +3062,29 @@ function openSubscriptionManager() {
 $('readerManage').onclick = openSubscriptionManager;
 let readerBusy = false;
 const READER_BACKGROUND_INTERVAL = 20 * 60 * 1000;
-let lastReaderBackgroundSync = 0;
+let lastReaderBackgroundSync = Date.now();
+async function refreshReader(subscription = null) {
+  return BlyngerBackgroundJob.followBackgroundJob({
+    baseline: () => api('reader-sync-status'),
+    start: () => api('reader-sync', { subscription }),
+    status: () => api('reader-sync-status'),
+    interval: 500,
+    restartWhenIdle: true,
+    runningId: 'require',
+    identityMessage: 'Reader refresh changed. Refresh again.',
+    startFailureMessage: 'Could not start Reader refresh. Try again.',
+    settle(state, job) {
+      const joined = job.currentId && state.id === job.currentId;
+      const fresh = job.baselineKnown && state.id && state.id !== job.previousId;
+      if (!joined && !fresh) return { action: 'restart', delay: 250 };
+      if (state.state === 'succeeded') return { action: 'return', value: state };
+      return {
+        action: 'throw',
+        error: Error(state.message || 'Reader refresh failed.'),
+      };
+    },
+  });
+}
 async function readerOperation(path, data) {
   if (readerBusy) return;
   readerBusy = true;
@@ -2781,7 +3094,10 @@ async function readerOperation(path, data) {
   $('readerSync').textContent = 'Syncing…';
   if (currentWorkspace === 'reader') readerMessage('Checking subscriptions…');
   try {
-    const result = await api(path, data);
+    const result =
+      path === 'reader-sync'
+        ? await refreshReader(data.subscription)
+        : await api(path, data);
     if (path === 'reader-sync') lastReaderBackgroundSync = Date.now();
     if (path === 'reader-subscribe' || path === 'reader-open') $('dialog').close();
     await loadReader();
@@ -2811,9 +3127,9 @@ async function backgroundReaderSync() {
   readerBusy = true;
   lastReaderBackgroundSync = Date.now();
   try {
-    await api('reader-sync', { subscription: null });
+    await refreshReader();
     if (
-      !readerOpenedBridge &&
+      !readerOpenedContent &&
       (currentWorkspace === 'reader' || currentWorkspace === 'saved')
     )
       await loadReader();
@@ -2860,6 +3176,17 @@ $('readerOpen').onclick = () => {
       allow_subscription: true,
     });
 };
+async function openReaderLink(url, allowSubscription = false) {
+  const result = await api('reader-open', {
+    url,
+    allow_subscription: allowSubscription,
+  });
+  const items = (await api('reader')).items;
+  const linked = items.find((candidate) => candidate.key === result.selected);
+  if (!linked) throw Error('Blynger downloaded this link but could not display it in Reader.');
+  await readItem(linked);
+  status(result.message || 'Opened link in Reader.');
+}
 async function readItem(item) {
   if (readerOpenedKey === item.key) {
     closeReaderOpened();
@@ -2894,7 +3221,7 @@ async function readItem(item) {
   row.classList.add('reader-expanded');
   readerOpenedKey = item.key;
   row.scrollIntoView({ block: 'nearest' });
-  const frame = $('readerFrame'),
+  const content = $('readerContent'),
     button = $('quoteReading');
   button.onmousedown = (e) => e.preventDefault();
   const update = (data) => {
@@ -2915,29 +3242,20 @@ async function readItem(item) {
     for (const b of document.querySelectorAll('.reader-fragment-choice'))
       b.classList.toggle('active', Number(b.dataset.fragment) === active);
   };
-  const bridge = BlyngerReaderFrame.connect(frame, {
+  const contentController = BlyngerReaderContent.connect(content, {
     selection: update,
     link: (data) => {
       if (!/^(https?:|mailto:|tel:)/i.test(data.href)) return;
-      const match =
+      const blygItem =
         /^https?:\/\/[^/]+\/(?:[^?#]*\/)?(?:t|f)\/[0-9a-z]{26}\/?(?:[?#].*)?$/i.test(
           data.href,
         );
-      if (match)
-        run(async () => {
-          const result = await api('reader-open', {
-            url: data.href,
-            allow_subscription: true,
-          });
-          const items = (await api('reader')).items;
-          const linked = items.find((candidate) => candidate.key === result.selected);
-          if (linked) await readItem(linked);
-          else await openExternal(data.href);
-        });
+      if (/^https?:/i.test(data.href)) run(() => openReaderLink(data.href, blygItem));
+      else if (/^mailto:/i.test(data.href)) run(() => copyMailLink(data.href));
       else run(() => openExternal(data.href));
     },
   });
-  readerOpenedBridge = bridge;
+  readerOpenedContent = contentController;
   const choices = $('readerFragmentChoices');
   for (const f of d.fragments || []) {
     if (!choices) break;
@@ -2945,15 +3263,9 @@ async function readItem(item) {
     pick.className = 'reader-fragment-choice';
     pick.dataset.fragment = String(f.index);
     pick.textContent = 'Fragment ' + (f.index + 1) + (f.label ? ' — ' + f.label : '');
-    pick.onclick = () => bridge.selectFragment(f.index);
+    pick.onclick = () => contentController.selectFragment(f.index);
     choices.append(pick);
   }
-  frame.srcdoc = BlyngerReaderFrame.documentHTML(
-    d.html,
-    native,
-    bridge.channel,
-    location.origin,
-  );
   button.onclick = () =>
     run(async () => {
       if (!choice) return;
@@ -3143,6 +3455,7 @@ async function chooseQuote(item, newPost) {
   await addQuote();
 }
 function chooseLocalTransclusion(item, quoted) {
+  const authoringHtml = quoted.authoring_html || quoted.html;
   modal(
     'Transclude — ' + item.title,
     '<p class="hint">Starts new local writing with this exact published item embedded. Nothing is published until you stage and review it.</p>' +
@@ -3161,7 +3474,7 @@ function chooseLocalTransclusion(item, quoted) {
       const first = $('editor').querySelector('p');
       if (!first) throw Error('New post body is missing.');
       const holder = document.createElement('div');
-      holder.innerHTML = localImages('<p><br></p>' + quoted.html + '<p><br></p>');
+      holder.innerHTML = localImages('<p><br></p>' + authoringHtml + '<p><br></p>');
       first.replaceWith(...holder.childNodes);
       selection = null;
       mark();
@@ -3175,7 +3488,7 @@ function chooseLocalTransclusion(item, quoted) {
       $('dialog').close();
       await openPage('openers.html');
       const opener = fragmentEditor.newOpener(note, {
-        context_html: localImages(quoted.html),
+        context_html: localImages(authoringHtml),
         pin_on_publish: true,
       });
       if (!opener) throw Error('Could not add the transclusion Opener.');
@@ -3218,7 +3531,9 @@ function openLocalFork(item) {
 }
 function chooseStub(item, quoted, destination = null) {
   const native = !quoted.stub_of.url,
-    context = native ? quoted.stub_label_html + quoted.html : quoted.stub_html,
+    context = native
+      ? quoted.stub_label_html + (quoted.authoring_html || quoted.html)
+      : quoted.stub_html,
     openerFields =
       '<label>Quick Opener response<textarea id="stubOpener" placeholder="Your brief response…"></textarea></label>',
     postFields =
@@ -3527,7 +3842,7 @@ $('about').onclick = () =>
 $('help').onclick = () =>
   modal(
     'Blynger Help',
-    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages. <b>Drafts</b> gathers all locally saved, unpublished work so it is easy to resume.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf. <b>Thicket</b> shows recent Webmention activity and delivery status.</p></section><section><h3>Save and publish</h3><p><b>Save</b> keeps writing private and makes it safe to work elsewhere. <b>Stage</b> saves it and includes it in the next publication. <b>Review &amp; publish</b> shows only staged work and its required website files before anything is sent.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. <b>Recovery</b> reports local and uncertain publication states, pauses troublesome subscriptions, manages isolated items, and restores verified Reader backups. The rare <b>Rebuild Blyg archive</b> repair action is also under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
+    '<div class="help-grid"><section><h3>Write</h3><p><b>Posts</b> holds published writing. <b>Openers</b> is the running Opener editor. <b>Pages</b> holds permanent site pages. <b>Drafts</b> gathers all locally saved, unpublished work so it is easy to resume. Insert can generate a TK passage or locally convert a pasted ChatGPT dialogue after you verify its speakers.</p></section><section><h3>Files and reading</h3><p><b>Images</b> shows site images and where they are used. <b>Reader</b> contains subscriptions and Likes. <b>Saved</b> is the permanent reading shelf. <b>Thicket</b> shows recent Webmention activity and delivery status.</p></section><section><h3>Save and publish</h3><p><b>Save</b> keeps writing private and makes it safe to work elsewhere. <b>Stage</b> includes it in the next publication. Click <b>PUBLISH…</b> for the fast background path; right-click it to review every changed file before sending.</p></section><section><h3>Application menu</h3><p>Settings and About are in the <b>Blynger</b> menu. <b>Recovery</b> reports local and uncertain publication states, pauses troublesome subscriptions, manages isolated items, and restores verified Reader backups. The rare <b>Rebuild Blyg archive</b> repair action is also under <b>Help</b>.</p></section></div><div class="dialog-actions"><button id="closeHelp">OK</button></div>',
   );
 document.addEventListener('click', (event) => {
   if (event.target.id === 'closeAbout') $('dialog').close();

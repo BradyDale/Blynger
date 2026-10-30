@@ -32,7 +32,8 @@ export default {
         "transclusions[]": [true, true, "Retained with imported item snapshots"],
         "stub_of": [true, true, "Retained and used by Stub"],
         "forked_from": [true, true, "Retained and used by Fork"],
-        "generated[]": [true, true, "Retained for Reader disclosure"]
+        "generated[]": [true, true, "Retained for Reader disclosure"],
+        "links[]": [true, true, "Published from explicit bracket links in source order"]
       },
       pinned: {
         "stub_of": [true, true, "Frozen with the pinned artifact"],

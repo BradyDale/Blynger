@@ -1,4 +1,4 @@
-"""Independent checks for Blynger's generated Blyg 0.3 publication surface.
+"""Independent checks for Blynger's generated Blyg 0.4 publication surface.
 
 This module deliberately does not import publication transitions or projectors
 from core.py.  It observes the final static artifacts through a root directory
@@ -16,11 +16,13 @@ from urllib.parse import urljoin, urlsplit
 import xml.etree.ElementTree as ET
 
 from bs4 import BeautifulSoup
+import markdown as markdown_renderer
 
 NS = "https://blygger.org/ns/0.1"
 ID = re.compile(r"^[0-7][0-9a-hjkmnp-tv-z]{25}$")
 UTC = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-DIRECTIVE = re.compile(r"^\s*!\[\[([0-7][0-9a-hjkmnp-tv-z]{25})\]\]\s*$")
+DIRECTIVE = re.compile(r"^\s*!\[\[([0-7][0-9a-hjkmnp-tv-z]{25})(?:\s*\|\s*([^\]\r\n]*))?\]\]\s*$")
+PLAIN_LINK = re.compile(r"(?<!!)\[\[([0-7][0-9a-hjkmnp-tv-z]{25})(?:\s*\|\s*([^\]\r\n]*))?\]\]")
 
 
 class ConformanceError(ValueError):
@@ -97,11 +99,14 @@ def _utc(value):
         return False
 
 
-def _reference(ref, path, problems, origin_required=False):
+def _reference(ref, path, problems, origin_required=False, allow_web=True):
     if not isinstance(ref, dict):
         problems.append(path + " must be an object")
         return
     if set(ref) in ({"url"}, {"url", "cited"}):
+        if not allow_web:
+            problems.append(path + " must be a versioned Blyg reference")
+            return
         if urlsplit(ref.get("url", "")).scheme not in ("http", "https"):
             problems.append(path + ".url must be an absolute HTTP(S) URL")
         cited=ref.get("cited")
@@ -120,7 +125,7 @@ def _reference(ref, path, problems, origin_required=False):
         problems.append(path + ".origin must be an absolute HTTP(S) URL")
 
 
-def _directives(markdown):
+def _markdown_rows(markdown, pattern, whole_line=False):
     """Whole-item directives outside fenced and indented code, in document order."""
     found, fence = [], None
     for line in str(markdown).replace("\r\n", "\n").split("\n"):
@@ -131,9 +136,26 @@ def _directives(markdown):
             continue
         if fence or line.startswith(("    ", "\t")):
             continue
-        match = DIRECTIVE.fullmatch(line)
-        if match:
-            found.append(match.group(1))
+        matches = [pattern.fullmatch(line)] if whole_line else pattern.finditer(line)
+        for match in matches:
+            if match:
+                found.append((match.group(1), (match.group(2) or "").strip() or None))
+    return found
+
+
+def _directives(markdown):
+    return _markdown_rows(markdown, DIRECTIVE, True)
+
+
+def _links(markdown):
+    rendered = markdown_renderer.markdown(str(markdown), extensions=["sane_lists"])
+    soup = BeautifulSoup(rendered, "html.parser")
+    found = []
+    for node in soup.find_all(string=PLAIN_LINK):
+        if node.find_parent(["pre", "code"]):
+            continue
+        for match in PLAIN_LINK.finditer(str(node)):
+            found.append((match.group(1), (match.group(2) or "").strip() or None))
     return found
 
 
@@ -149,20 +171,22 @@ def _absolute_html(doc, path, problems):
     return soup
 
 
-def _item(doc, path, expected_origin, problems, warnings=None, strict=True):
+def _item(doc, path, expected_origin, problems, warnings=None, strict=True, pinned=False):
     sink = problems if strict else (warnings if warnings is not None else problems)
     required = {"id", "kind", "origin", "created", "updated", "version",
                 "content_md", "content_html", "content_hash", "changelog"}
+    if not pinned:
+        required.add("media")
     missing = required - set(doc)
     if missing:
         sink.append(path + " is missing " + ", ".join(sorted(missing)))
         return
-    if not re.fullmatch(r"0\.\d+", str(doc.get("blyg", ""))):
-        sink.append(path + ".blyg must declare a 0.x protocol version")
+    if doc.get("blyg") != "0.4":
+        sink.append(path + ".blyg must declare protocol version 0.4")
     if not ID.fullmatch(str(doc["id"])):
         sink.append(path + ".id is not a Blyg id")
     if doc["kind"] not in ("fragment", "thread", "withdrawn"):
-        sink.append(path + ".kind is not a Blyg 0.3 kind")
+        sink.append(path + ".kind is not a Blyg 0.4 kind")
     if doc["origin"] != expected_origin:
         sink.append(path + ".origin does not match the publication origin")
     for field in ("created", "updated"):
@@ -186,8 +210,13 @@ def _item(doc, path, expected_origin, problems, warnings=None, strict=True):
             if not isinstance(entry, dict) or not _utc(entry.get("at")):
                 sink.append(f"{path}.changelog[{index}].at must be ISO 8601 UTC")
     page = doc.get("page")
-    if page is not None and (not isinstance(page, str) or not page or urlsplit(page).scheme or page.startswith("/")):
-        sink.append(path + ".page must be a nonempty origin-relative path")
+    page_url = urlsplit(page) if isinstance(page, str) else None
+    if page is not None and (not isinstance(page, str) or not page or
+                             (page_url.scheme and page_url.scheme not in ("http", "https")) or
+                             (not page_url.scheme and page.startswith("/"))):
+        sink.append(path + ".page must be a nonempty origin-relative or absolute HTTP(S) URL")
+    if not pinned and not isinstance(doc.get("media"), list):
+        sink.append(path + ".media must be an array")
     soup = _absolute_html(doc, path, sink)
     transclusions = doc.get("transclusions")
     if doc["kind"] == "fragment" and ("transclusions" in doc or "stub_of" in doc):
@@ -206,13 +235,22 @@ def _item(doc, path, expected_origin, problems, warnings=None, strict=True):
     wrappers = [node for node in soup.select("blockquote.blyg-transclusion[data-blyg-id]")
                 if node.find_parent("blockquote", class_="blyg-transclusion") is None]
     directives = _directives(doc["content_md"])
-    wrapper_keys = [(node.get("data-blyg-id"), int(node.get("data-blyg-version", "0")) if str(node.get("data-blyg-version", "")).isdigit() else 0,
-                     node.get("data-blyg-origin", expected_origin)) for node in wrappers]
+    wrapper_keys = [
+        (node.get("data-blyg-id"),
+         int(node.get("data-blyg-version", "0")) if str(node.get("data-blyg-version", "")).isdigit() else 0,
+         node.get("data-blyg-origin", expected_origin),
+         node.get("data-blyg-label") or None)
+        for node in wrappers
+    ]
     reference_keys = [(ref.get("id"), ref.get("version"), ref.get("origin", expected_origin))
                       for ref in transclusions if isinstance(ref, dict)]
-    if directives != [key[0] for key in reference_keys]:
+    if [row[0] for row in directives] != [key[0] for key in reference_keys]:
         sink.append(path + ": whole-item directives do not match transclusions[] in order")
-    if wrapper_keys != reference_keys:
+    expected_wrappers = [
+        (*key, directives[index][1] if index < len(directives) else None)
+        for index, key in enumerate(reference_keys)
+    ]
+    if wrapper_keys != expected_wrappers:
         sink.append(path + ": baked transclusion wrappers do not match transclusions[]")
     if "stub_of" in doc:
         stub = doc["stub_of"]
@@ -233,6 +271,35 @@ def _item(doc, path, expected_origin, problems, warnings=None, strict=True):
         sink.append(path + ": generated HTML has no generated[] provenance")
     if generated and len(generated_nodes) != len(generated):
         sink.append(path + ": generated[] does not match generated HTML spans")
+    if isinstance(generated, list):
+        for span_index, span in enumerate(generated):
+            sources = span.get("sources", []) if isinstance(span, dict) else None
+            if not isinstance(sources, list):
+                sink.append(f"{path}.generated[{span_index}].sources must be an array")
+            else:
+                for source_index, ref in enumerate(sources):
+                    _reference(ref, f"{path}.generated[{span_index}].sources[{source_index}]", sink,
+                               allow_web=False)
+    link_rows = doc.get("links", [])
+    if not isinstance(link_rows, list):
+        sink.append(path + ".links must be an array when present")
+        link_rows = []
+    for index, ref in enumerate(link_rows):
+        ref_path = f"{path}.links[{index}]"
+        if not isinstance(ref, dict) or set(ref) - {"id", "origin"} or "id" not in ref:
+            sink.append(ref_path + " must contain only id and optional origin")
+            continue
+        if not ID.fullmatch(str(ref.get("id", ""))):
+            sink.append(ref_path + ".id is not a Blyg id")
+        if ("origin" in ref and
+                (urlsplit(str(ref["origin"])).scheme not in ("http", "https") or
+                 ref["origin"] == expected_origin)):
+            sink.append(ref_path + ".origin must name a remote HTTP(S) Blyg")
+    if [row[0] for row in _links(doc["content_md"])] != [
+            ref.get("id") for ref in link_rows if isinstance(ref, dict)]:
+        sink.append(path + ": plain internal links do not match links[] in order")
+    if doc["kind"] == "withdrawn" and "links" in doc:
+        sink.append(path + ": a withdrawal must omit links")
 
 
 def validate_surface(root, origin, overlay=None, strict_existing=True):
@@ -243,12 +310,15 @@ def validate_surface(root, origin, overlay=None, strict_existing=True):
     manifest = _json(surface, "blyg/blyg.json", problems)
     index = _json(surface, "blyg/items/index.json", problems)
     if manifest:
-        for key in ("blyg", "level", "generator", "site", "title", "feed", "items", "updated"):
+        for key in ("blyg", "level", "generator", "site", "title", "feed", "items", "item", "pin", "updated"):
             if key not in manifest:
                 problems.append("blyg/blyg.json is missing " + key)
-        if manifest.get("blyg") != "0.3" or manifest.get("level") != 2:
-            problems.append("blyg/blyg.json must declare Blyg 0.3 Level 2")
-        if manifest.get("site") != origin or manifest.get("feed") != "feed.xml" or manifest.get("items") != "items/index.json":
+        if manifest.get("blyg") != "0.4" or manifest.get("level") != 2:
+            problems.append("blyg/blyg.json must declare Blyg 0.4 Level 2")
+        if (manifest.get("site") != origin or manifest.get("feed") != "feed.xml" or
+                manifest.get("items") != "items/index.json" or
+                manifest.get("item") != "items/{id}.json" or
+                manifest.get("pin") != "items/{id}/v{n}.json"):
             problems.append("blyg/blyg.json advertises the wrong publication surfaces")
         if not manifest.get("generator_url"):
             warnings.append("manifest omits recommended generator_url")
@@ -304,7 +374,7 @@ def validate_surface(root, origin, overlay=None, strict_existing=True):
                    "updated": pin.get("updated", pin.get("at")),
                    "changelog": [{"version": n, "at": pin.get("at")} for n in range(1, int(version or 0) + 1)]},
                   path, origin, problems, warnings,
-                  strict=strict_existing or surface.changed(path))
+                  strict=strict_existing or surface.changed(path),pinned=True)
 
     feed_events = 0
     raw_feed = surface.bytes("blyg/feed.xml")

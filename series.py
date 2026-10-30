@@ -76,6 +76,41 @@ def undecorate_post(raw, plug, series_title=None):
     return _set_headline(raw, series_title, include=False) if series_title else raw
 
 
+def navigation_current(raw, series, next_member, site):
+    """Keep historical members intact when their Series destinations still match."""
+    article = BeautifulSoup(raw, "html.parser").find("article")
+    if article is None:
+        return False
+
+    def local_path(link):
+        target = urlsplit(link.get("href", "")) if link else None
+        if target is None or target.netloc not in ("", urlsplit(site).netloc):
+            return None
+        return target.path.lstrip("/")
+
+    subtitles = article.select("h3.blynger-series-title")
+    if not subtitles:
+        return False
+    # Older pages may contain duplicate legacy subtitles. Their cleanup is
+    # separate from adding an installment; matching destinations can stay put.
+    if any(local_path(subtitle.find("a", href=True)) != series["page"]
+           or subtitle.get_text(" ", strip=True) != series["title"]
+           for subtitle in subtitles):
+        return False
+    navigation = article.select(".blynger-series-next")
+    if next_member is None:
+        return not navigation
+    if len(navigation) != 1:
+        return False
+    link = navigation[0].find("a", href=True)
+    return (
+        local_path(link) == next_member["name"]
+        and canonical_title(link.get_text(" ", strip=True), series["title"], include=False)
+        == canonical_title(next_member["title"], series["title"], include=False)
+        and navigation[0].get_text(" ", strip=True).startswith("Next " + series["plug"] + ":")
+    )
+
+
 def decorate_post(raw, series, next_member=None, homepage_only_title=False):
     raw = _remove_old_next(clean_managed(raw), series["plug"])
     style = STYLE_START + '<style>.blynger-series-title{text-align:right}</style>' + STYLE_END

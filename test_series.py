@@ -27,6 +27,33 @@ class SeriesTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_new_installment_preserves_earlier_members_byte_for_byte(self):
+        import series
+        first = self.studio.create('First: Test Series')
+        second = self.studio.create('Second: Test Series')
+        self.studio.create_series('Test Series', 'Test', 'Description.')
+        self.studio.save_series_choice(first['name'], 'test-series')
+        self.studio.save_series_choice(second['name'], 'test-series')
+        self.studio.prepare(review=False)
+        self.studio.state['drafts'].clear()
+        self.studio.state['pins'].clear()
+        # A legacy member can retain its old headline, absolute Series links,
+        # and no boundary comments without becoming part of a new publication.
+        path = self.root / first['name']
+        raw = path.read_text().replace('<h1>First</h1>', '<h1>First: Test Series</h1>')
+        raw = raw.replace('href="/series-', 'href="https://example.com/series-')
+        raw = raw.replace(series.SUBTITLE_START, '').replace(series.SUBTITLE_END, '')
+        path.write_text(raw)
+        before = path.read_bytes()
+        third = self.studio.create('Third')
+        self.studio.save_series_choice(third['name'], 'test-series')
+        self.studio.prepare(review=False)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotIn(first['name'], self.studio.state['drafts'])
+        self.assertIn(second['name'], self.studio.state['drafts'])
+        self.assertIn(third['name'], (self.root / second['name']).read_text())
+        self.assertIn(third['name'], (self.root / 'series-test-series.html').read_text())
+
     def test_create_empty_series_and_build_static_navigation_from_explicit_members(self):
         first=self.studio.create('Day one : Test Series',body='<h2>Chapter 1</h2><p>One.</p>')
         second=self.studio.create('Day two: Test Series',body='<h2>Chapter 2</h2><p>Two.</p>')

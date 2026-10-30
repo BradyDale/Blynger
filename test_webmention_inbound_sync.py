@@ -84,6 +84,12 @@ def modern_record(**options):
     return value
 
 
+def notice_record(**options):
+    value = modern_record(**options)
+    value.update(schema=3, relation="link", mention_class="notice")
+    return value
+
+
 def encoded_export(root, rows, clock=None):
     store = VerificationStore(Path(root) / "verified")
     for row in rows:
@@ -126,7 +132,7 @@ class ExportTests(unittest.TestCase):
             raw = json.dumps([legacy], sort_keys=True, separators=(",", ":")).encode()
             value = {"schema": 1, "generated_at": 1, "records": [legacy], "records_sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
             upgraded = validate_verification_export(value)
-            self.assertEqual(upgraded["records"][0]["schema"], 2)
+            self.assertEqual(upgraded["records"][0]["schema"], 3)
             self.assertEqual(upgraded["records"][0]["checked_at"], legacy["verified_at"])
 
     def test_failed_export_replace_preserves_last_good_file(self):
@@ -175,7 +181,7 @@ class SSHReaderTests(unittest.TestCase):
         reader = SSHExportReader(
             hostname="ssh.example",
             username="example_example",
-            ssh_key="~/Documents/Codex/key",
+            ssh_key="~/keys/example",
             runner=runner,
         )
         self.assertEqual(reader.read(), b"{}")
@@ -557,6 +563,15 @@ class BackgroundServiceTests(unittest.TestCase):
         self.assertEqual(status["activities"][0]["kind"], "new")
         self.assertNotIn("record", status["activities"][0])
         self.assertEqual(status["activities"][0]["source_author"], "Writer")
+
+    def test_status_holds_notices_out_of_response_and_badge_counts(self):
+        payload, value = encoded_export(self.root / "remote", [notice_record()], Clock())
+        self.archive.merge(value)
+        service = InboundSyncService(type("Sync", (), {"sync": lambda _self: None})(), self.archive)
+        status = service.status()
+        self.assertEqual((status["activity_count"], status["unread_count"]), (0, 0))
+        self.assertEqual((status["notice_count"], status["unread_notice_count"]), (1, 1))
+        self.assertEqual(status["activities"][0]["mention_class"], "notice")
 
     def test_status_distinguishes_not_synchronized_unavailable_empty_and_stale(self):
         service = InboundSyncService(type("Sync", (), {"sync": lambda _self: None})(), self.archive)

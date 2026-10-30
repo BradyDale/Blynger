@@ -1,5 +1,265 @@
+## 0.15.7 — One waiting loop, and a small-publication tripwire
+
+- Add `static/background-job.js` and load it before `static/app.js`.
+  `BlyngerBackgroundJob.followBackgroundJob` is the only start-then-poll
+  loop. `waitForReview` and `refreshReader` in `static/app.js` both call it.
+  WebKit's dropped-request message is still the exact string `Load failed`.
+  A dropped start is tried up to three times. A dropped poll is retried while
+  the job is running; three drops before any running status still surface
+  the error. There is no third copy of this loop.
+- Publication review still records the previous `/api/review-status` id
+  before `/api/start-review`, polls `/api/review-status` about once a second,
+  and restarts when the status is idle. A `ready` review is accepted only
+  when its id is the job just started or a new id, so an older ready review
+  cannot be published by mistake. The button still says Preparing… while
+  that job runs.
+- Reader refresh records `/api/reader-sync-status`, starts `/api/reader-sync`,
+  and polls about twice a second. A running job whose id changes still
+  throws `Reader refresh changed. Refresh again.` A previous succeeded job
+  is not treated as the refresh just requested. Success is still
+  `state === 'succeeded'`.
+- Cover the helper in `test_background_job.js`. This machine has no `node`
+  on `PATH`; the file was run with macOS JavaScriptCore (`jsc`) by loading
+  `static/background-job.js` first. The checks are: reject a cached ready
+  review, keep polling after one `Load failed`, stop after three dropped
+  starts, return only the new Reader job, and reject a different running id.
+- Add `test_ordinary_post_leaves_old_items_and_pins_byte_for_byte` in
+  `test_publication_flow.py`. It publishes one Post that has already been
+  pinned, then prepares a second ordinary Post with no fragments and no
+  Series. The first post's HTML, `blyg/items/{id}.json`, and
+  `blyg/items/{id}/v1.json` must stay byte for byte and must be absent from
+  the review. The review may contain only the new page, `index.html`,
+  `feed.xml`, `sitemap.xml`, `blyg/feed.xml`, `blyg/blyg.json`,
+  `blyg/index.html`, `blyg/items/index.json`, `blyg/.htaccess`, and
+  `blyg/items/{new-id}.json`. Any other path fails the test.
+- The operator's live website was not prepared, committed, or published for
+  this version. Quit and reopen Blynger to load 0.15.7. The next real
+  prepare can change `blyg/blyg.json` because its `generator` field names
+  `Blynger/0.15.7`. Blyg itself stays 0.4.
+
+## 0.15.6 — Leave a valid Blyg archive untouched
+
+- An already-valid Blyg 0.4 catalog passes a strict `validate_surface` and
+  should be left alone. No bulk archive conversion was run. Do not run
+  `migrate()` or `normalize_item` across a live tree to "finish" 0.4. That
+  path can invent a `page` of `t/{id}/` or `f/{id}/` when an old record has
+  only a human `url`.
+- In `core.py`, `build` calls `stable_public_item` before `align_item`.
+  An on-disk item is left byte for byte when all of these are true: it
+  passes `conformance._item` as Blyg 0.4; `content_md`, `content_html`,
+  `content_hash`, and `version` match the document being published; a queued
+  pin would not add a new `pinned: true` changelog mark; and `align_item`
+  on a copy would change no field. The original UTF-8 text is put back into
+  the publication file map through `original_utf8`, so a later byte compare
+  does not rewrite the file. The same rule is in `pin_files`: `repaired_pin`
+  must compare equal to the frozen pin, including no obsolete `media`
+  member, or the pin is still rewritten.
+- `align_item` is the old repair, kept for documents that are not yet in
+  that shape. It still runs `normalize_partial_quotes`, internal `[[id]]`
+  links, `normalize_item`, and `normalize_protocol_metadata`. An item whose
+  `blyg` is not `0.4`, a pin that still has `media`, and a document whose
+  transclusion or generated-text metadata does not match its HTML are still
+  repaired. A queued pin and an edited Post or Opener still publish
+  normally, including a new version when the words changed. Tests:
+  `test_unchanged_valid_item_keeps_its_exact_bytes`,
+  `test_unchanged_valid_pin_keeps_its_exact_bytes`,
+  `test_old_shaped_item_is_still_repaired_without_a_new_version`, and
+  `test_changed_post_still_publishes_a_new_blyg_version`.
+- Item files that sit outside `blyg/items/index.json` were left untouched.
+  That includes furniture pages, which must not become Blyg items, and old
+  item files whose HTML is no longer on the site. Historical pins that still
+  say `"blyg": "0.3"` were also left untouched when they are not the pin the
+  current item changelog advertises. Do not relabel those pins.
+- Main pages and the app's Pages stay outside the protocol. Posts are Blyg
+  threads. Each Opener is its own Blyg item. The Openers page that holds
+  them is furniture. This did not change `non_blyg_pages` or
+  `standalone_pages`.
+
+## 0.15.5 — Reader refresh without blocking publication
+
+- Download subscription updates in an isolated background job. Cached Reader
+  access and publication preparation no longer wait for slow remote feeds.
+- Poll refresh progress through short requests so WebKit does not abandon one
+  long-running request with a misleading **Load failed** message.
+- Preserve concurrent saved markers, reactions and publication activity when
+  adopting refresh results. Conflicting edits leave live data untouched and
+  ask for another refresh instead of overwriting newer work.
+- Reproduce the previous timeout with a stalled-feed HTTP test; verify cached
+  reading, marker preservation and Opener publication during the same stall.
+
+## 0.15.4 — Fast healthy-state startup
+
+- Stop rereading every generated item and website HTML file during an ordinary
+  launch. That recovery scan is now reserved for the case it was designed for:
+  loss of Blynger's private page-to-item identity map.
+- Avoid hydrating hundreds of cloud-backed publication files before the local
+  server can open its port, while retaining the same public-file recovery path
+  for an actually lost identity state.
+
+## 0.15.3 — Reliable native startup
+
+- Let the Mac wrapper wait up to two minutes for a large local Reader and Blyg
+  archive to initialize. The previous attempt counter sounded like a minute but
+  retried every quarter-second, so it abandoned a healthy launch after only
+  about fifteen seconds.
+- Express the startup limit as an absolute deadline and cover it with a
+  regression, preventing retry-interval changes from silently shortening the
+  allowed startup time again.
+
+## 0.15.2 — Legacy Blyg publication repair
+
+- Align legacy transclusion metadata with the unchanged order of its visible
+  quoted blocks, including frozen pins, before the final Blyg 0.4 check.
+- Reconcile older generated-text metadata with the generated passages still
+  present in public HTML, retaining known provenance and adding an explicit
+  empty-source record when an older passage lacks private provenance.
+- Remove the obsolete `media` member from existing frozen pins while leaving
+  their prose, HTML, identities, versions and timestamps unchanged.
+- Add focused compatibility regressions and verify the repair against a
+  disposable copy of the real publication: 610 Python tests and all 128
+  decisive official Blyg toolkit checks pass.
+
+## 0.15.1 — Publication recovery for existing pins
+
+- Keep generated protocol files in the publication review when their bytes
+  already exist locally but Git has never tracked them. This repairs the case
+  where a valid reconstructed pin passed local conformance yet was absent from
+  the approved commit.
+- Treat inbound Webmention target-registry projection as secondary to an
+  already-hosted Git publication. An invalid projection keeps the previous
+  verified registry and records a visible bounded diagnostic, while local
+  publication finalization completes instead of trapping the exact commit in
+  Recovery forever.
+- Add regressions for both the untracked-pin repair and non-stranding recovery
+  behavior.
+- Queue any verified local pin discovered during that recovery and keep
+  **PUBLISH…** available, so the following ordinary publication repairs the
+  public surface and advances the inbound target registry.
+
+## 0.15.0 — Blyg 0.4 publication
+
+- Publish current items, immutable pins and the manifest as Blyg 0.4 while
+  preserving item identities, content versions and existing human-page URLs.
+- Advertise manifest-located current-item and pinned-version templates so
+  readers do not have to infer Blynger's storage layout.
+- Support optional labels in whole-item transclusions and preserve those labels
+  in both source Markdown and baked HTML.
+- Derive ordered `links[]` rows only from explicit Blyg bracket links, excluding
+  ordinary HTML links and code, and migrate existing item and pin documents
+  without rewriting authored pages.
+- Expand the independent publication gate for the 0.4 version, required media,
+  absolute pages, labels, generated sources, exact link rows and withdrawal
+  constraints. Public Webmention response and notice displays remain out of
+  scope; verified activity stays private in Thicket.
+
+## 0.14.9 — Private Webmention responses and notices
+
+- Add Blyg 0.4 structured `links[]` support to the publication and outbound
+  planning path without scanning ordinary HTML links or changing Blynger's
+  still-declared Blyg 0.3 output.
+- Verify inbound `link` relations after the four substantive relationship
+  types and classify them as low-priority notices.
+- Classify Stubs and transclusions containing no authored words as repost
+  notices; keep Stubs, transclusions, forks and sources with authored words as
+  responses.
+- Hold notices apart in private Thicket, outside its response badge and count.
+  No public response list or public notice display is generated.
+
+## 0.14.8 — Blyg 0.4 Webmention target compatibility
+
+- Send a Blyg Webmention to the target's manifest-defined canonical item
+  document when Blynger does not already hold the target's human page URL.
+  This avoids guessing presentation routes and removes an unnecessary fetch.
+- Accept the exact current page, current item document, pinned-version JSON,
+  and Blynger frozen-version page for each published item as inbound targets.
+- Treat exact membership in the receiver's own publication as authoritative,
+  allowing absolute pages and manifest-relocated item and pin templates outside
+  the Blyg mount without broadening acceptance to unknown URLs.
+- Introduce target-registry schema 3 while retaining read compatibility with
+  the installed schema-2 registry for a safe deployment transition.
+
+## 0.14.7 — Generated-text publication repair
+
+- Keep each generated-text disclosure attached to its actual TK-treated block
+  while passages are inserted, moved, edited, or deleted in the visual editor.
+- Reconcile disclosure records with the generated blocks that remain whenever
+  a draft is saved. This repairs older mismatches safely and prevents stale
+  private bookkeeping from stopping an otherwise valid publication.
+- Preserve the publication conformance check as a final safety boundary rather
+  than weakening it; the editor and saved draft now reach that check in sync.
+
+## 0.14.6 — Reliable whole-dialogue imports
+
+- Accept a deliberately created `chatgpt.com/share/…` link in **Insert →
+  ChatGPT dialogue…**. Blynger reads the shared page's visible message records,
+  preserving complete multi-paragraph turns and consecutive messages from the
+  same speaker while excluding hidden reasoning and search machinery.
+- Stop alternating unlabeled clipboard paragraphs between Brady and ChatGPT.
+  Paragraph breaks are not speaker boundaries; ambiguous pasted text now stops
+  with a useful explanation instead of producing a confidently mangled post.
+- Bound and validate shared-page retrieval through Blynger's existing
+  public-address-pinned network transport. Only HTTPS ChatGPT share URLs are
+  accepted, with redirects disabled and strict response-size, time, turn-count and content
+  limits. The model disclosure remains explicitly self-reported by the author.
+
+## 0.14.5 — Self-reported dialogue models
+
+- Let the author state which ChatGPT model produced an imported dialogue.
+  Blynger remembers the last model name locally, shows it again during speaker
+  review, and includes it in the existing generated-text disclosure.
+- Keep attribution honest: the field is explicitly self-reported, and leaving
+  it empty continues to publish **model not stated** rather than guessing from
+  clipboard or page metadata.
+
+## 0.14.4 — Dialogue-aware TK
+
+- Add **Insert → ChatGPT dialogue…** for locally converting a pasted ChatGPT
+  conversation into a post. Brady's turns remain ordinary authored prose;
+  ChatGPT turns receive Blynger's existing TK robot treatment and generated-text
+  disclosure.
+- Preview every detected speaker before insertion. Blynger reads ChatGPT's rich
+  clipboard roles when available, understands ordinary `You said:` and
+  `ChatGPT said:` labels, and makes uncertain paragraph-by-paragraph guesses
+  explicit and correctable.
+- Give every new TK request the complete draft as an explicit AUTHOR/ASSISTANT
+  transcript. TK remains an ephemeral fresh session, but it no longer loses
+  speaker identity or silently relies on nonexistent conversation memory.
+- Normalize domain-only links supplied by TK or pasted ChatGPT dialogue to
+  absolute HTTPS links, while retaining the existing HTML sanitizer and
+  requiring author review before insertion.
+
+## 0.14.3 — One-click background publishing
+
+- Make ordinary **PUBLISH…** a quick background handoff. Its small dialog
+  accepts an optional note to place before Blynger's automatic Git change
+  summary; leaving it blank retains the automatic message.
+- Keep the complete publication inspection available by right-clicking
+  **PUBLISH…**. Only that explicit Review path computes and displays file lists
+  and hosted-version diffs before approval.
+- Preserve every existing publication boundary in the quick path: staged-only
+  inputs, generated dependencies, conformance checks, hosted-head conflict
+  detection, exact commit preservation, recoverable retries, and asynchronous
+  Webmention delivery.
+- Render an opened Reader article directly in the continuing feed instead of a
+  nested frame, removing the short viewport, inner scrolling, duplicated
+  metadata, and large artificial gaps between posts.
+- Open ordinary Reader links through the validated navigation path, copy
+  `mailto:` addresses to the clipboard, and keep imported article markup behind
+  the Reader's strict server-side sanitizer.
+- Restore independently selectable private response emoji and preserve every
+  selected response across refreshes while migrating older single-response
+  records safely.
+- Restore green collapsed cards for native Blygs so they remain visually
+  distinct from neutral RSS and ordinary web entries before being opened.
+- Restore draft headline editing and ensure a fresh publication review cannot
+  accidentally reuse an older completed preparation.
+
 ## 0.14.0 — Index-card workspaces
 
+- Restore the green-tinted distinction between native Blyg items and ordinary
+  RSS/web items in Reader, and let a Reader item be right-clicked to rerun Blyg
+  discovery without discarding saved legacy feed copies or downgrading a
+  last-known-good Blyg classification.
 - Refresh Reader subscriptions quietly every twenty minutes while Blynger is
   open, without overlapping a manual refresh or delaying publication, and send
   opened Reader links through the validated native Mac browser bridge.
@@ -15,6 +275,10 @@
 - Let authors right-click a published Post or Opener to begin a local Stub or
   Transclusion in a new Post or Opener, or Fork an eligible pinned version.
   These shortcuts create private, unstaged drafts and never publish by themselves.
+- Show a self-Stub or self-Transclusion's exact published snapshot in the visual
+  editor instead of exposing its internal `![[id]]` directive. Existing local
+  directives are repaired for display when reopened; publication retains the
+  same immutable Blyg reference.
 
 ## 0.13.0 — Webmentions
 

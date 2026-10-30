@@ -137,6 +137,10 @@
         event.preventDefault();
         actions.read(item);
       };
+      row.oncontextmenu = (event) => {
+        event.preventDefault();
+        actions.context(item, event.clientX, event.clientY);
+      };
       row.querySelector('.quote-item').onclick = () => actions.quote(item);
       row.querySelector('.stub-opener-item').onclick = () => actions.stub(item, 'opener');
       row.querySelector('.stub-post-item').onclick = () => actions.stub(item, 'post');
@@ -145,12 +149,19 @@
       const isolate = row.querySelector('.isolate-item');
       if (isolate) isolate.onclick = () => actions.isolate(item);
       const responses = row.querySelector('.private-responses');
+      const selectedResponses = new Set(
+        Array.isArray(item.reactions)
+          ? item.reactions
+          : item.reaction
+            ? [item.reaction]
+            : [],
+      );
       for (const emoji of ['🤯', '🙄', '👎', '😂', '❓', '💭', '🔇', '🔉', '🔊']) {
         const button = document.createElement('button');
-        button.className = 'reaction-item' + (item.reaction === emoji ? ' active' : '');
+        button.className = 'reaction-item' + (selectedResponses.has(emoji) ? ' active' : '');
         button.textContent = emoji;
         button.title = 'Private response ' + emoji;
-        button.setAttribute('aria-pressed', item.reaction === emoji);
+        button.setAttribute('aria-pressed', selectedResponses.has(emoji));
         button.onclick = () => actions.react(item, emoji);
         responses.append(button);
       }
@@ -197,19 +208,12 @@
     const html =
       '<div class="reader-opened ' +
       (native ? 'reader-native' : 'reader-web') +
-      '"><p class="reader-meta"><b class="reader-source-badge">' +
-      (native ? 'BLYG' : 'WEB / RSS') +
-      '</b> · ' +
-      esc(item.author) +
-      ' · ' +
-      esc(item.origin) +
-      ' · ' +
-      esc(item.date.slice(0, 10)) +
-      (native ? ' · ' + esc(item.kind) + ' · v' + item.version : '') +
-      '</p>' +
+      '">' +
       backward +
+      '<div id="readerContent" class="reader-inline-content">' +
+      (data.html || '') +
+      '</div>' +
       disclosure +
-      '<iframe id="readerFrame" class="preview-frame" sandbox="allow-scripts" referrerpolicy="no-referrer" title="Imported writing"></iframe>' +
       forward +
       '</div>' +
       (data.fragments?.length

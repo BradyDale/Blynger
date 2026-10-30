@@ -94,7 +94,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         process.currentDirectoryURL = URL(fileURLWithPath:source)
         if !FileManager.default.fileExists(atPath:log) { FileManager.default.createFile(atPath:log,contents:nil) }
         let handle = FileHandle(forWritingAtPath:log); handle?.seekToEndOfFile(); process.standardOutput = handle; process.standardError = handle
-        do { try process.run(); server = process; waitForServer(60) } catch { fail("Could not start Blynger: \(error.localizedDescription)") }
+        do {
+            try process.run()
+            server = process
+            waitForServer(until: Date().addingTimeInterval(120))
+        } catch {
+            fail("Could not start Blynger: \(error.localizedDescription)")
+        }
     }
     func output(_ executable:String,_ args:[String]) -> String {
         let p=Process(); p.executableURL=URL(fileURLWithPath:executable);p.arguments=args;let pipe=Pipe();p.standardOutput=pipe;p.standardError=FileHandle.nullDevice
@@ -115,15 +121,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
             }
         }
     }
-    func waitForServer(_ attempts:Int) {
+    func waitForServer(until deadline:Date) {
         guard let process=server, process.isRunning else { fail("Blynger could not start. Check native-launcher.log in Library/Application Support/Blynger.");return }
         let request=URLRequest(url:base.appendingPathComponent("health"),cachePolicy:.reloadIgnoringLocalCacheData,timeoutInterval:1)
         URLSession.shared.dataTask(with:request) { data,response,error in
             DispatchQueue.main.async {
                 guard !self.quitting else {return}
                 if let data=data, let json=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any], json["app"] as? String == "Blynger", self.server?.isRunning == true { self.web.load(URLRequest(url:self.base));return }
-                if attempts<=0 {self.fail("Blynger did not finish starting.");return}
-                DispatchQueue.main.asyncAfter(deadline:.now()+0.25){self.waitForServer(attempts-1)}
+                if Date()>=deadline {self.fail("Blynger did not finish starting. Check native-launcher.log in Library/Application Support/Blynger.");return}
+                DispatchQueue.main.asyncAfter(deadline:.now()+0.25){self.waitForServer(until:deadline)}
             }
         }.resume()
     }

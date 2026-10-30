@@ -19,6 +19,7 @@ def semantic_fingerprint(record):
         "target": record["target"],
         "status": record["status"],
         "relation": record["relation"],
+        "mention_class": record["mention_class"],
         "source_item_id": record["source_item_id"],
         "source_origin": record["source_origin"],
         "source_version": record["source_version"],

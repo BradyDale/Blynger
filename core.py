@@ -8,13 +8,14 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup, Comment, NavigableString
 from markdownify import markdownify
 import nh3
+import markdown
 from PIL import Image
 from metadata import enrich, sitemap, discovery_markup, favicon_markup, set_webmention_discovery
 from configuration import DEFAULT_SETTINGS
 from version import APP_VERSION, BLYG_VERSION
 import fragments as fragment_model
 import series as series_model
-from conformance import validate_surface
+from conformance import _item, validate_surface
 from generation_disclosure import decorate as decorate_generation
 from webmentions import OutboundQueue, plan_mentions
 from webmentions.inbound_registry import build_registry_artifact
@@ -34,7 +35,7 @@ ET.register_namespace('blyg', NS)
 ET.register_namespace('atom','http://www.w3.org/2005/Atom')
 ET.register_namespace('dc','http://purl.org/dc/elements/1.1/')
 TAGS={'a','abbr','acronym','b','blockquote','br','code','em','i','li','ol','strong','ul','p','div','span','hr','h1','h2','h3','h4','h5','h6','img','figure','figcaption','table','thead','tbody','tr','td','th','pre','audio','source','video','s','sub','sup','center','cite'}
-ATTR={'*':{'class','id','title'},'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'class','cite','data-blyg-id','data-blyg-version','data-blyg-origin','data-blynger-quote','data-source-origin','data-source-id','data-source-version'}}
+ATTR={'*':{'class','id','title'},'a':{'href','title'},'img':{'src','alt','width','height'},'audio':{'src','controls'},'video':{'src','controls','poster'},'source':{'src','type'},'blockquote':{'class','cite','data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label','data-blynger-quote','data-source-origin','data-source-id','data-source-version'}}
 def strip_fragment_markers(raw):
     raw=re.sub(r'<!-- blynger-fragment-link-start -->.*?<!-- blynger-fragment-link-end -->','',raw,flags=re.S)
     return re.sub(r'<style id="blynger-fragment-dot-style">.*?</style>','',raw,flags=re.S)
@@ -183,22 +184,27 @@ class Studio:
         # writing, not implied publication instructions.
         for draft in self.state['drafts'].values():
             draft.setdefault('staged',False)
-        # Recover permanent identities from generated public files if local studio state is lost.
-        for item in (self.root/'blyg/items').glob('*.json'):
-            if item.name=='index.json': continue
-            # These files are generated publication output, not source writing. A
-            # sync provider may evict old ones; hydrating hundreds of them here can
-            # hang the whole app before its local server starts.
-            if is_dataless(item): continue
-            try:
-                doc=json.loads(item.read_text())
-                if not isinstance(doc,dict) or not isinstance(doc.get('id'),str):
-                    raise ValueError('Invalid generated item.')
-            except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
-                self.invalid_public_items.append(item.name)
-                continue
-            name=urlsplit(doc.get('url','')).path.lstrip('/')
-            if name and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name): self.state['ids'].setdefault(name,doc['id'])
+        # Recover permanent identities from generated public files only when
+        # local identity state was actually lost. A healthy state already owns
+        # this map; rereading hundreds of cloud-backed publication files on
+        # every launch can block the local server before it opens its port.
+        recover_identities=not self.state['ids']
+        if recover_identities:
+            for item in (self.root/'blyg/items').glob('*.json'):
+                if item.name=='index.json': continue
+                # These files are generated publication output, not source writing. A
+                # sync provider may evict old ones; hydrating hundreds of them here can
+                # hang the whole app before its local server starts.
+                if is_dataless(item): continue
+                try:
+                    doc=json.loads(item.read_text())
+                    if not isinstance(doc,dict) or not isinstance(doc.get('id'),str):
+                        raise ValueError('Invalid generated item.')
+                except (OSError,UnicodeDecodeError,ValueError,json.JSONDecodeError):
+                    self.invalid_public_items.append(item.name)
+                    continue
+                name=urlsplit(doc.get('url','')).path.lstrip('/')
+                if name and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name): self.state['ids'].setdefault(name,doc['id'])
         self.state.setdefault('history',{})
         self.state.setdefault('pins',{})
         self.state.setdefault('fragment_posts',{})
@@ -235,12 +241,13 @@ class Studio:
             if isinstance(first.get('title'),str) and first['title'].strip():self.state['site_feed_titles'].setdefault(iid,first['title'].strip())
         # Older exports used an absolute, non-protocol `url` member. Keep its
         # page-to-id recovery locally while the public item shape moves to 0.3.
-        for page in self.root.glob('*.html'):
-            try:soup=BeautifulSoup(page.read_text(),'html.parser')
-            except UnicodeDecodeError:continue
-            link=soup.find('link',rel=lambda value:value and 'alternate' in value,type='application/json')
-            match=re.search(r'/blyg/items/([0-7][0-9a-hjkmnp-tv-z]{25})\.json$',link.get('href','')) if link else None
-            if match:self.state['ids'].setdefault(page.name,match.group(1))
+        if recover_identities:
+            for page in self.root.glob('*.html'):
+                try:soup=BeautifulSoup(page.read_text(),'html.parser')
+                except UnicodeDecodeError:continue
+                link=soup.find('link',rel=lambda value:value and 'alternate' in value,type='application/json')
+                match=re.search(r'/blyg/items/([0-7][0-9a-hjkmnp-tv-z]{25})\.json$',link.get('href','')) if link else None
+                if match:self.state['ids'].setdefault(page.name,match.group(1))
         excluded_ids={self.state['ids'][name] for name in self.non_blyg_pages|set(self.state['standalone_pages']) if name in self.state['ids']}
         for iid in excluded_ids:self.state['published'].pop(iid,None)
         self.remember(self.state['published'])
@@ -586,7 +593,8 @@ class Studio:
         # authoring source contains only the stable directive.
         for quote in soup.select('blockquote.blyg-transclusion[data-blyg-id]'):
             if 'blynger-citation' in quote.get('class',[]) or quote.find_parent('blockquote',class_='blynger-citation'): continue
-            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'; quote.replace_with(node)
+            label=(' | '+quote.get('data-blyg-label','').strip()) if quote.get('data-blyg-label','').strip() else ''
+            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+label+']]'; quote.replace_with(node)
         ignored={
             'data-blynger-quote',
             'data-blynger-block',
@@ -598,7 +606,28 @@ class Studio:
             'data-blyg-id',
             'data-blyg-origin',
             'data-blyg-version',
+            'data-blyg-label',
         }
+        # Publication makes local URLs absolute and mirrors uploaded images.
+        # Compare destinations, and accept a media alias only when both local
+        # files prove that it is the exact same image.
+        for node in soup.find_all(True):
+            for attribute in ('href', 'src', 'poster'):
+                value = node.get(attribute)
+                if not isinstance(value, str) or not value:
+                    continue
+                target = urlsplit(urljoin(self.site, value))
+                if (target.scheme, target.netloc) != (urlsplit(self.site).scheme, urlsplit(self.site).netloc):
+                    continue
+                path = target.path
+                if attribute in ('src', 'poster') and path.startswith('/blyg/media/'):
+                    filename = path.removeprefix('/blyg/media/')
+                    if re.fullmatch(r'[a-f0-9]{64}\.[a-zA-Z0-9]+', filename):
+                        original = self.root / 'images' / 'blynger' / filename
+                        mirror = self.root / 'blyg' / 'media' / filename
+                        if original.is_file() and mirror.is_file() and original.read_bytes() == mirror.read_bytes():
+                            path = '/images/blynger/' + filename
+                node[attribute] = urlunsplit(('', '', path, target.query, target.fragment))
         def signature(node):
             if isinstance(node,Comment): return None
             if isinstance(node,NavigableString):
@@ -654,16 +683,30 @@ class Studio:
         raw=draft['raw'] if draft else saved['raw'] if saved else self.read(name)
         raw=strip_fragment_markers(raw)
         raw=re.sub(r'<!-- blynger-versions-start -->.*?<!-- blynger-versions-end -->','',raw,flags=re.S)
-        soup=BeautifulSoup(raw,'html.parser')
+        soup=BeautifulSoup(raw,'html.parser');collapsed=False
         for quote in soup.select('blockquote.blyg-transclusion[data-blyg-id]'):
             if 'blynger-citation' in quote.get('class',[]) or quote.find_parent('blockquote',class_='blynger-citation'):continue
-            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'
+            label=(' | '+quote.get('data-blyg-label','').strip()) if quote.get('data-blyg-label','').strip() else ''
+            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+label+']]'
             for attribute in fragment_model.MARKER_ATTRS:
                 if quote.has_attr(attribute):
                     node[attribute]=quote.get(attribute)
-            quote.replace_with(node)
-        if 'blyg-transclusion' in raw: raw=str(soup)
-        a,b=region(raw)
+            quote.replace_with(node);collapsed=True
+        source_raw=str(soup) if collapsed else raw
+        soup=BeautifulSoup(source_raw,'html.parser')
+        directive=re.compile(r'^\s*!\[\[([0-7][0-9a-hjkmnp-tv-z]{25})(?:\s*\|\s*([^\]\r\n]*))?\]\]\s*$');visualized=False
+        for node in list(soup.find_all(['p','div','h1','h2','h3','h4','h5','h6'])):
+            if node.find(['p','div','h1','h2','h3','h4','h5','h6','pre','code']) or node.find_parent(['pre','code','blockquote']):continue
+            match=directive.fullmatch(node.get_text())
+            doc=self.state.get('published',{}).get(match.group(1)) if match else None
+            if not doc or doc.get('kind') not in ('fragment','thread'):continue
+            replacement=BeautifulSoup(self.local_authoring_transclusion(doc),'html.parser').find('blockquote')
+            if match.group(2) and match.group(2).strip():replacement['data-blyg-label']=match.group(2).strip()
+            for attribute in fragment_model.MARKER_ATTRS:
+                if node.has_attr(attribute):replacement[attribute]=node.get(attribute)
+            node.replace_with(replacement);visualized=True
+        editor_raw=str(soup) if visualized else source_raw
+        a,b=region(editor_raw)
         kind='page' if name in self.state['standalone_pages'] else 'main' if name in self.non_blyg_pages else 'post'
         iid=self.state['ids'].get(name)
         # A pin is a choice about the version being prepared, not just version
@@ -671,10 +714,10 @@ class Studio:
         # later revision can be made permanent too.
         pin_available=bool(name!='openers.html' and kind=='post')
         stored_fragments=(draft or saved or {}).get('fragments')
-        marked_fragments=fragment_model.extract(raw[a:b],stored_fragments) if self.fragment_capable(name) else None
+        marked_fragments=fragment_model.extract(editor_raw[a:b],stored_fragments) if self.fragment_capable(name) else None
         fragments=marked_fragments or stored_fragments
         series=({'id':draft.get('series_id'),'attribute':draft.get('series_attribute',''),'homepage_only_title':True} if draft and 'series_id' in draft and draft.get('series_id') else None) if draft and 'series_id' in draft else self.series_assignment(name)
-        return {'name':name,'title':title_of(raw,name),'raw':raw,'body':clean(raw[a:b]),'start':a,'end':b,'prefix':raw[:a],'suffix':raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'staged':bool((draft or {}).get('staged',False)),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':self.validate_fragments(name,fragments,clean(raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False)), 'series':series}
+        return {'name':name,'title':title_of(editor_raw,name),'raw':editor_raw,'source_raw':source_raw,'body':clean(editor_raw[a:b]),'start':a,'end':b,'prefix':editor_raw[:a],'suffix':editor_raw[b:],'base':draft['base'] if draft else digest(p.read_bytes()),'draft':bool(draft),'staged':bool((draft or {}).get('staged',False)),'new':draft.get('new',False) if draft else False,'kind':kind,'note':draft.get('note','') if draft else '', 'fragments':self.validate_fragments(name,fragments,clean(editor_raw[a:b])), 'generated':copy.deepcopy((draft or saved or {}).get('generated',[])), 'quotes':copy.deepcopy((draft or saved or {}).get('quotes',{})), 'stub_of':copy.deepcopy((draft or saved or {}).get('stub_of')), 'forked_from':copy.deepcopy((draft or saved or {}).get('forked_from')), 'pin_available':pin_available, 'pin_on_publish':bool((draft or {}).get('pin_on_publish',False)), 'series':series}
 
     def series_assignment(self,name):
         for key,record in self.state.get('series',{}).items():
@@ -703,7 +746,7 @@ class Studio:
         self.state['drafts'][page]['staged']=bool(staged)
         self.state['series_pending']=sorted(set(self.state.get('series_pending',[]))|{key})
         self.save_state()
-        return {'message':'Created '+title+'. Choose it explicitly on each Post that belongs, then Review & publish to prepare the coordinated pages.','series':self.series_list()}
+        return {'message':'Created '+title+'. Choose it explicitly on each Post that belongs, then Publish to prepare the coordinated pages.','series':self.series_list()}
 
     def assign_series(self,name,series_id,attribute=''):
         """Compatibility path for older clients that applied a Series immediately."""
@@ -723,7 +766,7 @@ class Studio:
                 self.reconcile_series(key)
         self.state['series_pending']=[key for key in self.state.get('series_pending',[]) if key not in pending]
         self.save_state()
-        return {'message':'Series assignment saved locally. Review & publish will show every affected page.','series':self.series_list()}
+        return {'message':'Series assignment saved locally. Right-click Publish to review every affected page.','series':self.series_list()}
 
     def save_series_choice(self,name,series_id,attribute='',homepage_only_title=True):
         """Save post metadata now; generated Series pages wait for preparation."""
@@ -749,7 +792,7 @@ class Studio:
         pending.update(affected)
         self.state['series_pending']=sorted(pending)
 
-    def reconcile_series(self,key):
+    def reconcile_series(self,key,preserve_existing=False):
         record=self.state['series'][key]
         known={p['name']:p for p in self.pages()}
         members=[]
@@ -767,6 +810,10 @@ class Studio:
             for member in members
         ]
         for index,member in enumerate(members):
+            next_member = members[index+1] if index+1<len(members) else None
+            if (preserve_existing and member['name'] not in self.state['drafts']
+                    and series_model.navigation_current(self.read(member['name']), record, next_member, self.site)):
+                continue
             try:
                 page=self.page(member['name'])
             except FragmentStateError:
@@ -956,6 +1003,14 @@ class Studio:
             # validated against the cleaned form and then embedded into the
             # unclean form, producing a false anchor mismatch.
             cleaned_body=clean(d['raw'][a:b])
+            # A list inserted inside a paragraph is repaired by the sanitizer
+            # into sibling elements and bare trailing text. Give that text a
+            # block before constructing metadata so embed() sees the same map.
+            opener_body = BeautifulSoup(cleaned_body, 'html.parser')
+            for node in list(opener_body.contents):
+                if not getattr(node, 'name', None) and not isinstance(node, Comment) and str(node).strip():
+                    node.wrap(opener_body.new_tag('p'))
+            cleaned_body = str(opener_body)
             d['raw']=d['raw'][:a]+cleaned_body+d['raw'][b:]
             a,b=region(d['raw'])
             # Older UI code inserted copied editable context even for genuine
@@ -1001,7 +1056,12 @@ class Studio:
             prior=(existing or previous).get(field);supplied=d.get(field,prior)
             if prior is not None and supplied!=prior:raise ValueError(field.replace('_',' ').title()+' cannot be changed after this draft is created.')
             if supplied is not None:lineage[field]=copy.deepcopy(supplied)
-        self.state['drafts'][name]={'raw':d['raw'],'base':actual,'new':existing.get('new',False) if existing else False,'staged':bool(existing.get('staged',False) if existing else default_staged),'kind':'page' if name in self.state['standalone_pages'] else 'post','at':existing.get('at',now()) if existing else now(),'updated':now(),'generated':d.get('generated',existing.get('generated',[]) if existing else []),'note':d.get('note',existing.get('note','') if existing else ''),'revision':existing.get('revision',False) if existing else False}
+        submitted_generated=d.get('generated',existing.get('generated',[]) if existing else [])
+        if not isinstance(submitted_generated,list):submitted_generated=[]
+        generated_count=len(BeautifulSoup(d['raw'][a:b],'html.parser').select('.blyg-tk-gen'))
+        submitted_generated=copy.deepcopy(submitted_generated[:generated_count])
+        while len(submitted_generated)<generated_count:submitted_generated.append({'sources':[]})
+        self.state['drafts'][name]={'raw':d['raw'],'base':actual,'new':existing.get('new',False) if existing else False,'staged':bool(existing.get('staged',False) if existing else default_staged),'kind':'page' if name in self.state['standalone_pages'] else 'post','at':existing.get('at',now()) if existing else now(),'updated':now(),'generated':submitted_generated,'note':d.get('note',existing.get('note','') if existing else ''),'revision':existing.get('revision',False) if existing else False}
         self.state['drafts'][name]['fragments']=meta
         self.state['drafts'][name]['quotes']=quotes
         if name!='openers.html' and self.fragment_capable(name):
@@ -1240,7 +1300,7 @@ class Studio:
         if not doc or doc['kind']=='withdrawn': raise ValueError('Only an available published version with content can be pinned.')
         pins=self.state['pins'].setdefault(iid,[])
         if key not in pins: pins.append(key)
-        self.save_state(); return {'message':'Pin queued. Review and publish to make this version permanently public.'}
+        self.save_state(); return {'message':'Pin queued. Publish to make this version permanently public.'}
     def fragments(self):
         return [{'id':d['id'],'title':self.item_title(d),'version':d['version']} for d in self.state['published'].values() if d['kind']=='fragment']
     def quote_choices(self):
@@ -1253,7 +1313,15 @@ class Studio:
         if not doc or doc['kind'] not in ('fragment','thread'):raise ValueError('This item is not available to quote.')
         title=self.item_title(doc);url=self.permalink(doc)
         label='<p class="blynger-stub-label"><strong>Stubbing:</strong> <a href="'+html.escape(url,quote=True)+'">'+html.escape(title)+'</a></p>'
-        return {'html':'<p>![['+key+']]</p>','id':key,'origin':self.origin,'version':doc['version'],'kind':doc['kind'],'title':title,'stub_label_html':label,'stub_of':{'id':key,'version':doc['version'],'origin':self.origin}}
+        # Keep the compact directive as the durable protocol source, but give
+        # the visual editor the exact published snapshot.  The citation class
+        # makes this authoring wrapper visible and protected across reopen;
+        # publication resolves it back to the bare Blyg transclusion shape.
+        authoring_html=self.local_authoring_transclusion(doc)
+        return {'html':'<p>![['+key+']]</p>','authoring_html':authoring_html,'id':key,'origin':self.origin,'version':doc['version'],'kind':doc['kind'],'title':title,'stub_label_html':label,'stub_of':{'id':key,'version':doc['version'],'origin':self.origin}}
+
+    def local_authoring_transclusion(self,doc):
+        return '<blockquote class="blynger-citation blyg-transclusion" data-blyg-id="'+doc['id']+'" data-blyg-version="'+str(doc['version'])+'" data-blyg-origin="'+html.escape(self.origin,quote=True)+'">'+doc['content_html']+'</blockquote>'
 
     @staticmethod
     def pinned_versions(doc):
@@ -1298,24 +1366,30 @@ class Studio:
     def link_source(self,iid,docs):
         source=docs.get(iid) or self.state['published'].get(iid)
         if source and source.get('kind') in ('fragment','thread'):
-            return self.permalink(source),self.item_title(source)
+            return self.permalink(source),self.item_title(source),{'id':iid}
         found=[item for item in self.reader.state['items'].values() if item.get('source_type','blyg')=='blyg' and item.get('doc',{}).get('id')==iid]
         if len(found)>1:raise ValueError('Ambiguous link: this ID was imported from multiple origins.')
         if not found:raise ValueError('Linked item is not published or cached. Publish or sync it before using its ID.')
         item=found[0];text=BeautifulSoup(item['doc'].get('content_html',''),'html.parser').get_text(' ',strip=True)
-        return self.reader.page_url(item),text[:100] or iid
+        return self.reader.page_url(item),text[:100] or iid,{'id':iid,'origin':item['origin']}
     def resolve_internal_links(self,soup,docs):
-        pattern=re.compile(r'(?<!!)\[\[([0-7][0-9a-hjkmnp-tv-z]{25})\]\]')
+        pattern=re.compile(r'(?<!!)\[\[([0-7][0-9a-hjkmnp-tv-z]{25})(?:\s*\|\s*([^\]\r\n]+?))?\]\]')
+        links=[]
         for node in list(soup.find_all(string=pattern)):
             if node.find_parent(['pre','code']) or node.find_parent('blockquote',class_=lambda value:value and ('blyg-transclusion' in value or 'blynger-citation' in value)):continue
             value=str(node);cursor=0;parts=[]
             for match in pattern.finditer(value):
                 if match.start()>cursor:parts.append(NavigableString(value[cursor:match.start()]))
-                target,label=self.link_source(match.group(1),docs);link=soup.new_tag('a',href=target);link.string=label;parts.append(link);cursor=match.end()
+                target,default,reference=self.link_source(match.group(1),docs);label=(match.group(2) or '').strip() or default;link=soup.new_tag('a',href=target);link.string=label;parts.append(link);links.append(reference);cursor=match.end()
             if cursor<len(value):parts.append(NavigableString(value[cursor:]))
             for part in parts:node.insert_before(part)
             node.extract()
-        return soup
+        return soup,links
+    def internal_link_references(self,source,docs):
+        """Read 0.4 link directives from Markdown without scanning ordinary HTML."""
+        rendered=markdown.markdown(str(source),extensions=['sane_lists'])
+        _,links=self.resolve_internal_links(BeautifulSoup(rendered,'html.parser'),docs)
+        return links
     def item_title(self,doc):
         title=self.state.get('item_titles',{}).get(doc['id'])
         if isinstance(title,str) and title.strip():return title.strip()
@@ -1323,10 +1397,146 @@ class Studio:
         return text[:100] or doc['id']
     def item_kind_path(self,doc):
         return 't' if doc.get('kind')=='thread' or (doc.get('kind')=='withdrawn' and 'transclusions' in doc) else 'f'
+    def align_item(self,doc,docs,stamp):
+        """Apply the current Blyg 0.4 item rules to one assembled document."""
+        self.normalize_partial_quotes(doc,stamp)
+        if re.search(r'(?<!!)\[\[[0-7][0-9a-hjkmnp-tv-z]{25}(?:\s*\|\s*[^\]\r\n]+)?\]\]',doc.get('content_md','')):
+            linked,links=self.resolve_internal_links(BeautifulSoup(doc.get('content_html',''),'html.parser'),docs)
+            doc['content_html']=str(linked)
+            source_links=self.internal_link_references(doc.get('content_md',''),docs)
+            if links and links!=source_links:
+                raise ValueError('Internal Blyg links changed meaning while rendering.')
+            if source_links:
+                doc['links']=source_links
+            else:
+                doc.pop('links',None)
+        else:
+            doc.pop('links',None)
+        self.normalize_item(doc)
+        self.normalize_protocol_metadata(doc)
+        return doc
+    def pin_request_changes_item(self,doc):
+        """A queued pin must be recorded on the item even when its words stay put."""
+        requested={str(version) for version in self.state.get('pins',{}).get(doc.get('id'),[])}
+        if not requested:
+            return False
+        marked={str(entry.get('version')) for entry in doc.get('changelog',[]) if isinstance(entry,dict) and entry.get('pinned')}
+        return not requested<=marked
+    def item_repair_is_noop(self,existing,docs):
+        partials=existing.get('transclusions',[])
+        if any(isinstance(ref,dict) and 'selector' in ref for ref in partials):
+            return False
+        trial=copy.deepcopy(existing)
+        self.align_item(trial,docs,'1970-01-01T00:00:00Z')
+        return trial==existing
+    def original_utf8(self,path):
+        """Return the file text when UTF-8 encoding will write those same bytes."""
+        raw=path.read_bytes()
+        try:
+            text=raw.decode('utf-8')
+        except UnicodeDecodeError:
+            return None
+        if text.encode('utf-8')!=raw:
+            return None
+        return text
+    def stable_public_item(self,doc,docs):
+        """Return the on-disk item when this publication can leave its bytes alone.
+
+        The file must already be valid Blyg 0.4, carry the same words and
+        version as the document being published, and gain nothing from the
+        legacy repair. A queued pin or an old-shaped document returns None so
+        the normal publication path can write it.
+        """
+        iid=doc.get('id')
+        if not isinstance(iid,str):
+            return None
+        path=self.root/'blyg'/'items'/f'{iid}.json'
+        if not path.is_file():
+            return None
+        try:
+            existing=json.loads(path.read_text())
+        except (OSError,UnicodeDecodeError,json.JSONDecodeError):
+            return None
+        if not isinstance(existing,dict):
+            return None
+        if any(existing.get(field)!=doc.get(field) for field in ('content_md','content_html','content_hash','version')):
+            return None
+        if self.pin_request_changes_item(doc) or self.pin_request_changes_item(existing):
+            return None
+        if not self.item_repair_is_noop(existing,docs):
+            return None
+        problems=[]
+        _item(existing,f'blyg/items/{iid}.json',self.origin,problems)
+        if problems:
+            return None
+        return existing
+    def repaired_pin(self,pin,docs):
+        repaired=copy.deepcopy(pin)
+        repaired['blyg']=BLYG_VERSION
+        repaired.pop('media',None)
+        self.normalize_protocol_metadata(repaired)
+        if repaired.get('kind')!='withdrawn':
+            pin_links=self.internal_link_references(repaired.get('content_md',''),docs)
+            if pin_links:
+                repaired['links']=pin_links
+            else:
+                repaired.pop('links',None)
+        else:
+            repaired.pop('links',None)
+        return repaired
+    def store_frozen_pin_page(self,doc,pin,rel,version,files):
+        kind='t' if pin.get('kind')=='thread' else 'f'
+        page=f'blyg/{kind}/{doc["id"]}/v{version}/index.html'
+        if (self.root/page).exists():
+            return
+        current=self.permalink(doc)
+        frozen='<!doctype html><html><head><meta charset="utf-8"><link rel="canonical" href="'+html.escape(current,quote=True)+'">'+favicon_markup(self.config)+discovery_markup(self.config,blyg=True,rss=True)+'<title>Frozen version '+str(version)+'</title><style>body{font:18px/1.6 Georgia;max-width:800px;margin:40px auto;padding:20px}img{max-width:100%}</style></head><body><header><b>Frozen snapshot · version '+str(version)+'</b><p><a href="'+html.escape(current,quote=True)+'">Current version</a> · <a href="/'+rel+'">Pinned JSON</a></p></header><article>'+pin.get('content_html','')+'</article></body></html>'
+        files[page]=decorate_generation(frozen,pin.get('generated',[]))
     def normalize_item(self,doc):
         if isinstance(doc.get('title'),str) and doc['title'].strip():self.state['item_titles'].setdefault(doc['id'],doc['title'].strip())
         doc.pop('title',None);doc.pop('url',None)
+        doc['blyg']=BLYG_VERSION
         doc['page']=doc.get('page') or self.item_kind_path(doc)+'/'+doc['id']+'/'
+        if doc.get('kind')!='withdrawn':doc.setdefault('media',[])
+        else:doc.pop('links',None)
+        return doc
+    def normalize_protocol_metadata(self,doc):
+        """Align legacy derived metadata with its unchanged visible content."""
+        soup=BeautifulSoup(doc.get('content_html',''),'html.parser')
+        references=doc.get('transclusions')
+        wrappers=[
+            node for node in soup.select('blockquote.blyg-transclusion[data-blyg-id]')
+            if node.find_parent('blockquote',class_='blyg-transclusion') is None
+        ]
+        if isinstance(references,list) and len(references)==len(wrappers):
+            available={}
+            for reference in references:
+                if not isinstance(reference,dict):
+                    available={}
+                    break
+                key=(reference.get('id'),reference.get('version'),reference.get('origin',self.origin))
+                available.setdefault(key,[]).append(reference)
+            ordered=[]
+            for wrapper in wrappers:
+                version=wrapper.get('data-blyg-version','')
+                version=int(version) if str(version).isdigit() else None
+                key=(wrapper.get('data-blyg-id'),version,wrapper.get('data-blyg-origin',self.origin))
+                matches=available.get(key,[])
+                if not matches:
+                    ordered=[]
+                    break
+                ordered.append(matches.pop(0))
+            if ordered and not any(available.values()):
+                doc['transclusions']=ordered
+        generated_count=len(soup.select('.blyg-tk-gen'))
+        if generated_count:
+            generated=doc.get('generated')
+            generated=generated if isinstance(generated,list) else []
+            doc['generated']=copy.deepcopy(generated[:generated_count])
+            while len(doc['generated'])<generated_count:
+                doc['generated'].append({'sources':[]})
+        else:
+            doc.pop('generated',None)
         return doc
     def normalize_partial_quotes(self,doc,stamp):
         partial=[ref for ref in doc.get('transclusions',[]) if isinstance(ref,dict) and 'selector' in ref]
@@ -1339,7 +1549,7 @@ class Studio:
             if node:
                 node['class']=[value for value in node.get('class',[]) if value!='blyg-transclusion']
                 for key in ('data-blyg-id','data-blyg-version','data-blyg-origin'):node.attrs.pop(key,None)
-            md=re.sub(r'^\s*!\[\['+re.escape(ref['id'])+r'\]\]\s*\n?','',md,count=1,flags=re.M)
+            md=re.sub(r'^\s*!\[\['+re.escape(ref['id'])+r'(?:\s*\|\s*[^\]\r\n]*)?\]\]\s*\n?','',md,count=1,flags=re.M)
         doc['transclusions']=[ref for ref in doc.get('transclusions',[]) if ref not in partial]
         doc['content_html']=str(soup);doc['content_md']=md.strip();doc['content_hash']='sha256:'+digest(doc['content_md'])
         doc['version']+=1;doc['updated']=stamp
@@ -1364,26 +1574,38 @@ class Studio:
         # Explicitly reject unknown IDs and the wrong kind, including pin directories.
         rules.append('RewriteRule ^[ft]/[^/]+/?$ - [R=404,L]')
         return '\n'.join(rules)+'\n'
-    def pin_files(self,doc,files):
+    def pin_files(self,doc,files,docs):
         iid=doc['id']
         for entry in doc['changelog']:
-            if str(entry['version']) in self.state['pins'].get(iid,[]): entry['pinned']=True
-            if not entry.get('pinned'): continue
-            v=entry['version']; rel=f'blyg/items/{iid}/v{v}.json'; dest=self.root/rel
-            if dest.exists():
+            if str(entry['version']) in self.state['pins'].get(iid,[]):
+                entry['pinned']=True
+            if not entry.get('pinned'):
+                continue
+            version=entry['version']
+            rel=f'blyg/items/{iid}/v{version}.json'
+            dest=self.root/rel
+            if dest.is_file():
                 pin=json.loads(dest.read_text())
+                repaired=self.repaired_pin(pin,docs)
+                # An already-valid frozen pin is historical. Keep its bytes
+                # when the repair would not change a single field.
+                if repaired==pin:
+                    original=self.original_utf8(dest)
+                    if original is not None:
+                        files[rel]=original
+                        self.store_frozen_pin_page(doc,pin,rel,version,files)
+                        continue
+                pin=repaired
             else:
-                source=doc if v==doc['version'] else self.state['history'].get(iid,{}).get(str(v))
-                if not source: raise ValueError('The pinned version is missing from the private archive.')
-                pin={k:copy.deepcopy(source[k]) for k in ('blyg','id','kind','version','origin','author','created','updated','content_md','content_html','content_hash','transclusions','generated','stub_of','forked_from') if k in source}
+                source=doc if version==doc['version'] else self.state['history'].get(iid,{}).get(str(version))
+                if not source:
+                    raise ValueError('The pinned version is missing from the private archive.')
+                pin={k:copy.deepcopy(source[k]) for k in ('blyg','id','kind','version','origin','author','created','updated','content_md','content_html','content_hash','transclusions','generated','stub_of','forked_from','links') if k in source}
+                pin['blyg']=BLYG_VERSION
                 pin.update(at=source['updated'],note=source['changelog'][-1].get('note'),pinned=True)
-                files[rel]=json.dumps(pin,ensure_ascii=False,indent=2)
-            kind='t' if pin['kind']=='thread' else 'f'
-            page=f'blyg/{kind}/{iid}/v{v}/index.html'
-            if not (self.root/page).exists():
-                current=self.permalink(doc)
-                frozen='<!doctype html><html><head><meta charset="utf-8"><link rel="canonical" href="'+html.escape(current,quote=True)+'">'+favicon_markup(self.config)+discovery_markup(self.config,blyg=True,rss=True)+'<title>Frozen version '+str(v)+'</title><style>body{font:18px/1.6 Georgia;max-width:800px;margin:40px auto;padding:20px}img{max-width:100%}</style></head><body><header><b>Frozen snapshot · version '+str(v)+'</b><p><a href="'+html.escape(current,quote=True)+'">Current version</a> · <a href="/'+rel+'">Pinned JSON</a></p></header><article>'+pin['content_html']+'</article></body></html>'
-                files[page]=decorate_generation(frozen,pin.get('generated',[]))
+                pin=self.repaired_pin(pin,docs)
+            files[rel]=json.dumps(pin,ensure_ascii=False,indent=2)
+            self.store_frozen_pin_page(doc,pin,rel,version,files)
     def version_footer(self,doc):
         links=[]
         for c in doc['changelog']:
@@ -1507,14 +1729,14 @@ class Studio:
         pub=self.config['publishing']; url='ssh://'+pub['ssh_user']+'@'+hostname+pub['remote_path']
         self.git('remote','set-url',pub['remote'],url); return self.settings()
     def effective_pages(self):
-        return {p['name']:(self.page(p['name'])['raw'] if p['name'] in self.state.get('fragment_posts',{}) and not p.get('deleted') else self.state['drafts'][p['name']]['raw'] if p['name'] in self.state['drafts'] else self.read(p['name'])) for p in self.pages() if not (p.get('deleted') and p['name'] not in self.state['drafts'] and not self.path(p['name']).exists())}
+        return {p['name']:(self.page(p['name'])['source_raw'] if p['name'] in self.state.get('fragment_posts',{}) and not p.get('deleted') else self.state['drafts'][p['name']]['raw'] if p['name'] in self.state['drafts'] else self.read(p['name'])) for p in self.pages() if not (p.get('deleted') and p['name'] not in self.state['drafts'] and not self.path(p['name']).exists())}
     def content(self,raw,name,files):
         raw=strip_fragment_markers(raw)
         raw=re.sub(r'<!-- blynger-versions-start -->.*?<!-- blynger-versions-end -->','',raw,flags=re.S)
         a,b=region(raw); soup=BeautifulSoup(clean(raw[a:b]),'html.parser'); media=[]
         # Formatting a standalone quote marker must not turn it into inert Markdown.
         for node in soup.find_all(['h1','h2','h3','h4','h5','h6']):
-            if not node.find_parent(['pre','code']) and re.fullmatch(r'\s*!\[\[[0-7][0-9a-hjkmnp-tv-z]{25}\]\]\s*',node.get_text()):node.name='p'
+            if not node.find_parent(['pre','code']) and re.fullmatch(r'\s*!\[\[[0-7][0-9a-hjkmnp-tv-z]{25}(?:\s*\|\s*[^\]\r\n]*)?\]\]\s*',node.get_text()):node.name='p'
         snapshot_source=self.state['drafts'].get(name) or self.state['fragment_posts'].get(name,{})
         for quote in soup.select('[data-blynger-quote]'):
             token=quote.get('data-blynger-quote');record=snapshot_source.get('quotes',{}).get(token)
@@ -1537,7 +1759,7 @@ class Studio:
                 # this author does not make a protocol claim for them.
                 for nested in quote.select('blockquote.blyg-transclusion'):
                     nested['class']=[value for value in nested.get('class',[]) if value not in ('blyg-transclusion','blyg-partial')]
-                    for key in ('data-blyg-id','data-blyg-version','data-blyg-origin'):nested.attrs.pop(key,None)
+                    for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label'):nested.attrs.pop(key,None)
         # Preserve images outside article blocks, but omit image-based navigation.
         all_soup=BeautifulSoup(raw,'html.parser')
         present={im.get('src') for im in soup.find_all('img')}
@@ -1565,15 +1787,17 @@ class Studio:
             if not paragraph.get_text(strip=True) and not paragraph.find(['img','audio','video','source']):paragraph.decompose()
         for quote in soup.select('blockquote.blyg-transclusion[data-blyg-id]'):
             if 'blynger-citation' in quote.get('class',[]) or quote.find_parent('blockquote',class_='blynger-citation'):continue
-            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+']]'; quote.replace_with(node)
+            label=(' | '+quote.get('data-blyg-label','').strip()) if quote.get('data-blyg-label','').strip() else ''
+            node=soup.new_tag('p'); node.string='![['+quote['data-blyg-id']+label+']]'; quote.replace_with(node)
         content_html=str(soup)
         md_soup=BeautifulSoup(content_html,'html.parser')
         for quote in md_soup.select('blockquote.blynger-citation.blyg-transclusion.blyg-partial[data-blyg-id]'):
             quote['class']=[value for value in quote.get('class',[]) if value!='blyg-transclusion']
-            for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blynger-selector'):quote.attrs.pop(key,None)
+            for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label','data-blynger-selector'):quote.attrs.pop(key,None)
         for quote in md_soup.select('blockquote.blynger-citation.blyg-transclusion[data-blyg-id]:not(.blyg-partial)'):
             if quote.find_parent('blockquote',class_='blynger-citation'):continue
-            node=md_soup.new_tag('p');node.string='![['+quote['data-blyg-id']+']]';quote.replace_with(node)
+            label=(' | '+quote.get('data-blyg-label','').strip()) if quote.get('data-blyg-label','').strip() else ''
+            node=md_soup.new_tag('p');node.string='![['+quote['data-blyg-id']+label+']]';quote.replace_with(node)
         md=markdownify(str(md_soup),heading_style='ATX').strip()
         # An unresolved TK scope must never reach published files.
         if re.search(r'\[/?TK\]',md,re.I): raise ValueError(name+': resolve or remove [TK] instructions before publishing.')
@@ -1581,13 +1805,14 @@ class Studio:
     def resolve_transclusions(self,content_html,item_id,docs,files):
         """Bake genuine directives from the current local Reader snapshot."""
         transclusions=[];soup=BeautifulSoup(content_html,'html.parser')
-        directive=re.compile(r'^\s*!\[\[([0-7][0-9a-hjkmnp-tv-z]{25})\]\]\s*$')
+        directive=re.compile(r'^\s*!\[\[([0-7][0-9a-hjkmnp-tv-z]{25})(?:\s*\|\s*([^\]\r\n]*))?\]\]\s*$')
         for quote in soup.select('blockquote.blynger-citation.blyg-transclusion[data-blyg-id]'):
             if quote.find_parent('blockquote',class_='blynger-citation'):continue
             if 'blyg-partial' in quote.get('class',[]):
                 quote['class']=[value for value in quote.get('class',[]) if value!='blyg-transclusion']
-                for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blynger-selector'):quote.attrs.pop(key,None)
+                for key in ('data-blyg-id','data-blyg-version','data-blyg-origin','data-blyg-label','data-blynger-selector'):quote.attrs.pop(key,None)
                 continue
+            label=quote.get('data-blyg-label','').strip()
             reference={'id':quote['data-blyg-id'],'version':int(quote['data-blyg-version']),'origin':quote['data-blyg-origin']}
             quoted,reference=self.quote_source(reference['id'],item_id,docs,files,reference['origin'])
             quote.clear();quote.append(BeautifulSoup(quoted,'html.parser'))
@@ -1596,18 +1821,20 @@ class Studio:
             # protocol shape required by §10.2.
             quote.attrs={'class':['blyg-transclusion'],'data-blyg-id':reference['id'],'data-blyg-version':str(reference['version'])}
             if reference.get('origin'):quote['data-blyg-origin']=reference['origin']
+            if label:quote['data-blyg-label']=label
             transclusions.append(reference)
         for node in list(soup.find_all(['p','div','h1','h2','h3','h4','h5','h6'])):
             if node.find(['p','div','h1','h2','h3','h4','h5','h6','pre','code']) or node.find_parent(['pre','code']):continue
             if node.find_parent('blockquote',class_='blynger-citation'):continue
             match=directive.fullmatch(node.get_text())
             if not match:continue
-            iid=match.group(1);quoted,reference=self.quote_source(iid,item_id,docs,files)
+            iid=match.group(1);label=(match.group(2) or '').strip();quoted,reference=self.quote_source(iid,item_id,docs,files)
             transclusions.append(reference)
             origin_attr=' data-blyg-origin="'+html.escape(reference['origin'],quote=True)+'"' if reference.get('origin') else ''
-            block=BeautifulSoup('<blockquote class="blyg-transclusion" data-blyg-id="'+iid+'" data-blyg-version="'+str(reference['version'])+'"'+origin_attr+'>'+quoted+'</blockquote>','html.parser')
+            label_attr=' data-blyg-label="'+html.escape(label,quote=True)+'"' if label else ''
+            block=BeautifulSoup('<blockquote class="blyg-transclusion" data-blyg-id="'+iid+'" data-blyg-version="'+str(reference['version'])+'"'+origin_attr+label_attr+'>'+quoted+'</blockquote>','html.parser')
             node.replace_with(block)
-        return str(self.resolve_internal_links(soup,docs)),transclusions
+        return str(soup),transclusions
     def public_content(self,raw,content_html,name):
         """Do not echo an outside-article hero image into the human article."""
         page=BeautifulSoup(raw,'html.parser');content=BeautifulSoup(content_html,'html.parser')
@@ -1748,13 +1975,20 @@ class Studio:
                 if 'blyg-tk-gen' in content_html:
                     doc['generated']=generated or (old or local or {}).get('generated',[{'sources':[]}])
             docs[item_id]=doc
-        for iid,doc in docs.items():
-            self.normalize_partial_quotes(doc,stamp)
-            if re.search(r'(?<!!)\[\[[0-7][0-9a-hjkmnp-tv-z]{25}\]\]',doc['content_md']):
-                doc['content_html']=str(self.resolve_internal_links(BeautifulSoup(doc['content_html'],'html.parser'),docs))
-            self.normalize_item(doc)
-            self.pin_files(doc,files)
-            files[f'blyg/items/{iid}.json']=json.dumps(doc,ensure_ascii=False,indent=2)
+        for iid,doc in list(docs.items()):
+            # Valid Blyg 0.4 bytes stay put when this publication did not change
+            # the words. A queued pin or an old-shaped document still repairs.
+            kept=self.stable_public_item(doc,docs)
+            original=self.original_utf8(self.root/f'blyg/items/{iid}.json') if kept is not None else None
+            if kept is None or original is None:
+                self.align_item(doc,docs,stamp)
+                self.pin_files(doc,files,docs)
+                files[f'blyg/items/{iid}.json']=json.dumps(doc,ensure_ascii=False,indent=2)
+            else:
+                doc=kept
+                docs[iid]=doc
+                files[f'blyg/items/{iid}.json']=original
+                self.pin_files(doc,files,docs)
             if iid not in self.state['ids'].values():
                 context=fragment_context.get(iid)
                 if context:
@@ -1773,7 +2007,7 @@ class Studio:
                 files[rel]=self.place_versions(page,'fragment.html',doc)
         ordered=sorted(docs.values(),key=lambda d:(d['updated'],d['id']),reverse=True)
         updated=max((d['updated'] for d in ordered),default=stamp)
-        manifest={'blyg':BLYG_VERSION,'level':2,'generator':'Blynger/'+APP_VERSION,'generator_url':'https://github.com/BradyDale/Blynger','site':self.origin,'title':self.config['blyg_title'],'author':{'name':self.author,'links':[{'label':'Home','url':self.site}]},'feed':'feed.xml','items':'items/index.json','updated':updated}
+        manifest={'blyg':BLYG_VERSION,'level':2,'generator':'Blynger/'+APP_VERSION,'generator_url':'https://github.com/BradyDale/Blynger','site':self.origin,'title':self.config['blyg_title'],'author':{'name':self.author,'links':[{'label':'Home','url':self.site}]},'feed':'feed.xml','items':'items/index.json','item':'items/{id}.json','pin':'items/{id}/v{n}.json','updated':updated}
         webmention_endpoint=self.config.get('webmentions',{}).get('receiver_endpoint')
         if webmention_endpoint:manifest['webmention']=webmention_endpoint
         blogroll=self.blogroll_entries()
@@ -1844,7 +2078,7 @@ class Studio:
         self.save_state(); return files,docs
     def migrate(self):
         if any(d.get('fragments') for d in self.state['drafts'].values()):
-            raise ValueError('Use Review & publish to prepare your fragment drafts together with their parent posts.')
+            raise ValueError('Use Publish to prepare your fragment drafts together with their parent posts.')
         pages={p['name']:self.page(p['name'])['raw'] if p['name'] in self.state.get('fragment_posts',{}) else self.read(p['name']) for p in self.pages() if self.path(p['name']).exists()}
         files,docs=self.build(pages)
         for name,data in files.items(): atomic(self.root/name,data)
@@ -1899,24 +2133,29 @@ class Studio:
         if self.state.get('pending_publication'):
             raise ValueError('A publication is already being sent. Wait for it to finish before reviewing again.')
         self.require_current_fragment_files()
-        pending=set(self.state.get('series_pending',[]))
-        # Older workflows could retain membership while losing the pending
-        # marker. Detect the unmistakable missing-furniture state without
-        # parsing or validating unrelated Series members.
-        for key,record in self.state.get('series',{}).items():
-            for member in record.get('members',[]):
-                name=member.get('name')
+        active_series = {
+            key for key, record in self.state.get('series', {}).items()
+            if record.get('page') in self.state['drafts']
+            or any(member.get('name') in self.state['drafts'] for member in record.get('members', []))
+        }
+        pending = set(self.state.get('series_pending', [])) & active_series
+        # A missing decoration on staged work is recoverable. An unrelated
+        # historical member must never initiate an archive-wide migration.
+        for key in active_series:
+            record = self.state['series'][key]
+            for member in record.get('members', []):
+                name = member.get('name')
                 if not name:
                     continue
-                draft=self.state['drafts'].get(name)
-                raw=draft.get('raw','') if draft else self.read(name)
+                draft = self.state['drafts'].get(name)
+                raw = draft.get('raw', '') if draft else self.read(name)
                 if 'class="blynger-series-title"' not in raw:
                     pending.add(key)
                     break
         pending=sorted(pending)
         for key in pending:
             if key in self.state['series']:
-                self.reconcile_series(key)
+                self.reconcile_series(key,preserve_existing=True)
         if pending:
             self.state['series_pending']=[key for key in self.state.get('series_pending',[]) if key not in pending]
             self.save_state()
@@ -2053,6 +2292,14 @@ class Studio:
             p=self.data/'uploads'/Path(rel).name
             if p.exists(): changes[rel]=p.read_bytes()
         written=[]
+        # A generated protocol artifact can already exist in the website folder
+        # without ever having entered Git (for example, a pin reconstructed by
+        # an older recovery). Byte equality means it needs no filesystem write;
+        # it does not mean an approved commit already contains it. Keep every
+        # such generated path in the publication review until Git tracks it.
+        tracked_paths=self.tree_paths(self.git('rev-parse','HEAD'))
+        generated_untracked={name for name in changes
+                             if name not in tracked_paths and self.allowed(name)}
         for name,data in changes.items():
             payload=data if isinstance(data,bytes) else data.encode()
             target=self.root/name
@@ -2065,7 +2312,7 @@ class Studio:
             d['raw']=pages[name]; d['base']=digest(self.path(name).read_bytes())
         for name,saved in self.state.get('fragment_posts',{}).items():
             if name in changes: saved['file_hash']=digest(self.path(name).read_bytes())
-        self.state['pending']=sorted(set(self.state['pending'])|set(written))
+        self.state['pending']=sorted(set(self.state['pending'])|set(written)|generated_untracked)
         # Approval must refer to these exact private inputs, not to whatever
         # drafts and pins happen to exist when the review dialog is confirmed.
         # Generated dependencies belong to this staged publication even though
@@ -2078,12 +2325,12 @@ class Studio:
         return {'message':'Prepared local publication files. Nothing published.','changed':len(written)}
     def allowed(self,name):
         return bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.html',name) and name!='template.html') or name in ('.htaccess','feed.xml','sitemap.xml','robots.txt') or name.startswith('blyg/') or name in self.state['uploaded']
-    def refresh_review(self):
+    def refresh_review(self,comparisons=True):
         if self.state.get('pending_publication'):
             raise ValueError('A publication is already being sent. Wait for it to finish before reviewing again.')
         self.git('fetch','--no-tags',self.state['remote'],'refs/heads/'+self.state['branch'],timeout=60)
         hosted=self.git('rev-parse','FETCH_HEAD');head=self.git('rev-parse','HEAD')
-        self.state['review_base']=hosted;self.save_state();review=self.review()
+        self.state['review_base']=hosted;self.save_state();review=self.review(comparisons=comparisons)
         if hosted!=head:
             common=self.git('merge-base',head,hosted)
             hosted_changes={name for name in self.git('diff','--name-only',common,hosted).splitlines() if self.allowed(name)}
@@ -2104,14 +2351,25 @@ class Studio:
         if other: parts.append('Updated '+', '.join(other))
         if any(c['path'].startswith('images/') for c in changes): parts.append('Updated images')
         return '; '.join(parts) or ('Updated Blyg publication files' if changes else 'Retry previous publication')
+    def quick_publication_message(self,prefix,changes):
+        """Put an optional author note before the automatic change summary."""
+        if not isinstance(prefix,str) or len(prefix)>1000 or '\x00' in prefix:
+            raise ValueError('Use a publication note under 1,000 characters.')
+        automatic=self.publication_message(changes);prefix=prefix.strip()
+        message=(prefix+'; '+automatic) if prefix else automatic
+        if len(message)>1000:
+            raise ValueError('Shorten the publication note so the complete Git message stays under 1,000 characters.')
+        return message
     def publication_note(self,note):
         if not isinstance(note,str) or len(note)>1000 or '\x00' in note: raise ValueError('Use a publication note under 1,000 characters.')
         self.state['publication_note']=note.strip(); self.save_state()
         return {'message':'Publication note saved locally.'}
     def publication_status(self):
-        """Fast local signal for whether Review & publish has work to do."""
+        """Fast local signal for whether Publish has work to do."""
         if self.state.get('pending_publication'):return {'ready':True,'state':'uncertain','retryable':True,'message':'Publication status uncertain. The exact approved publication is preserved and safe to retry.'}
-        if any(draft.get('staged') for draft in self.state['drafts'].values()) or any(self.state.get('pins',{}).values()): return {'ready':True,'state':'saved_locally','retryable':False,'message':'Staged writing is ready to review.'}
+        if (any(draft.get('staged') for draft in self.state['drafts'].values())
+                or any(self.state.get('pins',{}).values()) or self.state.get('pending')):
+            return {'ready':True,'state':'saved_locally','retryable':False,'message':'Staged writing or prepared site repairs are ready to review.'}
         return {'ready':False,'state':'up_to_date','retryable':False,'message':'No local publication is waiting. The last completed push was finalized locally.'}
     def publication_inputs(self):
         """Compact identity of the private work used by the latest prepare."""
@@ -2121,7 +2379,7 @@ class Studio:
             'drafts':{name:fingerprint(draft) for name,draft in sorted(self.state['drafts'].items()) if draft.get('staged')},
             'pins':{iid:list(versions) for iid,versions in sorted(self.state.get('pins',{}).items()) if versions},
         }
-    def review(self):
+    def review(self,comparisons=True):
         base=self.state.get('review_base') or self.git('rev-parse','HEAD')
         tracked={n for n in self.git('diff','--name-only',base).splitlines() if self.allowed(n)}
         base_commit=self.git('rev-parse',base)
@@ -2141,17 +2399,18 @@ class Studio:
                 if name in tracked and name in base_paths and name in head_paths:changes.append({'path':name,'bytes':0,'new':False,'deleted':True})
                 continue
             changes.append({'path':name,'bytes':p.stat().st_size,'new':name not in base_paths,'deleted':False})
-        comparisons=[]
-        for c in changes:
-            if c['path'].endswith('.html') and not c['path'].startswith('blyg/') and not c['new']:
-                diff=self.git('diff','--no-ext-diff','--no-color','--ignore-space-at-eol',base,'--',c['path'])
-                if diff: comparisons.append({'path':c['path'],'diff':diff})
+        rendered_comparisons=[]
+        if comparisons:
+            for c in changes:
+                if c['path'].endswith('.html') and not c['path'].startswith('blyg/') and not c['new']:
+                    diff=self.git('diff','--no-ext-diff','--no-color','--ignore-space-at-eol',base,'--',c['path'])
+                    if diff: rendered_comparisons.append({'path':c['path'],'diff':diff})
         signed_settings={key:value for key,value in self.settings().items() if key!='drafts'}
         signature=digest(base+json.dumps([(c['path'],'deleted' if c.get('deleted') else digest((self.root/c['path']).read_bytes())) for c in changes])+head_commit+json.dumps(signed_settings,sort_keys=True))
         planned_pins=sum(1 for c in changes if re.fullmatch(r'blyg/items/[0-7][0-9a-hjkmnp-tv-z]{25}/v[0-9]+\.json',c['path']))
         report=(validate_surface(self.root,self.origin,strict_existing=False).public()
                 if (self.root/'blyg/blyg.json').is_file() else None)
-        return {'commit_message':self.state.get('publication_note') or self.publication_message(changes),'changes':changes,'comparisons':comparisons,'base':base,'signature':signature,'settings':self.settings(),'planned_pins':planned_pins,'conformance':report,'message':'Review these local files before publishing. Includes existing site edits.'}
+        return {'commit_message':self.state.get('publication_note') or self.publication_message(changes),'changes':changes,'comparisons':rendered_comparisons,'base':base,'signature':signature,'settings':self.settings(),'planned_pins':planned_pins,'conformance':report,'message':'Review these local files before publishing. Includes existing site edits.'}
     def begin_publication(self,signature,note=None):
         """Durably preserve an approved publication before any slow push.
 
@@ -2160,7 +2419,10 @@ class Studio:
         """
         if self.state.get('pending_publication'):
             raise ValueError('An approved publication is already waiting. Use Recovery to retry it.')
-        review=self.review()
+        # Recompute the signed file set, but do not build human-readable diffs.
+        # Diffs are presentation for the explicit Review path and are not part
+        # of publication approval or the commit signature.
+        review=self.review(comparisons=False)
         if signature!=review['signature']: raise ValueError('Files changed since review. Review again before publishing.')
         prepared=self.state.get('prepared_publication')
         current_inputs=self.publication_inputs()
@@ -2265,11 +2527,26 @@ class Studio:
             except (UnicodeDecodeError,ValueError,json.JSONDecodeError) as error:
                 issues.append(name+': '+str(error))
         return docs,issues
+    def _commit_webmention_pins(self,commit):
+        pattern=re.compile(r'blyg/items/([0-7][0-9a-hjkmnp-tv-z]{25})/v([1-9][0-9]*)\.json')
+        names={name for name in self.tree_paths(commit) if pattern.fullmatch(name)}
+        blobs=self.commit_files(commit,names);pins={};issues=[]
+        for name,raw in blobs.items():
+            try:
+                pin=json.loads(raw);match=pattern.fullmatch(name);key=(match.group(1),int(match.group(2)))
+                if (not isinstance(pin,dict) or pin.get('id')!=key[0]
+                    or pin.get('version')!=key[1] or pin.get('pinned') is not True):
+                    raise ValueError('pin identity does not match its path')
+                pins[key]=pin
+            except (UnicodeDecodeError,ValueError,json.JSONDecodeError) as error:
+                issues.append(name+': '+str(error))
+        return pins,issues
     def _commit_registry_artifact(self,commit,previous_commit):
         manifest=json.loads(self.commit_bytes(commit,'blyg/blyg.json'))
         documents,issues=self._commit_webmention_documents(commit)
+        pins,pin_issues=self._commit_webmention_pins(commit);issues.extend(pin_issues)
         if issues:raise ValueError('Could not build exact inbound registry: '+'; '.join(issues))
-        return build_registry_artifact(commit,previous_commit,self.origin,manifest,list(documents.values()))
+        return build_registry_artifact(commit,previous_commit,self.origin,manifest,list(documents.values()),list(pins.values()))
     def ensure_inbound_registry_reconciliation(self,pending,checkpoint=None):
         """Durably retain exact hosted work before publication finalization."""
         commit=self.git('rev-parse',pending['commit']);previous=self.git('rev-parse',pending['base'])
@@ -2278,14 +2555,40 @@ class Studio:
         if commit==previous or 'blyg/blyg.json' not in self.tree_paths(commit):return None
         completed=self.state.get('inbound_registry_reconciled_commits',[])
         records=self.state.setdefault('inbound_registry_reconciliations',[])
-        artifact=self._commit_registry_artifact(commit,previous)
+        try:
+            artifact=self._commit_registry_artifact(commit,previous)
+        except Exception as error:
+            # The Git push is the primary publication. A receiver registry is
+            # derived, secondary infrastructure and must never leave an exact
+            # commit permanently stuck after the host has accepted it. Keep the
+            # last installed registry, retain a bounded operational diagnostic,
+            # and let a later corrected publication supersede it.
+            recovered=[]
+            for name in self.git('ls-files','--others','--exclude-standard','--','blyg/items').splitlines():
+                match=re.fullmatch(r'blyg/items/([0-7][0-9a-hjkmnp-tv-z]{25})/v([1-9][0-9]*)\.json',name)
+                path=(self.root/name).resolve()
+                if not match or not path.is_relative_to(self.root) or not path.is_file():continue
+                try:pin=json.loads(path.read_text())
+                except (OSError,UnicodeDecodeError,json.JSONDecodeError):continue
+                if (isinstance(pin,dict) and pin.get('id')==match.group(1)
+                        and pin.get('version')==int(match.group(2)) and pin.get('pinned') is True):
+                    recovered.append(name)
+            self.state['pending']=sorted(set(self.state.get('pending',[]))|set(recovered))
+            repair=(' A verified local pin was queued for the next publication.' if recovered else '')
+            warning='Inbound Webmention targets stayed on their previous verified registry: '+str(error)+repair
+            diagnostics=self.state.setdefault('inbound_registry_diagnostics',[])
+            diagnostics.append(commit[:12]+': '+warning[:1800])
+            self.state['inbound_registry_diagnostics']=diagnostics[-100:]
+            self.save_state()
+            self._webmention_checkpoint(checkpoint,'registry_reconciliation_skipped',commit=commit,previous_commit=previous,error=str(error))
+            return warning
         if commit not in completed and not any(record['commit']==commit for record in records):
             records.append({'commit':commit,'previous_commit':previous,
                             'registry_sha256':artifact['registry_sha256'],
                             'created_at':now(),'error':None})
             self.save_state()
         self._webmention_checkpoint(checkpoint,'after_registry_reconciliation_record',commit=commit,previous_commit=previous)
-        return commit
+        return None
     def reconcile_inbound_registry(self,installer,checkpoint=None):
         """Install exact-commit registries idempotently through an injected transport."""
         completed=[]
@@ -2354,7 +2657,7 @@ class Studio:
         return {'completed':completed}
     def finish_publication(self,pending,webmention_checkpoint=None,webmention_queue_factory=OutboundQueue):
         self.ensure_webmention_reconciliation(pending,webmention_checkpoint)
-        self.ensure_inbound_registry_reconciliation(pending,webmention_checkpoint)
+        registry_warning=self.ensure_inbound_registry_reconciliation(pending,webmention_checkpoint)
         commit=pending['commit'];inherited=pending.get('inherited',[]);commit_paths=self.tree_paths(commit)
         approved_drafts=pending.get('drafts',{})
         cleanup=self.state.get('prepared_cleanup') if isinstance(self.state.get('prepared_cleanup'),dict) else {}
@@ -2450,4 +2753,5 @@ class Studio:
         try:self.reconcile_webmentions(webmention_checkpoint,webmention_queue_factory)
         except Exception as error:
             warning=' Webmention notifications remain safely queued for reconciliation: '+str(error)
-        return {'message':'Git push completed. The host’s deployment hook determines when the public site updates.'+warning}
+        registry_note=(' '+registry_warning) if registry_warning else ''
+        return {'message':'Git push completed. The host’s deployment hook determines when the public site updates.'+registry_note+warning}

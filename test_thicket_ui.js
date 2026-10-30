@@ -26,6 +26,14 @@ assert.strictEqual(
   'STUB',
 );
 assert.strictEqual(
+  ui.incomingType({ relation: 'link', mention_class: 'notice', kind: 'new', status: 'verified' }),
+  'LINK',
+);
+assert.strictEqual(
+  ui.incomingType({ relation: 'stub', mention_class: 'notice', kind: 'new', status: 'verified' }),
+  'REPOST',
+);
+assert.strictEqual(
   ui.incomingType({ relation: null, kind: 'withdrawal', status: 'gone' }),
   'WITHDRAWAL',
 );
@@ -42,6 +50,14 @@ const mixed = ui.combined(
   { activities: [{ at: '2026-10-20T13:00:00Z', title: 'In' }] },
 );
 assert.deepStrictEqual([...mixed.map((row) => row.direction)], ['IN', 'OUT']);
+assert.strictEqual(
+  ui.responses({ activities: [{ mention_class: 'response' }, { mention_class: 'notice' }] }).length,
+  1,
+);
+assert.strictEqual(
+  ui.notices({ activities: [{ mention_class: 'response' }, { mention_class: 'notice' }] }).length,
+  1,
+);
 assert.strictEqual(
   ui.incomingCaption({ availability: 'not_synchronized' }),
   'Not yet synchronized.',

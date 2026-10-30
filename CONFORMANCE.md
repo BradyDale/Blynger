@@ -1,7 +1,14 @@
 # Blyg conformance in Blynger
 
-Blynger targets the living Blyg 0.3 Level 2 publication and reader contract.
+Blynger targets the draft Blyg 0.4 Level 2 publication and reader contract.
 Conformance is judged from the final static files, not from the editor's intent.
+
+The 0.15.0 transition adopts manifest-located feed, archive, current-item and
+pin surfaces; optional bracket labels; exact ordered `links[]`; absolute item
+pages; required current-item media arrays; and generated-source references.
+Existing 0.3 publication notes below remain as historical audit evidence rather
+than a statement of the current wire version. Public Webmention response and
+notice displays are deliberately not part of this transition.
 
 The 0.9.27 review used the published living 0.3 text and its source revision
 `8e7a0800b224395232120299b952c3b6937e5bfa`, the toolkit proposal at
@@ -25,6 +32,14 @@ the protocol feed, content hashes, version sequences, withdrawals, absolute
 HTML addresses, whole-item directive/transclusion agreement, Stub version
 agreement, generation disclosure, and the absence of private quote metadata.
 A required-rule failure stops preparation before any public file changes.
+
+Before that independent check, Blynger 0.15.2 performs a bounded compatibility
+normalization for records created by older releases. It may reorder an existing
+`transclusions[]` array only when the same references can be matched exactly to
+the unchanged visible wrappers, reconcile `generated[]` to the visible generated
+passages, and remove the pre-0.4 `media` member from frozen pins. It does not
+rewrite authored Markdown or HTML, item identities, content versions, timestamps
+or hashes. Ambiguous mismatches remain errors at the independent gate.
 
 The checker intentionally has no dependency on `core.py`: it observes only the
 same bytes a reader would. It is a bounded implementation check, not a proof of

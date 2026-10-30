@@ -12,7 +12,6 @@ from .shared import (
     RETRY_DELAYS,
     _absolute_url,
     _candidate,
-    _origin,
 )
 
 
@@ -130,19 +129,11 @@ def discover_endpoint(candidate, fetcher=fetch_bounded, endpoint_guard=public_ur
     if target is None:
         if manifest is None or manifest_url is None:
             return None
-        expected_item = _item_url(manifest_url, manifest, event["target_id"])
-        final, body, _, _ = fetcher(expected_item, method="GET", limit=1024 * 1024)
-        if _absolute_url(final, keep_fragment=False) != expected_item:
-            raise ValueError("The target item document redirected away from its manifest location.")
-        item = _json_document(body, "The target item document")
-        if item.get("id") != event["target_id"]:
-            raise ValueError("The target item document has the wrong identity.")
-        if _origin(item.get("origin") or event["target_origin"]) != event["target_origin"]:
-            raise ValueError("The target item document has the wrong origin.")
-        page = item.get("page")
-        if not isinstance(page, str) or not page.strip():
-            raise ValueError("The target item document has no public page.")
-        target = _absolute_url(urljoin(event["target_origin"], page))
+        # A reference does not carry the target's presentation URL.  Blyg 0.4
+        # therefore names the canonical item document as the Webmention target
+        # when the sender does not already hold a page URL.  Do not fetch the
+        # item merely to guess or recover a presentation address.
+        target = _item_url(manifest_url, manifest, event["target_id"])
 
     if manifest_endpoint is not None:
         endpoint = _guarded_endpoint(manifest_endpoint, manifest_url, endpoint_guard)

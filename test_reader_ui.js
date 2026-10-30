@@ -29,6 +29,7 @@ const opened = ui.openedItem(
       changelog: [{ version: 1, pinned: true }],
       generated: [{ model: 'model', sources: [] }],
     },
+    html: '<p>Continuous Reader words.</p>',
     fragments: [{ index: 0 }],
   },
   esc,
@@ -39,7 +40,8 @@ assert.strictEqual(opened.native, true);
 assert.deepStrictEqual([...opened.pins], [1]);
 assert.match(opened.html, /Backward:/);
 assert.match(opened.html, /Forward:/);
-assert.match(opened.html, /readerFrame/);
+assert.match(opened.html, /readerContent/);
+assert.match(opened.html, /Continuous Reader words/);
 assert.match(opened.html, /What the author disclosed/);
 assert.match(opened.html, /Fragments in this thread/);
 assert.match(opened.html, /Open original/);
@@ -59,6 +61,20 @@ assert.match(unpinned.html, /id="forkReading" class="unavailable" aria-disabled=
 assert.match(unpinned.html, /title="Requires a pinned post"/);
 assert.match(ui.savedTime(null), /before date tracking/);
 
+const appSource = fs.readFileSync('static/app.js', 'utf8');
+const contentSource = fs.readFileSync('static/reader-content.js', 'utf8');
+const styleSource = fs.readFileSync('static/style.css', 'utf8');
+assert.match(appSource, /async function openReaderLink/);
+assert.match(appSource, /allow_subscription: allowSubscription/);
+assert.match(appSource, /openReaderLink\(data\.href, blygItem\)/);
+assert.match(appSource, /async function copyMailLink/);
+assert.match(appSource, /navigator\.clipboard\.writeText\(address\)/);
+assert.match(appSource, /copyMailLink\(data\.href\)/);
+assert.match(contentSource, /BlyngerReaderContent/);
+assert.match(contentSource, /handlers\.link/);
+assert.match(styleSource, /\.reader-inline-content/);
+assert.doesNotMatch(opened.html, /<iframe/);
+
 const container = {
   children: [],
   replaceChildren() {
@@ -73,6 +89,7 @@ context.document = {
   createElement() {
     return {
       className: '',
+      dataset: {},
       innerHTML: '',
       querySelector() {
         return {
@@ -99,6 +116,7 @@ ui.renderItems(
       saved: false,
       liked: false,
       reaction: null,
+      reactions: ['🤯', '💭'],
       revision_count: 3,
       pin_count: 2,
       pace_rise: 1,
@@ -107,7 +125,7 @@ ui.renderItems(
     },
   ],
   esc,
-  { read() {}, quote() {}, stub() {}, save() {}, like() {}, react() {}, isolate() {} },
+  { read() {}, quote() {}, stub() {}, save() {}, like() {}, react() {}, isolate() {}, context() {} },
 );
 assert.match(container.children[0].className, /reader-revisions-3/);
 assert.doesNotMatch(container.children[0].innerHTML, /class="read-item"/);
@@ -118,10 +136,13 @@ assert.match(container.children[0].innerHTML, /reader-actions-center/);
 assert.match(container.children[0].innerHTML, /reader-actions-right/);
 assert.strictEqual(typeof container.children[0].onclick, 'function');
 assert.strictEqual(typeof container.children[0].onkeydown, 'function');
+assert.strictEqual(typeof container.children[0].oncontextmenu, 'function');
 assert.match(container.children[0].innerHTML, /REVISED · v2/);
 assert.match(container.children[0].innerHTML, /2 pinned versions/);
 assert.match(container.children[0].innerHTML, /moved up 1 place/);
 assert.match(container.children[0].innerHTML, /Skip this item/);
+assert.match(fs.readFileSync('static/reader-ui.js', 'utf8'), /new Set/);
+assert.match(styleSource, /\.reader-row\.reader-native[\s\S]*background: #dcece4/);
 context.document = oldDocument;
 
 console.log('reader UI tests passed');

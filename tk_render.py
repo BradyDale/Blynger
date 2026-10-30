@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup, NavigableString
 from core import clean
 
 URL=re.compile(r'(?<![\w"\'=])https?://[^\s<>]+')
+DOMAIN_LINK=re.compile(r'^(?:www\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:[/?#].*)?$')
 
 def linkify(markup):
     """Link bare web addresses without reintroducing a second sanitizer."""
@@ -25,8 +26,17 @@ def linkify(markup):
     return str(soup)
 
 
+def normalize_links(markup):
+    """Turn model-written domain links into absolute HTTPS destinations."""
+    soup=BeautifulSoup(markup,'html.parser')
+    for link in soup.find_all('a',href=True):
+        href=link['href'].strip()
+        if DOMAIN_LINK.fullmatch(href):link['href']='https://'+href
+    return str(soup)
+
+
 def render_tk(prose):
     # Escape raw HTML before Markdown interpretation; sanitize the resulting links.
     rendered=markdown.markdown(html.escape(prose,quote=False),extensions=['sane_lists','nl2br'])
-    rendered=linkify(clean(rendered))
+    rendered=normalize_links(linkify(clean(rendered)))
     return '<div class="blyg-tk-gen">'+rendered+'</div>'

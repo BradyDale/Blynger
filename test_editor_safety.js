@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const { SerialQueue, LatestRequest } = require('./static/editor-safety.js');
 
 function deferred() {
@@ -108,11 +109,21 @@ function testDelayedMarkdownCannotCrossDocuments() {
   );
 }
 
+function testPublishedWritingContextActionsRemainReachable() {
+  const source = fs.readFileSync('static/app.js', 'utf8');
+  assert.match(source, /action\('Stub'/);
+  assert.match(source, /action\('Transclude'/);
+  assert.match(source, /action\(\s*'Fork'/);
+  assert.match(source, /b\.oncontextmenu = \(event\) => \{[\s\S]*?showLocalActions\(item,/);
+  assert.match(source, /\$\('editor'\)\.addEventListener\('contextmenu'/);
+}
+
 (async () => {
   await testSerialAndOutOfOrderSaves();
   await testFailureCanRetryWithoutChangingPayload();
   testDelayedPageLoadsAndPendingTyping();
   testDelayedMarkdownCannotCrossDocuments();
+  testPublishedWritingContextActionsRemainReachable();
   console.log('editor safety tests passed');
 })().catch((error) => {
   console.error(error);

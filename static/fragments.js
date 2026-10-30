@@ -651,6 +651,73 @@ class FragmentEditor {
     this.tk();
     return generated;
   }
+  insertDialogue(content, selected) {
+    const e = this.editor;
+    e.focus();
+    const selection = getSelection();
+    let r =
+      selected && e.contains(selected.startContainer) && e.contains(selected.endContainer)
+        ? selected.cloneRange()
+        : null;
+    if (!r) {
+      r = document.createRange();
+      r.selectNodeContents(e);
+      r.collapse(false);
+    }
+    const top = (n) => {
+      if (n.nodeType !== 1) n = n.parentElement;
+      while (n && n !== e && n.parentElement !== e) n = n.parentElement;
+      return n === e ? null : n;
+    };
+    const first = top(r.startContainer),
+      last = top(r.endContainer);
+    if ((first && this.excluded(first)) || (last && this.excluded(last))) {
+      this.notify(
+        'Insert the dialogue in the post body, outside the title and signature.',
+      );
+      return null;
+    }
+    r.deleteContents();
+    const block = top(r.startContainer),
+      holder = document.createElement('div'),
+      inserted = [];
+    holder.innerHTML = content;
+    inserted.push(...holder.children);
+    if (!inserted.length) return null;
+    if (block) {
+      const tailRange = r.cloneRange();
+      tailRange.setEndAfter(block.lastChild || block);
+      const tail = block.cloneNode(false);
+      tail.removeAttribute('data-fragment-block');
+      tail.removeAttribute('data-blynger-block');
+      tail.removeAttribute('data-blynger-fragment');
+      tail.removeAttribute('data-blynger-break');
+      tail.append(tailRange.extractContents());
+      let anchor = block;
+      for (const node of inserted) {
+        anchor.after(node);
+        anchor = node;
+      }
+      if (tail.textContent.trim() || tail.querySelector('img,video,audio')) anchor.after(tail);
+      if (!block.textContent.trim() && !block.querySelector('img,video,audio')) {
+        if (tail.isConnected) tail.dataset.fragmentBlock = block.dataset.fragmentBlock;
+        block.remove();
+      }
+    } else {
+      const fragment = document.createDocumentFragment();
+      for (const node of inserted) fragment.append(node);
+      r.insertNode(fragment);
+    }
+    this.assign();
+    const lastInserted = inserted[inserted.length - 1],
+      caret = document.createRange();
+    caret.selectNodeContents(lastInserted);
+    caret.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    this.tk();
+    return inserted.filter((node) => node.classList.contains('blyg-tk-gen'));
+  }
   tk() {
     if (this.meta?.purpose === 'openers') {
       this.assign();

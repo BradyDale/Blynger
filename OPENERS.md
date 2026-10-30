@@ -40,7 +40,7 @@ Post dividers now designate body sections directly on first use. Explicitly unma
 
 ## Interoperability
 
-The current authoritative contract is the living [Blyg 0.3 specification](https://blygger.org/spec/0.3/), consulted at source revision `e6740e8`. The earlier comparison implementation was [aneeshsathe/blygger-desktop](https://github.com/aneeshsathe/blygger-desktop/tree/6151e4dbccc7d72c20d2511860088c1b29c82acf), commit `6151e4dbccc7d72c20d2511860088c1b29c82acf`.
+The current publication contract is the draft [Blyg 0.4 specification](https://blygger.org/spec/0.4/). The earlier 0.3 comparison implementation was [aneeshsathe/blygger-desktop](https://github.com/aneeshsathe/blygger-desktop/tree/6151e4dbccc7d72c20d2511860088c1b29c82acf), commit `6151e4dbccc7d72c20d2511860088c1b29c82acf`.
 
 Both use stable fragment IDs, integer versions, Markdown hashes, rendered HTML, and ID/version provenance. Ordinary Openers emit `kind: fragment`; a response Opener with immutable `stub_of` emits the protocol-required `kind: thread`. There is never an Opener-specific kind. Machine-readable `/blyg/items/{id}.json` and human-readable standalone pages remain separate.
 

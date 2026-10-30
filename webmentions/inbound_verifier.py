@@ -38,7 +38,8 @@ AUTHOR_STRING_LIMIT = 2048
 AUTHOR_NAME_LIMIT = 200
 EXPORT_LIMIT = 16 * 1024 * 1024
 EXPORT_RECORDS = 2000
-RELATIONS = ("stub", "transclusion", "fork", "source")
+RELATIONS = ("stub", "transclusion", "fork", "source", "link")
+MENTION_CLASSES = ("response", "notice")
 ERRORS = {
     "fetch_failed",
     "source_gone",
@@ -209,6 +210,36 @@ def _reference(value, target_origin, target_id, *, source_origin, require_origin
         return False
 
 
+def _link_reference(value, target_origin, target_id, source_origin):
+    if not isinstance(value, dict) or set(value) - {"id", "origin"} or value.get("id") != target_id:
+        return False
+    try:
+        return _origin(value.get("origin") or source_origin) == target_origin
+    except VerificationFailure:
+        return False
+
+
+def _has_authored_words(document):
+    """Ignore transclusion directives and their attached selection quotes."""
+    markdown = document.get("content_md")
+    if not isinstance(markdown, str):
+        return True
+    directive = re.compile(
+        r"^\s*!\[\[[0-7][0-9a-hjkmnp-tv-z]{25}(?:\s*\|\s*[^\]\r\n]+)?\]\]\s*$"
+    )
+    after_directive = False
+    for line in markdown.splitlines():
+        if directive.fullmatch(line):
+            after_directive = True
+            continue
+        if after_directive and (not line.strip() or re.match(r"^\s*>", line)):
+            continue
+        after_directive = False
+        if line.strip():
+            return True
+    return False
+
+
 def _relation(document, target, receiver_origin):
     source_origin = _origin(document["origin"])
     target_id = target["id"]
@@ -237,12 +268,31 @@ def _relation(document, target, receiver_origin):
                 for value in sources
             ):
                 return "source"
+    links = document.get("links", [])
+    if document.get("blyg") == "0.4" and isinstance(links, list) and any(
+        _link_reference(value, receiver_origin, target_id, source_origin)
+        for value in links
+    ):
+        return "link"
     raise VerificationFailure("no_relation")
+
+
+def _mention_class(document, relation):
+    if relation == "link":
+        return "notice"
+    if relation in ("stub", "transclusion") and not _has_authored_words(document):
+        return "notice"
+    return "response"
 
 
 def _target(registry, url):
     for row in registry["items"]:
         if url in (row["page"], row["document"]):
+            return row
+        if any(
+            url in (target["page"], target["document"])
+            for target in row.get("pin_targets", [])
+        ):
             return row
     raise VerificationFailure("invalid_source")
 
@@ -344,6 +394,7 @@ class StructuralVerifier:
                 raise VerificationFailure("invalid_document") from error
         return {
             "relation": relation,
+            "mention_class": _mention_class(document, relation),
             "source_item_id": iid,
             "source_origin": source_origin,
             "source_version": version,
@@ -381,11 +432,14 @@ def validate_verification_record(value):
         "source_author", "source_page", "verified_at", "error",
     }
     fields = legacy_fields | {"checked_at", "attempt_error"}
-    if not isinstance(value, dict) or value.get("schema") not in (1, 2):
+    current_fields = fields | {"mention_class"}
+    if not isinstance(value, dict) or value.get("schema") not in (1, 2, 3):
         raise ValueError("Invalid inbound verification record.")
     if value["schema"] == 1 and set(value) == legacy_fields:
-        value = {**value, "schema": 2, "checked_at": value["verified_at"], "attempt_error": value["error"]}
-    elif value["schema"] != 2 or set(value) != fields:
+        value = {**value, "checked_at": value["verified_at"], "attempt_error": value["error"]}
+    if value["schema"] in (1, 2) and set(value) == fields:
+        value = {**value, "schema": 3, "mention_class": "response" if value["status"] == "verified" else None}
+    elif value["schema"] != 3 or set(value) != current_fields:
         raise ValueError("Invalid inbound verification record.")
     if value["phase"] not in ("provisional", "final") or value["status"] not in ("verified", "gone", "failed"):
         raise ValueError("Invalid inbound verification record.")
@@ -406,7 +460,7 @@ def validate_verification_record(value):
     if value["attempt_error"] is not None and value["attempt_error"] not in ERRORS:
         raise ValueError("Invalid inbound verification record.")
     if value["status"] == "verified":
-        if value["relation"] not in RELATIONS or value["error"] is not None:
+        if value["relation"] not in RELATIONS or value["mention_class"] not in MENTION_CLASSES or value["error"] is not None:
             raise ValueError("Invalid inbound verification record.")
         if (
             not isinstance(value["source_item_id"], str)
@@ -432,6 +486,8 @@ def validate_verification_record(value):
                 raise ValueError("Invalid inbound verification record.") from error
     elif value["error"] not in ERRORS:
         raise ValueError("Invalid inbound verification record.")
+    elif value["status"] == "gone" and value["mention_class"] not in (None,) + MENTION_CLASSES:
+        raise ValueError("Invalid inbound verification record.")
     elif any(
         value[name] is not None
         for name in (
@@ -439,6 +495,8 @@ def validate_verification_record(value):
             "source_kind", "source_author", "source_page",
         )
     ):
+        raise ValueError("Invalid inbound verification record.")
+    elif value["status"] == "failed" and value["mention_class"] is not None:
         raise ValueError("Invalid inbound verification record.")
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -611,7 +669,7 @@ def write_verification_export(path, store, clock=time.time):
 def _blank(row, status, error, clock):
     checked = int(clock())
     return {
-        "schema": 2,
+        "schema": 3,
         "key": row["key"],
         "source": row["source"],
         "target": row["target"],
@@ -619,6 +677,7 @@ def _blank(row, status, error, clock):
         "phase": "provisional",
         "receipt_count": row["received_count"],
         "relation": None,
+        "mention_class": None,
         "source_item_id": None,
         "source_origin": None,
         "source_version": None,
@@ -667,7 +726,7 @@ class InboundVerifierWorker:
             if not deterministic and prior and prior["status"] in ("verified", "gone"):
                 result = copy.deepcopy(prior)
                 result.update(
-                    schema=2,
+                    schema=3,
                     phase="provisional",
                     receipt_count=row["received_count"],
                     checked_at=int(self.clock()),
@@ -676,6 +735,8 @@ class InboundVerifierWorker:
             else:
                 status = "gone" if deterministic and prior and prior["status"] in ("verified", "gone") else "failed"
                 result = _blank(row, status, error.code, self.clock)
+                if status == "gone":
+                    result["mention_class"] = prior.get("mention_class")
             if not deterministic:
                 result["phase"] = "final"
                 self.store.write(result)

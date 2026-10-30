@@ -42,8 +42,10 @@ def _reference(value, relation, own_origin):
         }
     if not ID.fullmatch(str(value.get("id", ""))):
         raise ValueError(f"{relation} reference has an invalid id.")
-    if type(value.get("version")) is not int or value["version"] < 1:
+    if relation != "link" and (type(value.get("version")) is not int or value["version"] < 1):
         raise ValueError(f"{relation} reference has an invalid version.")
+    if relation == "link" and set(value) - {"id", "origin"}:
+        raise ValueError("link reference has unsupported fields.")
     origin = _origin(value.get("origin") or own_origin)
     cited = value.get("cited")
     target_url = cited.get("url") if isinstance(cited, dict) else None
@@ -56,7 +58,7 @@ def _reference(value, relation, own_origin):
         "target_url": target_url,
         "target_origin": origin,
         "target_id": value["id"],
-        "target_version": value["version"],
+        "target_version": None if relation == "link" else value["version"],
     }
 
 
@@ -80,6 +82,11 @@ def _raw_references(document):
                 if not isinstance(sources, list):
                     sources = [None]
                 rows.extend(("source", value) for value in sources)
+        links = document.get("links", [])
+        if not isinstance(links, list):
+            rows.append(("link", None))
+        else:
+            rows.extend(("link", value) for value in links)
     return rows
 
 

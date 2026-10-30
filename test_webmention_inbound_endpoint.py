@@ -39,30 +39,94 @@ def document(kind="thread", page="t/" + IID + "/"):
 
 
 class TargetRegistryTests(unittest.TestCase):
-    def test_current_page_and_document_are_the_only_targets(self):
+    def test_current_and_pinned_page_and_document_are_targets(self):
+        pin_document = OWN + "items/" + IID + "/v1.json"
+        pin_page = PAGE + "v1/"
         registry = build_target_registry(OWN, {"blyg": "0.3", "site": OWN}, [document()])
-        self.assertEqual(registry["targets"], [ITEM, PAGE])
-        self.assertEqual(registry["schema"], 2)
-        self.assertEqual(registry["items"], [{"id": IID, "kind": "thread", "page": PAGE, "document": ITEM, "pins": [1]}])
+        self.assertEqual(registry["targets"], [ITEM, pin_document, PAGE, pin_page])
+        self.assertEqual(registry["schema"], 3)
+        self.assertEqual(registry["items"], [{
+            "id": IID,
+            "kind": "thread",
+            "page": PAGE,
+            "document": ITEM,
+            "pins": [1],
+            "pin_targets": [{"version": 1, "document": pin_document, "page": pin_page}],
+        }])
         self.assertEqual(validate_target_registry(registry, OWN), registry)
         self.assertNotIn("https://example.com/97.html", registry["targets"])
-        self.assertNotIn(OWN + "items/" + IID + "/v1.json", registry["targets"])
+
+    def test_relocated_surfaces_and_absolute_page_are_membership_not_location(self):
+        page = "https://www.example.net/notes/one/"
+        manifest = {
+            "blyg": "0.4",
+            "site": OWN,
+            "item": "https://api.example.net/items/{id}?format=blyg",
+            "pin": "https://archive.example.net/items/{id}/versions/{n}?format=blyg",
+        }
+        registry = build_target_registry(OWN, manifest, [document(page=page)])
+        self.assertEqual(registry["targets"], [
+            "https://api.example.net/items/" + IID + "?format=blyg",
+            "https://archive.example.net/items/" + IID + "/versions/1?format=blyg",
+            OWN + "t/" + IID + "/v1/",
+            page,
+        ])
+        self.assertEqual(validate_target_registry(registry, OWN), registry)
+
+    def test_existing_schema_two_registry_remains_valid_during_upgrade(self):
+        legacy = {
+            "schema": 2,
+            "origin": OWN,
+            "item_count": 1,
+            "targets": [ITEM, PAGE],
+            "items": [{"id": IID, "kind": "thread", "page": PAGE, "document": ITEM, "pins": [1]}],
+        }
+        self.assertEqual(validate_target_registry(legacy, OWN), legacy)
+
+    def test_pinned_page_uses_the_pinned_versions_kind(self):
+        current = document()
+        pin = {
+            "blyg": "0.3",
+            "id": IID,
+            "kind": "fragment",
+            "origin": OWN,
+            "version": 1,
+            "pinned": True,
+        }
+        registry = build_target_registry(
+            OWN,
+            {"blyg": "0.3", "site": OWN},
+            [current],
+            [pin],
+        )
+        self.assertIn(OWN + "f/" + IID + "/v1/", registry["targets"])
+        self.assertNotIn(OWN + "t/" + IID + "/v1/", registry["targets"])
 
     def test_withdrawn_items_remain_targets_and_04_template_is_expanded(self):
         withdrawn = build_target_registry(OWN, {"blyg": "0.3", "site": OWN}, [document("withdrawn")])
-        self.assertEqual(withdrawn["targets"], [ITEM, PAGE])
+        self.assertIn(ITEM, withdrawn["targets"])
+        self.assertIn(PAGE, withdrawn["targets"])
+        self.assertIn(OWN + "items/" + IID + "/v1.json", withdrawn["targets"])
         custom = build_target_registry(
             OWN,
-            {"blyg": "0.4", "site": OWN, "item": "api/items/{id}?format=blyg"},
+            {
+                "blyg": "0.4",
+                "site": OWN,
+                "item": "api/items/{id}?format=blyg",
+                "pin": "api/items/{id}/versions/{n}?format=blyg",
+            },
             [document()],
         )
         self.assertIn(OWN + "api/items/" + IID + "?format=blyg", custom["targets"])
+        self.assertIn(OWN + "api/items/" + IID + "/versions/1?format=blyg", custom["targets"])
 
     def test_legacy_same_site_url_remains_a_target_without_rewriting_item(self):
         legacy = {**document(), "blyg": "0.3", "url": "https://example.com/67.html"}
         legacy.pop("page")
         registry = build_target_registry(OWN, {"blyg": "0.3", "site": OWN}, [legacy])
-        self.assertEqual(registry["targets"], ["https://example.com/67.html", ITEM])
+        self.assertIn("https://example.com/67.html", registry["targets"])
+        self.assertIn(ITEM, registry["targets"])
+        self.assertIn(OWN + "items/" + IID + "/v1.json", registry["targets"])
         self.assertEqual(validate_target_registry(registry, OWN), registry)
 
     def test_rejects_foreign_duplicate_or_malformed_items_and_templates(self):
@@ -71,7 +135,6 @@ class TargetRegistryTests(unittest.TestCase):
             [document(), document()],
             [{**document(), "origin": "https://elsewhere.example/blyg/"}],
             [{**document(), "kind": "mystery"}],
-            [{**document(), "page": "https://elsewhere.example/post"}],
             [{**document(), "page": "", "url": "https://elsewhere.example/post"}],
         )
         for documents in cases:
@@ -81,6 +144,8 @@ class TargetRegistryTests(unittest.TestCase):
             build_target_registry(OWN, {**manifest, "item": "api/{id}.json"}, [document()])
         with self.assertRaises(ValueError):
             build_target_registry(OWN, {"blyg": "0.4", "site": OWN, "item": "api/{other}"}, [document()])
+        with self.assertRaises(ValueError):
+            build_target_registry(OWN, {"blyg": "0.4", "site": OWN, "pin": "api/{id}/v{other}"}, [document()])
 
     def test_atomic_registry_is_read_only_to_the_web_group(self):
         with tempfile.TemporaryDirectory() as temporary:

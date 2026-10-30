@@ -23,13 +23,17 @@ class TKLinkTests(unittest.TestCase):
         hostile=BeautifulSoup(render_tk('[bad](javascript:alert) <script>alert(1)</script> <img src=x onerror=alert(1)>'),'html.parser')
         self.assertIsNone(hostile.find('script'));self.assertIsNone(hostile.find('img'))
         self.assertFalse(any(a.get('href','').startswith('javascript:') for a in hostile.find_all('a')))
+        domain=BeautifulSoup(render_tk('[research](nature.com/articles/example)'),'html.parser')
+        self.assertEqual(domain.find('a')['href'],'https://nature.com/articles/example')
     def test_generated_link_survives_test_post_publication(self):
         def fake_codex(args,**kwargs):
             Path(args[args.index('-o')+1]).write_text(PROSE)
             return SimpleNamespace(returncode=0,stderr='')
         with patch('app.subprocess.run',side_effect=fake_codex) as run:
-            result=generate(self.studio,'Include a source link.','','1.html')
+            result=generate(self.studio,'Include a source link.','AUTHOR:\nQuestion.\n\nASSISTANT:\nEarlier answer.','1.html')
         self.assertIn('--model',run.call_args.args[0])
+        self.assertIn('complete conversation transcript',run.call_args.kwargs['input'])
+        self.assertIn('ASSISTANT:\nEarlier answer.',run.call_args.kwargs['input'])
         self.assertEqual(result['provenance']['model'],self.studio.config['tk_model'])
         self.assertEqual(BeautifulSoup(result['html'],'html.parser').find('a',string='the source')['href'],URL)
         d=self.studio.create('TK link regression test')
@@ -63,13 +67,25 @@ class TKLinkTests(unittest.TestCase):
         published=(self.root/'1.html').read_text()
         self.assertIn(old,published);self.assertNotIn('data:image/svg+xml',published)
     def test_public_robot_discloses_without_changing_protocol_content(self):
-        provenance={'sources':[{'id':'0'*25+'1'}],'model':'test-model','at':'2026-10-05T12:00:00Z'}
+        provenance={'sources':[{'id':'0'*25+'1','version':1}],'model':'test-model','at':'2026-10-05T12:00:00Z'}
         d=self.studio.create('Disclosing robot');d['raw']=d['raw'].replace('<p>Start writing here.</p>','<div class="blyg-tk-gen"><p>Generated words.</p></div>');d['generated']=[provenance];d['pin_on_publish']=True;self.studio.save_draft(d)
         self.studio.prepare();page=(self.root/d['name']).read_text();soup=BeautifulSoup(page,'html.parser');iid=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{iid}.json').read_text())
         self.assertEqual(json.loads(soup.article['data-generated']),[provenance]);self.assertIsNotNone(soup.find('style',id='blynger-generation-disclosure-style'));self.assertIsNotNone(soup.find('script',id='blynger-generation-disclosure-script'))
         self.assertNotIn('data-generated',doc['content_html']);self.assertNotIn('blynger-gen-badge',doc['content_html']);self.assertEqual(doc['generated'],[provenance])
         frozen=BeautifulSoup((self.root/f'blyg/t/{iid}/v1/index.html').read_text(),'html.parser');self.assertEqual(json.loads(frozen.article['data-generated']),[provenance]);self.assertIsNotNone(frozen.find('script',id='blynger-generation-disclosure-script'))
         first=page;self.studio.prepare();self.assertEqual((self.root/d['name']).read_text(),first)
+    def test_saving_reconciles_disclosures_with_visible_generated_blocks(self):
+        d=self.studio.create('Generated disclosure repair')
+        d['raw']=d['raw'].replace('<p>Start writing here.</p>','<div class="blyg-tk-gen"><p>Kept generated words.</p></div>')
+        kept={'sources':[],'model':'kept-model'}
+        d['generated']=[kept,{'sources':[],'model':'deleted-model'}]
+        self.studio.save_draft(d)
+        self.assertEqual(self.studio.state['drafts'][d['name']]['generated'],[kept])
+        reopened=self.studio.page(d['name'])
+        reopened['raw']=reopened['raw'].replace('</article>','<div class="blyg-tk-gen"><p>Recovered words.</p></div></article>')
+        reopened['generated']=[kept]
+        self.studio.save_draft(reopened)
+        self.assertEqual(self.studio.state['drafts'][d['name']]['generated'],[kept,{'sources':[]}])
     def test_disclosure_script_labels_claim_and_quoted_author(self):
         from generation_disclosure import SCRIPT
         self.assertIn('Self-reported, not verified.',SCRIPT);self.assertIn('quoted author marked this text',SCRIPT);self.assertIn("e.key==='Escape'",SCRIPT)

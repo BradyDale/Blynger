@@ -36,12 +36,32 @@ class ReaderTests(unittest.TestCase):
     def test_zero_subscriptions(self):self.assertEqual(self.r.listing(),[]);self.assertEqual(self.r.sync()['subscriptions'],[])
     def test_valid_subscription_imports_ground_truth(self):
         self.sub();i=self.item();self.assertEqual(i['origin'],ORIGIN);self.assertEqual(i['doc']['id'],IID);self.assertEqual(i['doc']['kind'],'fragment');self.assertEqual(i['doc']['author']['name'],'Other Author');self.assertEqual(self.r.listing()[0]['title'],'Remote words');self.assertIn(ORIGIN+'feed.xml',self.net.calls)
+    def test_04_manifest_templates_locate_all_reader_surfaces(self):
+        api='https://api.example/v1/'
+        manifest={'blyg':'0.4','site':ORIGIN,'title':'Templated Blyg','feed':api+'events','items':api+'archive','item':api+'item/{id}?format=json','pin':api+'item/{id}/version/{n}?format=json'}
+        self.net.urls[ORIGIN+'blyg.json']=(manifest,'application/json')
+        self.net.urls[api+'events']=('<rss xmlns:blyg="https://blygger.org/ns/0.1"><channel><blyg:manifest>'+ORIGIN+'blyg.json</blyg:manifest><item><blyg:id>'+IID+'</blyg:id><blyg:version>1</blyg:version></item></channel></rss>','application/rss+xml')
+        self.net.urls[api+'archive']=({'items':[{'id':IID,'version':1,'kind':'fragment'}]},'application/json')
+        self.net.urls[api+'item/'+IID+'?format=json']=(doc(),'application/json')
+        self.sub();self.assertEqual(self.item()['doc']['id'],IID)
+        self.assertTrue({api+'events',api+'archive',api+'item/'+IID+'?format=json'}<=set(self.net.calls))
+    def test_invalid_04_surface_template_fails_without_guessing(self):
+        self.net.urls[ORIGIN+'blyg.json']=({'blyg':'0.4','site':ORIGIN,'title':'Broken','item':'api/{wrong}'},'application/json')
+        with self.assertRaisesRegex(ValueError,'Invalid item template'):self.r.subscribe(ORIGIN)
+        self.assertNotIn(ORIGIN+'api/'+IID,self.net.calls)
     def test_one_off_item_import_does_not_subscribe_or_crawl_archive(self):
         self.net.urls[ORIGIN+'f/'+IID+'/']=('<html><head><link rel="blyg" href="'+ORIGIN+'"></head></html>','text/html')
         result=self.r.import_item(ORIGIN+'f/'+IID+'/');item=self.r.item(result['selected']);sub=self.r.state['subscriptions'][item['subscription']]
         self.assertEqual(item['doc']['id'],IID);self.assertFalse(sub['active']);self.assertEqual(sub['added_via'],'one-off authoring import')
         self.assertNotIn(ORIGIN+'feed.xml',self.net.calls);self.assertNotIn(ORIGIN+'items/index.json',self.net.calls)
         self.assertEqual(self.r.listing(),[]);self.assertIn('without subscribing',result['message'])
+    def test_one_off_item_import_uses_04_item_template(self):
+        target='https://api.example/items/'+IID
+        self.net.urls[ORIGIN+'blyg.json']=({'blyg':'0.4','site':ORIGIN,'title':'Remote Blyg','item':'https://api.example/items/{id}'},'application/json')
+        self.net.urls[ORIGIN+'f/'+IID+'/']=('<html><head><link rel="blyg" href="'+ORIGIN+'blyg.json"></head></html>','text/html')
+        self.net.urls[target]=(doc(),'application/json')
+        result=self.r.import_item(ORIGIN+'f/'+IID+'/')
+        self.assertEqual(self.r.item(result['selected'])['doc']['id'],IID);self.assertIn(target,self.net.calls)
     def test_one_off_item_import_rejects_bad_hash(self):
         broken=doc();broken['content_hash']='sha256:'+'0'*64;self.net.add(items=[broken]);self.net.urls[ORIGIN+'f/'+IID+'/']=('<html><head><link rel="blyg" href="'+ORIGIN+'"></head></html>','text/html')
         with self.assertRaisesRegex(ValueError,'hash does not match'):self.r.import_item(ORIGIN+'f/'+IID+'/')
@@ -173,6 +193,26 @@ class ReaderTests(unittest.TestCase):
         d=doc();d['content_html']='<script>evil()</script><p onclick="evil()">Good</p><img src="https://tracker.example/x"><iframe src="https://evil.example"></iframe>';self.net.add(items=[d]);self.sub();self.net.calls=[];self.net.urls={}
         html=self.r.rendered(self.r.key(ORIGIN,IID));self.assertNotIn('<script',html);self.assertNotIn('onclick',html);self.assertNotIn('tracker',html);self.assertNotIn('iframe',html);self.assertIn('Good',html);self.assertEqual(self.net.calls,[])
     def test_rss_url_discovers_manifest(self):self.r.subscribe(ORIGIN+'feed.xml');self.assertEqual(len(self.r.listing()),1)
+    def test_plain_feed_can_be_rechecked_and_upgraded_to_blyg_without_losing_saved_item(self):
+        feed='https://late.example/feed.xml';origin='https://late.example/blyg/'
+        xml='<rss><channel><title>Late feed</title><item><title>Old RSS copy</title><link>https://late.example/post</link><guid>old</guid><description>Earlier copy.</description></item></channel></rss>'
+        self.net.urls[feed]=(xml,'application/rss+xml');self.r.subscribe(feed);sid=digest(feed)
+        old_key=next(iter(self.r.state['items']));self.r.mark(old_key,'saved',True)
+        native=doc(origin=origin);self.net.add(origin,[native])
+        self.net.urls[feed]=(xml.replace('<channel>','<channel xmlns:blyg="https://blygger.org/ns/0.1"><blyg:manifest>'+origin+'blyg.json</blyg:manifest>'),'application/rss+xml')
+        result=self.r.recheck_blyg(sid)
+        self.assertEqual(result['classification'],'blyg');self.assertEqual(self.r.state['subscriptions'][sid]['type'],'blyg')
+        rows=self.r.listing();self.assertEqual([row['source_type'] for row in rows],['blyg'])
+        self.assertTrue(self.r.state['items'][old_key]['saved']);self.assertTrue(self.r.state['items'][old_key]['reclassified_legacy'])
+        self.assertEqual([row['key'] for row in self.r.listing(view='saved')],[old_key])
+    def test_recheck_keeps_plain_feed_when_no_blyg_is_advertised(self):
+        feed='https://plain.example/feed.xml';self.net.urls[feed]=('<rss><channel><title>Plain</title></channel></rss>','application/rss+xml');self.r.subscribe(feed);sid=digest(feed)
+        result=self.r.recheck_blyg(sid)
+        self.assertEqual(result['classification'],'l0');self.assertEqual(self.r.state['subscriptions'][sid]['type'],'l0');self.assertIn('ordinary RSS',result['message'])
+    def test_recheck_does_not_downgrade_last_confirmed_blyg(self):
+        sid=self.sub();del self.net.urls[ORIGIN+'blyg.json']
+        with self.assertRaisesRegex(ValueError,'No usable feed found'):self.r.recheck_blyg(sid)
+        self.assertEqual(self.r.state['subscriptions'][sid]['type'],'blyg')
     def test_item_url_discovers_origin_and_selects_item(self):
         result=self.r.subscribe(ORIGIN+'items/'+IID+'.json');self.assertEqual(result['selected'],self.r.key(ORIGIN,IID))
     def test_html_rel_blyg_discovery(self):
@@ -271,15 +311,15 @@ class ReaderTests(unittest.TestCase):
     def test_like_and_private_responses_are_distinct_and_append_only(self):
         self.sub();key=self.r.key(ORIGIN,IID)
         self.r.mark(key,'liked',True);self.r.react(key,'🤯');self.r.react(key,'🙄');self.r.react(key,'🙄')
-        item=self.r.item(key);self.assertTrue(item['liked']);self.assertIsNone(item['reaction'])
+        item=self.r.item(key);self.assertTrue(item['liked']);self.assertEqual(item['reaction'],'🤯');self.assertEqual(item['reactions'],['🤯'])
         rows=self.r.interactions();self.assertEqual([row['kind'] for row in rows],['reaction_clear','reaction','reaction','like'])
         self.assertEqual(rows[1]['reaction'],'🙄');self.assertEqual(rows[2]['reaction'],'🤯')
-        reloaded=Reader(self.data,self.net,lambda:self.time);self.assertTrue(reloaded.item(key)['liked']);self.assertIsNone(reloaded.item(key)['reaction']);self.assertEqual(len(reloaded.interactions()),4)
+        reloaded=Reader(self.data,self.net,lambda:self.time);self.assertTrue(reloaded.item(key)['liked']);self.assertEqual(reloaded.item(key)['reactions'],['🤯']);self.assertEqual(len(reloaded.interactions()),4)
     def test_private_response_allowlist_and_search(self):
         self.sub();key=self.r.key(ORIGIN,IID)
         for reaction in ('🤯','🙄','👎','😂','❓','💭','🔇','🔉','🔊'):self.r.react(key,reaction)
         with self.assertRaisesRegex(ValueError,'Unknown private response'):self.r.react(key,'🔥')
-        self.assertEqual(self.r.item(key)['reaction'],'🔊');self.assertEqual(len(self.r.interactions('remote words')),9)
+        self.assertEqual(self.r.item(key)['reaction'],'🔊');self.assertEqual(self.r.item(key)['reactions'],['🤯','🙄','👎','😂','❓','💭','🔇','🔉','🔊']);self.assertEqual(len(self.r.interactions('remote words')),9)
     def test_existing_markers_backfill_without_entering_item_document(self):
         self.sub();key=self.r.key(ORIGIN,IID);self.r.state['items'][key].update(saved=True,saved_at=self.time,liked=True,reaction='😂');self.r.state.pop('interaction_marker_backfill_v1',None);self.r.state['interactions']=[];self.r.state['interaction_seq']=0;self.r.save()
         reloaded=Reader(self.data,self.net,lambda:self.time);self.assertEqual({row['kind'] for row in reloaded.interactions()},{'save','like','reaction'});self.assertTrue(all(row['backfilled'] for row in reloaded.interactions()));self.assertNotIn('interactions',reloaded.item(key)['doc'])
@@ -345,6 +385,12 @@ class ReaderPublicationTests(unittest.TestCase):
         page['raw']=page['raw'].replace('<p>Start writing here.</p>',quoted['stub_html']+'<p>My response.</p>');self.s.save_draft(page);reopened=self.s.page(page['name'])
         self.assertIn('blynger-stub-context',reopened['raw']);self.assertNotIn('data-blyg-id',reopened['raw']);self.s.prepare();own=self.s.state['ids'][page['name']]
         final=json.loads((self.s.root/f'blyg/items/{own}.json').read_text());self.assertEqual(final['kind'],'thread');self.assertEqual(final['stub_of']['url'],url);self.assertEqual(final['stub_of']['cited']['url'],url);self.assertTrue(final['stub_of']['cited']['excerpt']);self.assertEqual(final['transclusions'],[]);self.assertNotIn('![[',final['content_md'])
+
+    def test_ordinary_article_link_can_open_without_becoming_a_feed_subscription(self):
+        url='https://plain.example/linked-story';self.net.urls[url]=('<html><head><title>Linked story</title></head><body><main><p>Opened inside Reader.</p></main></body></html>','text/html')
+        opened=self.s.reader.open_url(url,False);item=self.s.reader.item(opened['selected'])
+        self.assertEqual(item['source_type'],'web');self.assertEqual(item['doc']['title'],'Linked story')
+        self.assertEqual(self.s.reader.state['subscriptions'][item['subscription']]['type'],'web')
 
     def test_quote_is_not_implicitly_a_stub_and_response_survives_without_quote(self):
         quoted=self.s.reader.snapshot(self.s.reader.key(ORIGIN,IID),{'mode':'whole'},self.s)

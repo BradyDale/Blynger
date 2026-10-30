@@ -58,6 +58,30 @@ class ConformanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ConformanceError, "wrappers do not match"):
             self.validate({str(path.relative_to(self.root)): json.dumps(doc)})
 
+    def test_transclusion_label_disagreement_is_rejected(self):
+        path, doc = self.item(lambda value: bool(value.get("transclusions")))
+        doc["content_md"] = doc["content_md"].replace("]]", " | source words]]", 1)
+        with self.assertRaisesRegex(ConformanceError, "wrappers do not match"):
+            self.validate({str(path.relative_to(self.root)): json.dumps(doc)})
+
+    def test_link_rows_must_match_plain_bracket_links(self):
+        path, doc = self.item(lambda value: value["kind"] != "withdrawn")
+        doc["links"] = [{"id": doc["id"]}]
+        with self.assertRaisesRegex(ConformanceError, "plain internal links"):
+            self.validate({str(path.relative_to(self.root)): json.dumps(doc)})
+
+    def test_old_protocol_version_is_rejected(self):
+        path, doc = self.item(lambda value: value["kind"] != "withdrawn")
+        doc["blyg"] = "0.3"
+        with self.assertRaisesRegex(ConformanceError, "version 0.4"):
+            self.validate({str(path.relative_to(self.root)): json.dumps(doc)})
+
+    def test_generation_source_requires_an_exact_version(self):
+        path, doc = self.item(lambda value: bool(value.get("generated")))
+        doc["generated"][0]["sources"] = [{"id": doc["id"]}]
+        with self.assertRaisesRegex(ConformanceError, "missing version"):
+            self.validate({str(path.relative_to(self.root)): json.dumps(doc)})
+
     def test_missing_promised_pin_is_rejected(self):
         path, doc = self.item(lambda value: any(row.get("pinned") for row in value["changelog"]))
         version = next(row["version"] for row in doc["changelog"] if row.get("pinned"))

@@ -1,6 +1,6 @@
 # How Blynger Works
 
-**Current application release described here: 0.14.0.**
+**Current application release described here: 0.14.4.**
 
 Blynger is a local application for writing, maintaining, reading from, and publishing a static personal website.
 
@@ -101,7 +101,7 @@ Series Page uses the current Page template and enters the sitemap, but it is
 site furniture—not a Blyg item and not a new ordinary RSS entry. Blynger keeps
 the coordination record in private state. The selector and detail are saved as
 ordinary draft metadata; the coordinated static HTML is generated only during
-Review & publish and appears in the author's normal publication review.
+publication and appears in the optional right-click review.
 
 ### Drafts and Images
 
@@ -152,6 +152,16 @@ New verified incoming activity appears as a numbered badge on the Thicket tab.
 Opening Thicket marks that batch as seen. Reverification of the same unchanged
 relationship does not manufacture another unread notification.
 
+Thicket distinguishes **responses** from lower-priority **notices**. A Stub,
+transclusion, fork or source relationship with the other author's own words is
+a response. A plain structured link is a notice. A Stub or transclusion that
+adds no authored words after its quotation machinery is removed is a repost
+notice. Notices remain in a separate subdued section and do not inflate the
+response badge or response count.
+
+This classification is private application state. Blynger does not currently
+publish response lists, “linked from” lists or repost displays on the website.
+
 ## Reader is part of the writing system
 
 Blynger's Reader is not merely a separate feed reader bolted onto the editor.
@@ -198,6 +208,10 @@ checks that it really links to an exact published target, and records only a
 small validated result. Blynger synchronizes that protected result back to the
 Mac and presents verified activity in Thicket.
 
+For Blyg 0.4 sources, verification also recognizes the source document's
+structured `links[]` rows. Those rows are lower-priority link notices, never
+responses. Blynger never invents them by searching arbitrary rendered HTML.
+
 This separation is intentional:
 
 - the public endpoint cannot read drafts, Reader state or local settings;
@@ -221,7 +235,15 @@ another Blygger client should also read `docs/WEBMENTIONS_AGENT_GUIDE.md`.
 
 Saving a draft is not publishing.
 
-Blynger separates **Save** from **Stage**. Save keeps writing privately in Drafts, including moving staged writing back to Drafts. Stage also saves it and explicitly includes it in the next **Review & publish** operation. Unstaged drafts are invisible to publication; required homepage, feed, Blyg, and Series files follow staged writing automatically.
+Blynger separates **Save** from **Stage**. Save keeps writing privately in Drafts, including moving staged writing back to Drafts. Stage also saves it and explicitly includes it in the next publication. Unstaged drafts are invisible to publication; required homepage, feed, Blyg, and Series files follow staged writing automatically.
+
+An ordinary click on **PUBLISH…** opens a small confirmation with an optional
+Git-note prefix, then hands preparation, validation, hosted-head checking,
+commit creation and sending to the background. Right-clicking **PUBLISH…**
+uses the deliberate inspection path: Blynger first calculates and displays the
+complete changed-file list and hosted comparisons, then waits for approval.
+Both paths use the same staged inputs and safety boundaries; only the review
+presentation is optional.
 
 Publication is Git-based.
 
@@ -419,6 +441,23 @@ Blynger currently preserves the Blyg protocol feed's 50-event notification windo
 Generated-text disclosure is slightly different from the fundamental Blyg primitives above.
 
 Blynger has its own TK authoring feature and robot treatment for AI-generated passages.
+
+TK generations are deliberately ephemeral rather than a hidden long-lived chat
+session. Before each request, Blynger reconstructs the post as a labeled
+AUTHOR/ASSISTANT transcript from ordinary prose and existing `blyg-tk-gen`
+blocks. The fresh model therefore receives the full visible conversation while
+the draft remains the durable source of truth.
+
+Authors can also paste an existing ChatGPT conversation through **Insert →
+ChatGPT dialogue…**. This is a local structural import, not another generation:
+Blynger accepts either copied text with explicit speaker labels or a ChatGPT
+share link. A share link preserves the visible conversation's real message
+boundaries, including multi-paragraph and consecutive same-speaker turns;
+hidden reasoning and tool machinery are excluded. Unlabeled paragraph breaks
+are never guessed to be speaker changes. The author verifies each speaker,
+their turns remain ordinary prose, and only ChatGPT turns receive the generated
+treatment. The author can self-report the model used, while an empty field is
+disclosed as **model not stated** rather than guessed from page metadata.
 
 Blygger Studio has also established an open convention for identifying generated passages in interoperable material.
 

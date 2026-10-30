@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 ID = re.compile(r"^[0-7][0-9a-hjkmnp-tv-z]{25}$")
-RELATIONS = ("stub", "transclusion", "fork", "source")
+RELATIONS = ("stub", "transclusion", "fork", "source", "link")
 STATUSES = ("pending", "retrying", "delivered", "rejected", "no_endpoint", "abandoned")
 TERMINAL_STATUSES = ("delivered", "rejected", "no_endpoint", "abandoned")
 RETRY_DELAYS = (15 * 60, 60 * 60, 4 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60)

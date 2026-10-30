@@ -59,15 +59,14 @@ class ReaderSecurityTests(unittest.TestCase):
         self.assertIn('Ordinary',rendered);self.assertIn('Reader text',rendered);self.assertIn('<b>',rendered);self.assertIn('<img',rendered)
         self.assertNotIn('bad()',rendered);self.assertNotIn('onerror',rendered);self.assertNotIn('<svg',rendered)
 
-    def test_reader_frame_is_opaque_and_uses_narrow_message_bridge(self):
-        index=(ROOT/'static/index.html').read_text();app=(ROOT/'static/app.js').read_text()+(ROOT/'static/reader-ui.js').read_text();frame=(ROOT/'static/reader-frame.js').read_text();bridge=(ROOT/'static/reader-frame-bridge.js').read_text()
-        compact_app=re.sub(r'\s+','',app);compact_frame=re.sub(r'\s+','',frame);compact_bridge=re.sub(r'\s+','',bridge)
-        self.assertIn('/static/reader-frame.js',index)
-        self.assertIn('sandbox="allow-scripts"',app);self.assertNotIn('allow-same-origin',app);self.assertNotIn('contentDocument',app)
-        self.assertIn("connect-src 'none'",frame);self.assertIn("form-action 'none'",frame);self.assertIn("frame-src 'none'",frame);self.assertIn("base-uri 'none'",frame)
-        self.assertIn("media-src ${origin} data:",frame)
-        self.assertIn('/static/reader-frame-bridge.js',frame);self.assertIn("event.source!==frame.contentWindow",compact_frame);self.assertIn("event.source!==parent",compact_bridge);self.assertIn("channel",bridge)
-        self.assertNotIn("X-Blynger-Token",frame+bridge)
+    def test_reader_content_is_allowlisted_and_has_no_nested_browsing_surface(self):
+        index=(ROOT/'static/index.html').read_text();reader_ui=(ROOT/'static/reader-ui.js').read_text();app=(ROOT/'static/app.js').read_text()+reader_ui;content=(ROOT/'static/reader-content.js').read_text()
+        compact_app=re.sub(r'\s+','',app)
+        self.assertIn('/static/reader-content.js',index)
+        self.assertIn('id="readerContent"',reader_ui);self.assertNotIn('id="readerFrame"',reader_ui)
+        self.assertNotIn('<iframe',reader_ui);self.assertNotIn('innerHTML',content)
+        self.assertNotIn('X-Blynger-Token',content)
+        self.assertIn("event.target.closest('a[href]')",content)
         self.assertIn('openExternal(data.href)',app)
         self.assertIn('window.webkit?.messageHandlers?.openExternal',app)
         self.assertIn('native.postMessage(url)',app)

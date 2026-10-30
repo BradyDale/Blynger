@@ -20,6 +20,29 @@ class StudioTests(unittest.TestCase):
         self.assertIn('#editor > h1:first-child',style)
         self.assertIn('display: none',style)
 
+    def test_headline_editor_is_an_obvious_document_control(self):
+        markup=(Path(__file__).parent/'static/index.html').read_text()
+        heading=markup.index('class="document-heading"')
+        control=markup.index('id="editHeadline"')
+        tabs=markup.index('class="tabs"',heading)
+        self.assertLess(heading,control)
+        self.assertLess(control,tabs)
+
+    def test_publication_review_rejects_a_cached_ready_job(self):
+        app=(Path(__file__).parent/'static/app.js').read_text()
+        helper=(Path(__file__).parent/'static/background-job.js').read_text()
+        self.assertIn('followBackgroundJob',app)
+        self.assertIn('job.previousId = (previous && previous.id) || null',helper)
+        self.assertIn('state.id !== previousReviewId',app)
+
+    def test_publish_click_is_quick_and_right_click_opens_review(self):
+        script=(Path(__file__).parent/'static/app.js').read_text()
+        markup=(Path(__file__).parent/'static/index.html').read_text()
+        self.assertIn("$('publish').onclick = quickPublishDialog",script)
+        self.assertIn("$('publish').oncontextmenu",script)
+        self.assertIn("api('quick-publish'",script)
+        self.assertIn('Right-click to review every change',markup)
+
     def test_root_security_headers_are_publishable(self):
         self.assertTrue(self.studio.allowed('.htaccess'))
         self.assertFalse(self.studio.allowed('.git/config'))
@@ -60,6 +83,22 @@ class StudioTests(unittest.TestCase):
             reopened=Studio(self.root,self.studio.data)
         self.assertNotIn('2.html',reopened.state['ids'])
         self.assertIsNone(reopened.studio_recovery_status())
+    def test_healthy_startup_does_not_reread_cloud_backed_publication_files(self):
+        iid='0'*25+'1'
+        self.studio.state['ids']['1.html']=iid
+        self.studio.save_state()
+        item=self.root/'blyg/items'/f'{iid}.json'
+        item.parent.mkdir(parents=True)
+        item.write_text('{}')
+        blocked={self.root/'1.html',item}
+        original=Path.read_text
+        def guarded(path,*args,**kwargs):
+            if path in blocked:
+                raise AssertionError('healthy startup reread public output')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'read_text',guarded):
+            reopened=Studio(self.root,self.studio.data)
+        self.assertEqual(reopened.state['ids']['1.html'],iid)
     def test_verified_studio_backup_can_be_restored_without_losing_replaced_state(self):
         first=self.studio.create('First protected draft')
         self.studio.save_draft(first)
@@ -99,7 +138,117 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(rss.find('./channel/{'+NS+'}manifest').text,self.studio.origin+'blyg.json')
         links=rss.findall('./channel/{http://www.w3.org/2005/Atom}link'); self.assertEqual(len(links),1)
         self.assertEqual(links[0].attrib,{'href':self.studio.origin+'feed.xml','rel':'self','type':'application/rss+xml'})
-        manifest=json.loads((self.root/'blyg/blyg.json').read_text());self.assertEqual(manifest['level'],2);self.assertEqual(manifest['feed'],'feed.xml');self.assertEqual(manifest['items'],'items/index.json');self.assertEqual(manifest['generator_url'],'https://github.com/BradyDale/Blynger')
+        manifest=json.loads((self.root/'blyg/blyg.json').read_text());self.assertEqual(manifest['level'],2);self.assertEqual(manifest['feed'],'feed.xml');self.assertEqual(manifest['items'],'items/index.json');self.assertEqual(manifest['item'],'items/{id}.json');self.assertEqual(manifest['pin'],'items/{id}/v{n}.json');self.assertEqual(manifest['generator_url'],'https://github.com/BradyDale/Blynger')
+
+    def test_legacy_protocol_metadata_follows_unchanged_visible_content(self):
+        first='00000000000000000000000001'
+        second='00000000000000000000000002'
+        doc={
+            'content_html':(
+                '<blockquote class="blyg-transclusion" data-blyg-id="'+first+'" data-blyg-version="1">First</blockquote>'
+                '<div class="blyg-tk-gen">Generated one</div>'
+                '<blockquote class="blyg-transclusion" data-blyg-id="'+second+'" data-blyg-version="2" '
+                'data-blyg-origin="https://other.example/blyg/">Second</blockquote>'
+                '<div class="blyg-tk-gen">Generated two</div>'
+            ),
+            'transclusions':[
+                {'id':second,'version':2,'origin':'https://other.example/blyg/'},
+                {'id':first,'version':1},
+            ],
+            'generated':[{'sources':[],'model':'kept-model'}],
+        }
+        before=doc['content_html']
+        self.studio.normalize_protocol_metadata(doc)
+        self.assertEqual(doc['content_html'],before)
+        self.assertEqual([row['id'] for row in doc['transclusions']],[first,second])
+        self.assertEqual(doc['generated'],[{'sources':[],'model':'kept-model'},{'sources':[]}])
+
+    def test_legacy_pin_loses_obsolete_media_without_changing_content(self):
+        self.studio.migrate()
+        iid=self.studio.state['ids']['1.html']
+        self.studio.state['published']={p.stem:json.loads(p.read_text()) for p in (self.root/'blyg/items').glob('*.json') if p.name!='index.json'}
+        self.studio.remember(self.studio.state['published'])
+        self.studio.pin('1.html',1)
+        self.studio.prepare()
+        path=self.root/f'blyg/items/{iid}/v1.json'
+        legacy=json.loads(path.read_text())
+        content=legacy['content_html']
+        legacy['media']=[]
+        path.write_text(json.dumps(legacy,ensure_ascii=False,indent=2))
+        self.studio.prepare()
+        repaired=json.loads(path.read_text())
+        self.assertNotIn('media',repaired)
+        self.assertEqual(repaired['content_html'],content)
+
+    def hydrate_published(self):
+        self.studio.state['published']={
+            path.stem:json.loads(path.read_text())
+            for path in (self.root/'blyg/items').glob('*.json')
+            if path.name!='index.json'
+        }
+        self.studio.remember(self.studio.state['published'])
+
+    def test_unchanged_valid_item_keeps_its_exact_bytes(self):
+        self.studio.migrate()
+        self.hydrate_published()
+        iid=self.studio.state['ids']['1.html']
+        path=self.root/'blyg/items'/f'{iid}.json'
+        doc=json.loads(path.read_text())
+        odd=json.dumps(doc,ensure_ascii=False,indent=4)
+        path.write_text(odd)
+        before=path.read_bytes()
+        self.studio.prepare()
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(json.loads(path.read_text())['version'],doc['version'])
+        self.assertNotIn('index.html',self.studio.state['ids'])
+        self.assertNotIn('openers.html',self.studio.state['ids'])
+
+    def test_old_shaped_item_is_still_repaired_without_a_new_version(self):
+        self.studio.migrate()
+        self.hydrate_published()
+        iid=self.studio.state['ids']['1.html']
+        path=self.root/'blyg/items'/f'{iid}.json'
+        doc=self.studio.state['published'][iid]
+        version=doc['version']
+        words=doc['content_html']
+        doc['blyg']='0.3'
+        path.write_text(json.dumps(doc,ensure_ascii=False,indent=2))
+        self.studio.prepare()
+        repaired=json.loads(path.read_text())
+        self.assertEqual(repaired['blyg'],'0.4')
+        self.assertEqual(repaired['version'],version)
+        self.assertEqual(repaired['content_html'],words)
+        self.assertNotIn('index.html',self.studio.state['ids'])
+
+    def test_changed_post_still_publishes_a_new_blyg_version(self):
+        self.studio.migrate()
+        self.hydrate_published()
+        iid=self.studio.state['ids']['1.html']
+        previous=self.studio.state['published'][iid]['version']
+        draft=self.studio.page('1.html')
+        draft['raw']=draft['raw'].replace('Original','Changed words')
+        self.studio.save_draft(draft)
+        self.studio.prepare()
+        doc=json.loads((self.root/'blyg/items'/f'{iid}.json').read_text())
+        self.assertEqual(doc['version'],previous+1)
+        self.assertIn('Changed words',doc['content_html'])
+        self.assertNotIn('Original',doc['content_html'])
+        self.assertNotIn('index.html',self.studio.state['ids'])
+
+    def test_unchanged_valid_pin_keeps_its_exact_bytes(self):
+        self.studio.migrate()
+        self.hydrate_published()
+        self.studio.pin('1.html',1)
+        self.studio.prepare()
+        self.hydrate_published()
+        iid=self.studio.state['ids']['1.html']
+        path=self.root/f'blyg/items/{iid}/v1.json'
+        pin=json.loads(path.read_text())
+        odd=json.dumps(pin,ensure_ascii=False,indent=4)
+        path.write_text(odd)
+        self.studio.prepare()
+        self.assertEqual(path.read_text(),odd)
+        self.assertNotIn('media',json.loads(path.read_text()))
 
     def test_blyg_index_uses_configured_favicon(self):
         self.studio.config['favicon']='/images/favicon.png';self.studio.migrate()
@@ -109,9 +258,10 @@ class StudioTests(unittest.TestCase):
 
     def test_plain_blyg_id_link_is_a_link_not_a_transclusion(self):
         self.studio.migrate();iid=self.studio.state['ids']['1.html']
-        d=self.studio.create('Linking post');d['raw']=d['raw'].replace('Start writing here.','See [['+iid+']] for context.');self.studio.save_draft(d);self.studio.prepare()
+        d=self.studio.create('Linking post');d['raw']=d['raw'].replace('Start writing here.','See [['+iid+' | earlier thought]] for context.');self.studio.save_draft(d)
+        self.studio.prepare(False)
         own=self.studio.state['ids'][d['name']];doc=json.loads((self.root/f'blyg/items/{own}.json').read_text())
-        self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['transclusions'],[]);self.assertIn('href="https://example.com/blyg/t/'+iid+'/"',doc['content_html']);self.assertNotIn('[[',doc['content_html'])
+        self.assertEqual(doc['kind'],'thread');self.assertEqual(doc['transclusions'],[]);self.assertEqual(doc['links'],[{'id':iid}]);self.assertIn('>earlier thought</a>',doc['content_html']);self.assertIn('href="https://example.com/blyg/t/'+iid+'/"',doc['content_html']);self.assertNotIn('[[',doc['content_html'])
 
     def test_explicit_version_directive_is_rejected(self):
         d=self.studio.create('Reserved syntax');d['raw']=d['raw'].replace('Start writing here.','![[00000000000000000000000000@v1]]');self.studio.save_draft(d)
@@ -337,11 +487,12 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(home,(self.root/'index.html').read_text()); self.assertEqual(home.count('First new post'),1)
         for p in (self.root/'blyg/items').glob('*.json'):
             if p.name!='index.json': self.assertEqual(json.loads(p.read_text())['version'],1)
-    def test_prepare_can_skip_discarded_review_and_tracks_only_byte_changes(self):
+    def test_prepare_can_skip_review_and_restores_untracked_generated_outputs(self):
         self.studio.create('New post');self.studio.review=lambda:self.fail('prepare performed an unnecessary review')
         first=self.studio.prepare(review=False);self.assertGreater(first['changed'],0)
         self.studio.state['pending']=[];self.studio.save_state()
-        second=self.studio.prepare(review=False);self.assertEqual(second['changed'],0);self.assertEqual(self.studio.state['pending'],[])
+        second=self.studio.prepare(review=False);self.assertEqual(second['changed'],0)
+        self.assertTrue(any(path.startswith('blyg/items/') and path.endswith('.json') for path in self.studio.state['pending']))
     def test_review_ignores_stale_pending_paths_identical_to_baseline(self):
         self.studio.state['pending']=['1.html'];self.studio.save_state()
         self.assertNotIn('1.html',[c['path'] for c in self.studio.review()['changes']])
@@ -350,6 +501,10 @@ class StudioTests(unittest.TestCase):
         reopened=Studio(self.root,self.studio.data)
         self.assertEqual(reopened.state['pending'],['1.html','blyg/feed.xml'])
         self.assertIsNone(reopened.studio_recovery_status())
+    def test_pending_generated_repair_keeps_publish_available(self):
+        self.studio.state['pending']=['blyg/items/example.json'];self.studio.save_state()
+        status=self.studio.publication_status()
+        self.assertTrue(status['ready']);self.assertEqual(status['state'],'saved_locally')
     def test_current_commit_paths_use_the_cached_index(self):
         original=self.studio.git
         calls=[]
@@ -428,7 +583,7 @@ class StudioTests(unittest.TestCase):
         static=Path(__file__).parent/'static';js=(static/'app.js').read_text()+(static/'reader-ui.js').read_text();style=(static/'style.css').read_text()
         compact_js=re.sub(r'\s+','',js)
         def assert_compact(value):self.assertIn(re.sub(r'\s+','',value),compact_js)
-        self.assertIn("['versions','mainFragment','transclude','respondStub','quote','tk','fragment','removeFragment'",compact_js)
+        self.assertIn("['versions','mainFragment','transclude','respondStub','quote','tk','chatDialogue','fragment','removeFragment'",compact_js)
         assert_compact("modal('Blynger Help'")
         for recovery_text in ("modal('Blynger Recovery'", "api('retry-publication'", "api('reader-pause'", "api('reader-restore-backup'", 'Copy redacted diagnostics'):
             assert_compact(recovery_text)
@@ -445,6 +600,7 @@ class StudioTests(unittest.TestCase):
         self.assertIn('.workspace-tabs button#thicketNav.has-unread',style)
         self.assertIn('id="thicketUnreadBadge"',html)
         self.assertIn('READER_BACKGROUND_INTERVAL = 20 * 60 * 1000',js)
+        self.assertIn('lastReaderBackgroundSync = Date.now()',js)
         for value in ('insertMenu','documentMenu','libraryCollapse','readerSidebarCollapse','readerSidebarRestore'):
             self.assertIn('id="'+value+'"',html)
         self.assertIn('.workspace-tabs button::before',style)
@@ -568,9 +724,9 @@ class VersionTests(unittest.TestCase):
         self.assertRegex(script,r"pin-version.*?api\('pin'.*?awaitupdatePublicationState\(\)")
     def test_transclusion_snapshot_and_republish(self):
         self.baseline(); iid=self.studio.state['ids']['1.html']
-        d=self.studio.create('Quoted post'); d['raw']=d['raw'].replace('Start writing here.','![['+iid+']]'); self.studio.save_draft(d); self.studio.prepare()
+        d=self.studio.create('Quoted post'); d['raw']=d['raw'].replace('Start writing here.','![['+iid+' | Earlier thought]]'); self.studio.save_draft(d); self.studio.prepare()
         tid=self.studio.state['ids'][d['name']]; path=self.root/'blyg/items'/f'{tid}.json'; doc=json.loads(path.read_text())
-        self.assertEqual(doc['kind'],'thread'); self.assertEqual(doc['transclusions'],[{'id':iid,'version':1}]); self.assertIn('![['+iid+']]',doc['content_md']); self.assertIn('blyg-transclusion',doc['content_html'])
+        self.assertEqual(doc['kind'],'thread'); self.assertEqual(doc['transclusions'],[{'id':iid,'version':1}]); self.assertIn('![['+iid+' | Earlier thought]]',doc['content_md']); self.assertIn('data-blyg-label="Earlier thought"',doc['content_html'])
         self.studio.state['published'][tid]=doc; self.studio.remember({tid:doc}); self.studio.state['drafts']={}
         src=self.studio.state['published'][iid]; src['version']=2; src['content_html']='<p>Source changed</p>';src['updated']='2026-10-01T00:00:00Z';src['changelog'].append({'version':2,'at':src['updated'],'note':'Changed source'})
         self.studio.prepare(); same=json.loads(path.read_text()); self.assertEqual(same['version'],1); self.assertIn('Original',same['content_html'])
@@ -581,6 +737,8 @@ class VersionTests(unittest.TestCase):
     def test_publication_messages_default_and_custom_commit(self):
         changes=[{'path':'43.html','new':True},{'path':'openers.html','new':False},{'path':'blyg/feed.xml','new':False}]
         self.assertEqual(self.studio.publication_message(changes),'Created 43.html; Changed openers.html')
+        self.assertEqual(self.studio.quick_publication_message('',changes),'Created 43.html; Changed openers.html')
+        self.assertEqual(self.studio.quick_publication_message('Morning post',changes),'Morning post; Created 43.html; Changed openers.html')
         remote=self.base/'remote.git'; subprocess.run(['git','init','--bare',str(remote)],capture_output=True,check=True)
         self.studio.git('remote','add','website',str(remote));self.studio.migrate()
         self.studio.publication_note('Fixed favicons throughout site')

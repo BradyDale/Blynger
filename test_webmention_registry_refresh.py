@@ -210,6 +210,46 @@ class RegistryPublicationTests(unittest.TestCase):
         restarted.reconcile_inbound_registry(installer)
         self.assertEqual(installer.artifacts[0]["commit"],pending["commit"])
 
+    def test_exact_commit_registry_includes_pinned_document_and_page(self):
+        draft=self.studio.create("Pinned registry");draft["pin_on_publish"]=True
+        self.studio.save_draft(draft);review=self.studio.prepare()
+        pending=self.studio.begin_publication(review["signature"])
+        artifact=self.studio._commit_registry_artifact(pending["commit"],pending["base"])
+        row=next(item for item in artifact["registry"]["items"] if item["pins"])
+        pin=row["pin_targets"][0]
+        self.assertEqual(pin["version"],1)
+        self.assertEqual(pin["document"],self.studio.origin+"items/"+row["id"]+"/v1.json")
+        self.assertEqual(pin["page"],self.studio.origin+"t/"+row["id"]+"/v1/")
+
+    def test_existing_untracked_pin_is_restored_to_the_next_review(self):
+        draft=self.studio.create("Legacy pin");draft["pin_on_publish"]=True
+        self.studio.save_draft(draft);review=self.studio.prepare()
+        pending=self.studio.begin_publication(review["signature"])
+        self.studio.push_publication_network(pending);self.studio.finish_publication(pending)
+        iid=self.studio.state["ids"][draft["name"]]
+        pin=f"blyg/items/{iid}/v1.json"
+        self.studio.git("rm","--cached","--",pin)
+        self.studio.git("commit","-m","Simulate legacy missing pin")
+        self.studio.git("push","website","master")
+        self.studio.state["review_base"]=self.studio.git("rev-parse","HEAD")
+        self.studio.save_state()
+        self.assertTrue((self.root/pin).is_file())
+        repaired=self.studio.prepare()
+        self.assertIn(pin,[change["path"] for change in repaired["changes"]])
+
+    def test_invalid_registry_projection_does_not_strand_hosted_publication(self):
+        pending=self.publication("Registry projection warning")
+        iid="0"*25+"7";pin_path=f"blyg/items/{iid}/v3.json"
+        (self.root/pin_path).parent.mkdir(parents=True,exist_ok=True)
+        (self.root/pin_path).write_text(json.dumps({"id":iid,"version":3,"pinned":True}))
+        with patch.object(self.studio,"_commit_registry_artifact",side_effect=ValueError("missing declared pin")):
+            result=self.studio.finish_publication(pending)
+        self.assertNotIn("pending_publication",self.studio.state)
+        self.assertIn("previous verified registry",result["message"])
+        self.assertIn(pin_path,self.studio.state["pending"])
+        self.assertTrue(self.studio.publication_status()["ready"])
+        self.assertIn("missing declared pin",self.studio.state["inbound_registry_diagnostics"][-1])
+
     def test_unchanged_commit_needs_no_registry_refresh(self):
         pending=self.publication("Initial registry");self.studio.finish_publication(pending)
         first=list(self.studio.state["inbound_registry_reconciliations"])

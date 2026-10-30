@@ -533,6 +533,8 @@ class DisabledInboundSyncService:
             "record_count": 0,
             "activity_count": 0,
             "unread_count": 0,
+            "notice_count": 0,
+            "unread_notice_count": 0,
             "activities": [],
             "availability": "unavailable" if self.error else "not_enabled",
         }
@@ -618,6 +620,7 @@ class InboundSyncService:
                 "unread": state["acknowledged"].get(key) != activity["fingerprint"],
                 "status": record["status"],
                 "relation": record["relation"],
+                "mention_class": record["mention_class"],
                 "source": record["source"],
                 "source_page": record["source_page"],
                 "source_origin": record["source_origin"],
@@ -625,6 +628,8 @@ class InboundSyncService:
                 "target": record["target"],
             })
         activities.sort(key=lambda row: (row["at"], row["key"]), reverse=True)
+        responses = [row for row in activities if row["mention_class"] != "notice"]
+        notices = [row for row in activities if row["mention_class"] == "notice"]
         with self.guard:
             running = bool(self.thread and self.thread.is_alive() and not self.stopping)
             syncing = self.syncing
@@ -643,8 +648,10 @@ class InboundSyncService:
             "remote_generated_at": _timestamp(state["remote_generated_at"]),
             "last_error": state["last_error"],
             "record_count": len(state["records"]),
-            "activity_count": len(activities),
-            "unread_count": sum(1 for row in activities if row["unread"]),
+            "activity_count": len(responses),
+            "unread_count": sum(1 for row in responses if row["unread"]),
+            "notice_count": len(notices),
+            "unread_notice_count": sum(1 for row in notices if row["unread"]),
             "activities": activities,
             "availability": availability,
         }

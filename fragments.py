@@ -194,11 +194,29 @@ def managed_signature(body, site=None):
             image['src']='blynger-media:'+filename
     return canonical(str(soup))
 
+def website_attribution(soup):
+    """A linked domain credited after a dash is a source, not a byline."""
+    text = soup.get_text(' ', strip=True)
+    credit = re.sub(r'^[—–-]\s*', '', text).strip()
+    if credit == text:
+        return False
+    links = soup.find_all('a', href=True)
+    if len(links) != 1 or re.sub(r'^[—–-]\s*', '', links[0].get_text(' ', strip=True)).strip() != credit:
+        return False
+    target = urlsplit(links[0]['href'])
+    return (
+        target.scheme in ('http', 'https')
+        and target.hostname is not None
+        and credit.lower().removeprefix('www.')
+        == target.hostname.lower().removeprefix('www.')
+    )
+
+
 def excluded(body):
     s=BeautifulSoup(body,'html.parser')
     text=s.get_text(' ',strip=True)
     managed=s.select_one('.blynger-series-title, .blynger-series-next')
-    return bool(managed or s.find('h1',recursive=False) or re.match(r'^(?:[—–-]\s*|By\s+)\S+(?:\s+\S+){0,5}$',text,re.I) or re.fullmatch(r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}',text))
+    return bool(managed or s.find('h1',recursive=False) or (not website_attribution(s) and re.match(r'^(?:[—–-]\s*|By\s+)\S+(?:\s+\S+){0,5}$',text,re.I)) or re.fullmatch(r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}',text))
 
 def validate(meta,body):
     if meta is None: return None
