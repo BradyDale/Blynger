@@ -1,110 +1,84 @@
 # Blynger
 
-**Blynger is a static personal website manager with Blygger interoperability built in.**
+**A local-first personal website manager with Blygger interoperability.**
 
-Blynger is a local Mac application for writing, maintaining, reading from, and publishing a hand-built static website. It preserves ordinary HTML files and Git publication while adding Blyg 0.4 items, fragments, threads, transclusions, stubs, forks, pins, a local Reader, Webmention sending and receiving, a private activity view called Thicket, and separate ordinary/Blyg RSS feeds.
+Blynger is a Mac application for writing, maintaining, reading from, and publishing a hand-built static website. The public website remains ordinary HTML and other static files, deployed with Git. Blynger adds a private editor and Reader, Blyg items, fragments, threads, transclusions, Stubs, forks, pins, Webmention sending and receiving, a private Webmention activity view called Thicket, and separate ordinary and Blyg feeds.
 
-For a fuller explanation of the static-first design and how its workspaces and
-Blyg features fit together, see [How Blynger Works](HOW_BLYNGER_WORKS.md).
-Developers and reviewers can start with [DEVELOPMENT.md](DEVELOPMENT.md) for a
-short code map, module boundaries, and the readability rules used for new work.
-Agents implementing Webmentions for another Blygger client should also read
-[the Webmentions agent field guide](docs/WEBMENTIONS_AGENT_GUIDE.md), which
-records the failed assumptions, security lessons, and deployment checks learned
-while building and activating Blynger's system.
+Blynger was built to manage [bradydale.com](https://bradydale.com/), a site that is both a blog and a personal website. It is open source but still oriented toward that original installation; using it on another site requires setup and care.
 
-![Blynger’s desktop interface](docs/blynger-ui.svg)
+For the design and architecture, see [How Blynger Works](HOW_BLYNGER_WORKS.md). For a code map, start with [DEVELOPMENT.md](DEVELOPMENT.md). Developers building Webmention support for other Blygger clients should also consult [the Webmentions agent guide](docs/WEBMENTIONS_AGENT_GUIDE.md).
 
-### History
+## What it does
 
-Blynger started as an app to automate updating a handcoded website built to run on the no-frills webhosting service, NearlyFreeSpeech.net. When Blygger was released, scope expanded to make the site partly static and partly a Blygger compliant blog.
-Blynger was originally built to manage bradydale.com, which remains its primary real-world test site. It would be very interesting to see if others find Blynger useful.
+- **Posts and Openers.** Publish full, titled Posts as numbered HTML pages or shorter, untitled Openers on a continuing page. Both can have independent Blyg identities; either can be a response to another Blyg item.
+- **Pages and Series.** Maintain permanent pages outside the blog, and organize related Posts with a static Series page and installment navigation.
+- **Private drafting.** **Save** retains writing privately; **Stage** explicitly includes it in the next publication. Publication also generates required dependent files, such as feeds, home-page entries, and Series navigation.
+- **Static publication.** Publish through Git, with hosted-version checks, exact-commit recovery, and background preparation and sending. Ordinary **PUBLISH…** offers a compact confirmation. **Right-click PUBLISH…** for the optional detailed changed-file review before approval.
+- **Reader and Saved.** Read Blyg, RSS/Atom, and supported ordinary-web material; retain private Saves, Likes, reactions, and activity history. Reader content is treated as untrusted material, isolated from authoring controls.
+- **Blygger interoperability.** Publish Blyg **0.4** items with versions, fragments, threads, exact-source transclusions, Stubs, forks, pins, withdrawals, and discovery metadata.
+- **Thicket and Webmentions.** Send eligible outbound Webmentions after successful publication. Receive and verify incoming claims on a separately configured host component, synchronize verified records to the Mac, and display incoming and outgoing activity privately in Thicket. Incoming Webmentions do not become public comments.
+- **AI authorship disclosures.** Support generated passages and structured ChatGPT-dialogue imports with explicit attribution and model disclosure, without treating remote claims about models as independently verified facts.
 
-### Two kinds of posts
-
-The code distinguishes between two kinds of updates:
-- Posts are individual HTML pages with headlines, numbered filenames, homepage links, version history, fragments, and normal post tools.
-- Openers are shorter, headline-free entries collected on openers.html. Each dated entry gets its own Blyg identity and standalone permalink even though it remains part of the aggregate page.
-- Either can become a response thread when created as a Stub.
-- The idea is that Openers are for one continuous page of quick updates or short thoughts, whereas Posts are for more fully developed ideas.
+The site has two different feeds: `/feed.xml` for ordinary site subscribers and `/blyg/feed.xml` for Blyg protocol activity.
 
 ## Current status
 
-Blynger 0.15.7 is pre-1.0 software. It publishes Blyg 0.4, leaves an
-already-valid archive byte for byte during an ordinary publication, and uses
-one shared start-then-poll loop so publication review and Reader refresh
-survive dropped browser requests.
+**Blynger 0.15.7** is pre-1.0 software and publishes **Blyg 0.4**. Recent releases have included the Webmention system (0.13), the index-card-inspired interface and Reader changes (0.14), and Blyg 0.4 publishing plus reliability and preservation fixes (0.15). Refer to [CHANGELOG.md](CHANGELOG.md) and [`version.py`](version.py) for the exact checked-out version; this summary may lag subsequent development.
 
-The 0.14.0 release gave the application a physical index-card workspace
-design, inline one-at-a-time Reader expansion, clearer participants and unread
-activity in Thicket, quiet background Reader refresh, and local right-click
-shortcuts for starting a Stub, Transclusion, or eligible Fork from existing
-writing.
+The project is not yet a turnkey installer or a general-purpose CMS. It assumes a separately maintained static-site Git repository and requires configuration for the specific site. A public packaged Mac build and guided first-run setup are not currently supplied.
 
-The preceding 0.13.0 release added background outbound Webmentions and verified
-incoming Webmentions in Thicket. The included inbound deployment helpers target
-the host layout documented under `deployment/nfs/`; review the security and
-receiver documents under `docs/` before enabling them on another installation.
+**Before using Blynger on a site:** back up the site and its private state, inspect configuration, and verify publication behavior against a disposable or test site. Hosting inbound Webmentions requires a separate, security-sensitive deployment. Do not assume the included NearlyFreeSpeech deployment scripts work unchanged on another host.
 
-Blynger was built around one established static site and is being generalized for other installations. Back up a site before trying it, review every proposed publication, and expect setup work. The application never needs a private key's contents; settings store only the path to a key chosen by the operator.
-
-## Requirements
+## Requirements and local setup
 
 - macOS
-- Python 3
+- Python 3 and dependencies from `requirements.txt`
 - Git
-- A static HTML website in its own Git repository
+- An existing static HTML website in its own Git repository
 
-Install the Python dependencies from `requirements.txt`, copy
-`settings.example.json` to
-`~/Library/Application Support/Blynger/settings.json`, and replace every example
-value. The website, private Blynger data, and application source should be three
-separate directories.
+Install Python dependencies, then copy `settings.example.json` to:
 
-Run the local browser version with:
+```text
+~/Library/Application Support/Blynger/settings.json
+```
 
-```sh
+Replace the example values for your site. Keep **application source**, **website repository**, and **private Blynger data** in separate directories. Settings refer to a chosen SSH private-key **path**; Blynger does not need the key's contents stored in its configuration.
+
+Run the local browser-facing application with:
+
+```bash
 python3 app.py
 ```
 
-The native wrapper source is in `native/Main.swift`. A packaged public Mac build
-and guided first-run setup are not yet provided.
+The macOS native wrapper source is in `native/Main.swift`.
 
-## Safety model
+## Publication and security boundaries
 
-- Drafts, Reader state, settings, IDs, and history stay in the configured private
-  data directory.
-- Publishing presents an explicit file review before committing or pushing.
-- Incoming Webmentions remain untrusted until bounded server-side verification;
-  only verified activity is synchronized into Thicket.
-- Tests use disposable sites and local bare Git repositories.
-- The server binds to `127.0.0.1` and uses a per-launch request token.
-- `settings.json`, private data, credentials, and website content do not belong
-  in this repository.
+- Saved writing is private until deliberately **staged**. An ordinary publication uses a brief confirmation; the more detailed changed-file inspection is available by right-clicking **PUBLISH…**.
+- Publication prepares and pushes a recorded Git commit. Interrupted or uncertain pushes can be reconciled against that exact commit, without sweeping later drafts into the publication.
+- Reader material and Webmention metadata remain untrusted. Reader's rendered remote content is sandboxed, and received Webmentions must be verified before appearing as activity.
+- Incoming claims cannot create drafts, subscriptions, public comments, or publications. The public receiver does not have access to the Mac's authoring state.
+- The local app listens on `127.0.0.1` and uses a per-launch request token.
+- Private state, credentials, the local `settings.json`, and site-specific content do **not** belong in the Blynger source repository.
+
+For the receiving trust boundary and host-specific deployment, see [receiver contract](docs/WEBMENTIONS_RECEIVER_CONTRACT.md), [security review](docs/WEBMENTIONS_SECURITY_REVIEW.md), and [security gate](docs/WEBMENTIONS_SECURITY_GATE.md).
 
 ## Blygger
 
-Blynger targets the living Blyg 0.4 Level 2 specification. See
-<https://blygger.org/spec/0.4/> and the local interoperability notes in
-`QUOTING.md`, `FRAGMENTS.md`, `OPENERS.md`, and `READER.md`.
-
-## Acknowledgments
-
-Blynger was conceived and directed by Brady Dale, and its code was written with
-AI coding systems, primarily ChatGPT/Codex, with additional review and fixes
-from Grok.
-
-The open-source [Blygger Studio](https://github.com/blygger/blygger-studio)
-project is an important reference client and source of implementation ideas.
-Blynger credits adapted work in its changelog and remains an independent
-application; reused ideas and code remain subject to their applicable license.
+Blynger is one implementation of the living [Blygger 0.4 specification](https://blygger.org/spec/0.4/) at its supported level. Blygger defines the public objects and interoperation; Blynger makes particular interface and static-publishing choices. Consult `QUOTING.md`, `FRAGMENTS.md`, `OPENERS.md`, and `READER.md` for additional implementation notes.
 
 ## Tests
 
-```sh
+```bash
 python3 -m unittest discover -v
 ```
 
+Additional browser/JavaScript checks may be documented in [DEVELOPMENT.md](DEVELOPMENT.md) and the changelog.
+
+## Credits
+
+Blynger was conceived and directed by Brady Dale. Its code was written with AI coding systems, primarily ChatGPT/Codex, with additional review and fixes from Grok. The independent open-source Blygger Studio project is an important reference implementation; adapted approaches are credited in the changelog and remain subject to their applicable licenses.
+
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).
