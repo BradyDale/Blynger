@@ -2,7 +2,7 @@
 
 **Application release covered:** 0.15.7 · **Published Blyg version:** 0.4
 
-Blynger is a local application for maintaining, writing on, reading from, and publishing a static personal website. It grew out of the practical problem of maintaining [bradydale.com](https://bradydale.com/): a hand-built site with years of HTML, changing designs, ordinary permanent pages, and a blog.
+Blynger is a local application for maintaining, writing on, reading from, and publishing a static personal website. It grew out of the practical problem of maintaining [bradydale.com](https://bradydale.com/): a hand-built static site that had accumulated years of HTML, changing designs, peculiar conventions, and ordinary website pages alongside a blog.
 
 Its aim remains straightforward:
 
