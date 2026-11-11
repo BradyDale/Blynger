@@ -1,6 +1,6 @@
 # How Blynger Works
 
-**Application release covered:** 0.15.7 · **Published Blyg version:** 0.4
+**Application release covered:** 0.15.9 · **Published Blyg version:** 0.4
 
 Blynger is a local application for maintaining, writing on, reading from, and publishing a static personal website. It grew out of the practical problem of maintaining [bradydale.com](https://bradydale.com/): a hand-built static site that had accumulated years of HTML, changing designs, peculiar conventions, and ordinary website pages alongside a blog.
 
@@ -22,7 +22,7 @@ Blynger doesn't consider the public website a disposable rendering of a private 
 
 That produces a distinctive rule: **a change in today's design does not automatically rewrite yesterday's pages**. Historical posts can retain older navigation, presentation, or harmless metadata. New pages use the current design, while necessary privacy, security, protocol, functional, and correctness updates can legitimately affect earlier pages. Sitewide operational changes, including Webmention discovery links, can be deliberate rather than accidental consequences of an ordinary design revision.
 
-The curated blogroll follows this historical principle. The author chooses which Reader subscriptions to show publicly; new Posts can incorporate that day's selection as a static side rail. Changing the subscriptions later need not rewrite the older side rails. A post can preserve evidence of what its author's neighborhood of the web looked like when it appeared.
+The curated blogroll follows this historical principle. The author chooses which Reader subscriptions to show publicly; new Posts can incorporate that day's selection as a static **Cabinet** side rail, beneath a **Series** box linking to the Series available when the Post was created. Changing the subscriptions or Series list later need not rewrite older side rails. A post can preserve evidence of what its author's neighborhood of the web looked like when it appeared.
 
 ## Workspaces
 
@@ -54,7 +54,7 @@ Images is the site's local asset-management workspace. It can show image dimensi
 
 Reader consumes genuine Blyg material, RSS/Atom feeds, and supported ordinary webpages. Blyg-native items are visibly distinguished from ordinary Web/RSS material, because they make different interoperability and provenance claims.
 
-Remote writing is hostile input, even when it looks like an ordinary article. Blynger sanitizes it using `nh3` and renders it in an opaque sandbox rather than in its privileged application page. A narrow message bridge handles permitted actions such as excerpt selection, genuine Blyg fragment selection, and safe link opening. Imported HTML cannot acquire Blynger's local API token, drive the editor, or publish anything.
+Remote writing is hostile input, even when it looks like an ordinary article. Blynger sanitizes it using `nh3` and renders it in an opaque sandbox rather than in its privileged application page. A narrow message bridge handles permitted actions such as excerpt selection, genuine Blyg fragment selection, and opening ordinary web links in the Mac's default browser. Imported HTML cannot acquire Blynger's local API token, drive the editor, or publish anything.
 
 Networking validates destinations and pins connections to checked public addresses. Parsing and retrieval are bounded; suspect content hashes, changed bytes at an unchanged Blyg version, or origin mismatches are rejected rather than silently replacing a last-known-good Reader item.
 
@@ -199,4 +199,4 @@ The longer-term challenge is not to turn every website into a Blynger website. I
 
 ## About this document
 
-This is descriptive project documentation, not the normative definition of Blygger. It describes the application and architecture reflected in Blynger's public repository through release **0.15.7**. Check [`version.py`](version.py), [CHANGELOG.md](CHANGELOG.md), and the current [Blygger specification](https://blygger.org/spec/0.4/) for subsequent changes and protocol requirements.
+This is descriptive project documentation, not the normative definition of Blygger. It describes the application and architecture reflected in Blynger's public repository through release **0.15.9**. Check [`version.py`](version.py), [CHANGELOG.md](CHANGELOG.md), and the current [Blygger specification](https://blygger.org/spec/0.4/) for subsequent changes and protocol requirements.

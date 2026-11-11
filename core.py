@@ -1072,7 +1072,8 @@ class Studio:
             self.state['drafts'][name]['series_attribute']=str(d.get('series_attribute','')).strip()
             if self.state['drafts'][name]['staged']:
                 self.save_series_choice(name,d.get('series_id') or None,d.get('series_attribute',''))
-        if (existing or previous).get('blogroll_snapshot') is not None:self.state['drafts'][name]['blogroll_snapshot']=copy.deepcopy((existing or previous)['blogroll_snapshot'])
+        for field in ('blogroll_snapshot','series_box_snapshot'):
+            if (existing or previous).get(field) is not None:self.state['drafts'][name][field]=copy.deepcopy((existing or previous)[field])
         if self.state['drafts'][name]['staged'] and self.state.get('prepared_cleanup'):
             self.abandon_prepared_outputs()
         self.save_state(); return {'message':'Draft saved on this Mac. The website has not changed.'}
@@ -1170,7 +1171,7 @@ class Studio:
         authored=body if isinstance(body,str) else '<p>Start writing here.</p>'
         raw=new_page(title,authored+'<p>'+html.escape(self.signature)+'<br>'+human_date()+'</p>',self.config)
         raw=enrich(raw,name,self.root,published=now(),config=self.config,blyg_item=True,blyg_discovery=True,rss_discovery=True)
-        self.state['drafts'][name]={'raw':raw,'base':None,'new':True,'staged':bool(staged),'at':now(),'generated':[],'pin_on_publish':False}
+        self.state['drafts'][name]={'raw':raw,'base':None,'new':True,'staged':bool(staged),'at':now(),'generated':[],'pin_on_publish':False,'series_box_snapshot':self.series_box_entries()}
         if stub_of is not None:self.state['drafts'][name]['stub_of']=copy.deepcopy(stub_of)
         if forked_from is not None:self.state['drafts'][name]['forked_from']=copy.deepcopy(forked_from)
         if generated is not None:self.state['drafts'][name]['generated']=copy.deepcopy(generated)
@@ -1625,9 +1626,30 @@ class Studio:
             u=urlsplit(feed);site=urlunsplit((u.scheme,u.netloc,'/','',''))
             out.append({'title':sub.get('title') or site,'htmlUrl':site,'xmlUrl':feed})
         return sorted(out,key=lambda row:row['title'].casefold())
-    def place_blogroll(self,raw,entries):
+    def series_box_entries(self):
+        return sorted(
+            ({'title':record['title'],'url':'/'+record['page'].lstrip('/')} for record in self.state.get('series',{}).values()),
+            key=lambda row:row['title'].casefold(),
+        )
+    def place_blogroll(self,raw,entries,series_entries=None):
         def home(row):
             u=urlsplit(row.get('xmlUrl') or row.get('htmlUrl') or '');return urlunsplit((u.scheme,u.netloc,'/','',''))
+        if series_entries is not None:
+            if '<!-- blynger-sidebar-start -->' in raw:return raw
+            boxes=[]
+            if series_entries:
+                links=''.join('<li><a href="'+html.escape(row['url'],quote=True)+'">'+html.escape(row['title'])+'</a></li>' for row in series_entries)
+                boxes.append('<aside class="blynger-sidebar-box blynger-series-box"><h2>Series</h2><ul>'+links+'</ul></aside>')
+            if entries:
+                heading=html.escape(self.config.get('blogroll_heading') or 'Blogroll')
+                links=''.join('<li><a href="'+html.escape(home(row),quote=True)+'">'+html.escape(row['title'])+'</a></li>' for row in entries)
+                boxes.append('<aside class="blynger-sidebar-box blynger-blogroll"><h2>'+heading+'</h2><ul>'+links+'</ul></aside>')
+            if not boxes:return raw
+            rail='<!-- blynger-sidebar-start --><div class="blynger-post-sidebar">'+''.join(boxes)+'</div><!-- blynger-sidebar-end -->'
+            style='<style id="blynger-sidebar-style">body>.blynger-post-layout{max-width:1080px;margin:auto;display:grid;grid-template-columns:minmax(0,768px) 220px;gap:32px;align-items:start}.blynger-post-layout>article{margin:0}.blynger-post-sidebar{display:grid;gap:56px;padding-top:96px}.blynger-sidebar-box{box-sizing:border-box;position:relative;width:100%;font:70%/1.5 Menlo,monospace;border:3px solid #111;padding:12px;background:#fff}.blynger-sidebar-box::before{content:"";position:absolute;inset:-7px -6px -7px -7px;border:2px solid #111;border-radius:3px;transform:rotate(-.25deg);pointer-events:none}.blynger-sidebar-box:nth-child(even)::before{inset:-6px -7px -8px -6px;transform:rotate(.2deg)}.blynger-sidebar-box h2{font-size:1em;margin-top:0}.blynger-sidebar-box ul{margin:0;padding-left:18px}@media(max-width:900px){body>.blynger-post-layout{display:block}.blynger-post-sidebar{max-width:768px;margin:32px auto 20px;padding:0 8px;gap:48px}}</style>'
+            raw=raw.replace('</head>',style+'</head>',1)
+            match=re.search(r'(<article\b[^>]*>.*?</article\s*>)',raw,re.I|re.S)
+            return raw[:match.start()]+'<div class="blynger-post-layout">'+match.group()+rail+'</div>'+raw[match.end():] if match else raw
         if not entries:return raw
         if '<!-- blynger-blogroll-start -->' in raw:
             a=raw.index('<!-- blynger-blogroll-start -->');b=raw.index('<!-- blynger-blogroll-end -->',a)+len('<!-- blynger-blogroll-end -->');rail=raw[a:b]
@@ -2268,7 +2290,8 @@ class Studio:
                 rendered=re.sub(r'<style id="blynger-quote-style">.*?</style>','',rendered,flags=re.S)
                 rendered=rendered.replace('</head>',QUOTE_STYLE+'</head>',1)
             rendered=restore_post_navigation(rendered,name,self.config)
-            rendered=self.place_blogroll(rendered,source.get('blogroll_snapshot',[]))
+            series_entries=source.get('series_box_snapshot') if 'series_box_snapshot' in source else None
+            rendered=self.place_blogroll(rendered,source.get('blogroll_snapshot',[]),series_entries)
             rendered=self.place_versions(rendered,name,doc)
             rendered=decorate_generation(rendered,doc.get('generated',[]))
             rendered=enrich(rendered,name,self.root,published=self.state['drafts'].get(name,{}).get('at') if self.state['drafts'].get(name,{}).get('new') else None,modified=doc['updated'] if doc['version']>1 else None,config=self.config,item_json=self.origin+'items/'+doc['id']+'.json',blyg_item=True,blyg_discovery=True,rss_discovery=True,webmention_discovery=name in authored_render_names)
@@ -2705,7 +2728,7 @@ class Studio:
                 saved={'raw':draft['raw'],'fragments':copy.deepcopy(draft.get('fragments')),'quotes':copy.deepcopy(draft.get('quotes',{})),'generated':copy.deepcopy(draft.get('generated',[])),'file_hash':file_hash}
                 if saved.get('fragments'):
                     for row in saved['fragments'].get('ranges',[]):row.pop('pin_on_publish',None)
-                for field in ('stub_of','forked_from','blogroll_snapshot'):
+                for field in ('stub_of','forked_from','blogroll_snapshot','series_box_snapshot'):
                     if field in draft:saved[field]=copy.deepcopy(draft[field])
                 self.state['fragment_posts'][name]=saved
                 if name not in self.non_blyg_pages:

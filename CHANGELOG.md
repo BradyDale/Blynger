@@ -1,3 +1,14 @@
+## 0.15.9 — Reader links belong to the browser
+
+- Open every ordinary HTTP or HTTPS link clicked inside an expanded Reader article in the Mac's default browser. Do not download the destination as another Reader item or make it resemble a newly inserted Post.
+- Keep Reader-card clicks responsible for expanding and collapsing cached articles. Mail links still copy the address instead of invoking a mail application, and the native bridge remains restricted to approved URL schemes.
+
+## 0.15.8 — Forward-only Series cabinet
+
+- Give Posts created from this release onward a second sidebar box, **Series**, above the configured Cabinet/blogroll. It links to every Series that exists when the Post is created.
+- Start the sidebar below a typical desktop headline, leave a larger visual pause between Series and Cabinet, and give both boxes a double, slightly hand-drawn black frame inspired by the site's Twitter navigation artwork.
+- Freeze the Series links and this presentation with the new Post. Revising a historical Post does not add the box or otherwise adopt the new design.
+
 ## 0.15.7 — One waiting loop, and a small-publication tripwire
 
 - Add `static/background-job.js` and load it before `static/app.js`.

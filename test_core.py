@@ -462,6 +462,27 @@ class StudioTests(unittest.TestCase):
         for item in ET.parse(self.root/'blyg/feed.xml').findall('./channel/item'):
             if item.find('{'+NS+'}id').text==iid:self.assertNotIn('home.JPG',item.find('description').text)
         self.studio.prepare();self.assertEqual((self.root/d['name']).read_text(),raw)
+    def test_new_posts_freeze_series_box_above_spaced_cabinet(self):
+        self.studio.state['series']={
+            'brainfi':{'title':'BrainFi','page':'series-brainfi.html','members':[]},
+            'zarathustra':{'title':'October of Zarathustra','page':'series-october-of-zarathustra.html','members':[]},
+        }
+        d=self.studio.create('Future furniture')
+        self.assertEqual([row['title'] for row in self.studio.state['drafts'][d['name']]['series_box_snapshot']],['BrainFi','October of Zarathustra'])
+        self.studio.state['drafts'][d['name']]['blogroll_snapshot']=[{'title':'Example','htmlUrl':'https://example.net/','xmlUrl':'https://example.net/feed.xml'}]
+        self.studio.prepare();raw=(self.root/d['name']).read_text()
+        self.assertLess(raw.index('blynger-series-box'),raw.index('blynger-blogroll'))
+        self.assertIn('href="/series-brainfi.html"',raw)
+        self.assertIn('href="/series-october-of-zarathustra.html"',raw)
+        self.assertIn('.blynger-post-sidebar{display:grid;gap:56px;padding-top:96px}',raw)
+        self.assertIn('border:3px solid #111',raw)
+        self.assertIn('transform:rotate(-.25deg)',raw)
+        revised=self.studio.page(d['name']);revised['raw']=revised['raw'].replace('Future furniture','Future furniture revised');self.studio.save_draft(revised)
+        self.assertIn('series_box_snapshot',self.studio.state['drafts'][d['name']])
+    def test_old_post_revision_does_not_gain_series_box(self):
+        self.studio.state['series']={'brainfi':{'title':'BrainFi','page':'series-brainfi.html','members':[]}}
+        old=self.studio.page('1.html');old['raw']=old['raw'].replace('Original','Revised');self.studio.save_draft(old);self.studio.prepare()
+        self.assertNotIn('>Series</h2>',(self.root/'1.html').read_text())
     def test_repair_missing_footer_once_and_preserve_manual_layout(self):
         from core import restore_post_navigation,post_navigation
         raw=new_page('Post','Words');raw=raw.replace('</article>'+post_navigation(),'</article>')

@@ -3176,17 +3176,6 @@ $('readerOpen').onclick = () => {
       allow_subscription: true,
     });
 };
-async function openReaderLink(url, allowSubscription = false) {
-  const result = await api('reader-open', {
-    url,
-    allow_subscription: allowSubscription,
-  });
-  const items = (await api('reader')).items;
-  const linked = items.find((candidate) => candidate.key === result.selected);
-  if (!linked) throw Error('Blynger downloaded this link but could not display it in Reader.');
-  await readItem(linked);
-  status(result.message || 'Opened link in Reader.');
-}
 async function readItem(item) {
   if (readerOpenedKey === item.key) {
     closeReaderOpened();
@@ -3246,11 +3235,7 @@ async function readItem(item) {
     selection: update,
     link: (data) => {
       if (!/^(https?:|mailto:|tel:)/i.test(data.href)) return;
-      const blygItem =
-        /^https?:\/\/[^/]+\/(?:[^?#]*\/)?(?:t|f)\/[0-9a-z]{26}\/?(?:[?#].*)?$/i.test(
-          data.href,
-        );
-      if (/^https?:/i.test(data.href)) run(() => openReaderLink(data.href, blygItem));
+      if (/^https?:/i.test(data.href)) run(() => openExternal(data.href));
       else if (/^mailto:/i.test(data.href)) run(() => copyMailLink(data.href));
       else run(() => openExternal(data.href));
     },

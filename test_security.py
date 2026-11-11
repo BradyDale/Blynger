@@ -68,6 +68,7 @@ class ReaderSecurityTests(unittest.TestCase):
         self.assertNotIn('X-Blynger-Token',content)
         self.assertIn("event.target.closest('a[href]')",content)
         self.assertIn('openExternal(data.href)',app)
+        self.assertNotIn('openReaderLink',app)
         self.assertIn('window.webkit?.messageHandlers?.openExternal',app)
         self.assertIn('native.postMessage(url)',app)
         self.assertNotIn("link:data=>{if(/^https?:/i.test(data.href))readerOperation('reader-open'",compact_app)

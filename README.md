@@ -23,7 +23,7 @@ The site has two different feeds: `/feed.xml` for ordinary site subscribers and 
 
 ## Current status
 
-**Blynger 0.15.7** is pre-1.0 software and publishes **Blyg 0.4**. Recent releases have included the Webmention system (0.13), the index-card-inspired interface and Reader changes (0.14), and Blyg 0.4 publishing plus reliability and preservation fixes (0.15). Refer to [CHANGELOG.md](CHANGELOG.md) and [`version.py`](version.py) for the exact checked-out version; this summary may lag subsequent development.
+**Blynger 0.15.9** is pre-1.0 software and publishes **Blyg 0.4**. Recent releases have included the Webmention system (0.13), the index-card-inspired interface and Reader changes (0.14), and Blyg 0.4 publishing plus reliability, preservation, and forward-only presentation fixes (0.15). Refer to [CHANGELOG.md](CHANGELOG.md) and [`version.py`](version.py) for the exact checked-out version; this summary may lag subsequent development.
 
 The project is not yet a turnkey installer or a general-purpose CMS. It assumes a separately maintained static-site Git repository and requires configuration for the specific site. A public packaged Mac build and guided first-run setup are not currently supplied.
 
